@@ -1,0 +1,26 @@
+{
+  "name": "agent-bridges",
+  "owner": { "name": "mubeda" },
+  "metadata": {
+    "description": "OpenCode and Gemini companion plugins for Claude, Codex, Cursor, and OpenCode.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "opencode",
+      "description": "Use the local OpenCode CLI to review code or delegate tasks.",
+      "version": "0.2.0",
+      "author": { "name": "mubeda" },
+      "source": "./plugins/opencode",
+      "category": "development"
+    },
+    {
+      "name": "gemini",
+      "description": "Use the local Gemini CLI to review code or delegate tasks.",
+      "version": "0.1.1",
+      "author": { "name": "mubeda" },
+      "source": "./plugins/gemini",
+      "category": "development"
+    }
+  ]
+}

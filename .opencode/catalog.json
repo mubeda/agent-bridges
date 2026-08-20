@@ -1,0 +1,7 @@
+{
+  "name": "agent-bridges",
+  "plugins": [
+    { "name": "opencode", "source": "./plugins/opencode", "companion": "scripts/opencode-companion.mjs" },
+    { "name": "gemini", "source": "./plugins/gemini", "companion": "scripts/gemini-companion.mjs" }
+  ]
+}
