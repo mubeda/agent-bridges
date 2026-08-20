@@ -13,6 +13,12 @@
       "source": { "source": "local", "path": "./plugins/gemini" },
       "policy": { "installation": "AVAILABLE" },
       "category": "Developer tools"
+    },
+    {
+      "name": "claude",
+      "source": { "source": "local", "path": "./plugins/claude" },
+      "policy": { "installation": "AVAILABLE" },
+      "category": "Developer tools"
     }
   ]
 }

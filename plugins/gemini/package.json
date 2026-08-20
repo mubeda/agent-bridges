@@ -1,0 +1,11 @@
+{
+  "name": "@mubeda/gemini-plugin-cc-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Runtime scripts for the Gemini Claude Code plugin. No external runtime dependencies; the companion script spawns the local gemini CLI directly.",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=18.18.0"
+  }
+}

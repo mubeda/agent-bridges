@@ -1,0 +1,17 @@
+{
+  "name": "gemini",
+  "version": "0.1.1",
+  "description": "Use the local Gemini CLI to review code or delegate tasks.",
+  "author": { "name": "mubeda" },
+  "license": "Apache-2.0",
+  "keywords": ["gemini", "review", "rescue"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Gemini",
+    "shortDescription": "Delegate reviews and rescue tasks to the local gemini CLI.",
+    "longDescription": "Slash-command parity via Codex skills. Runs node scripts/gemini-companion.mjs against your existing Gemini install.",
+    "developerName": "mubeda",
+    "category": "Developer tools",
+    "capabilities": ["Read", "Write"]
+  }
+}

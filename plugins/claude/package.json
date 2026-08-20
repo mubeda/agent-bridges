@@ -1,0 +1,9 @@
+{
+  "name": "@mubeda/claude-plugin-cc-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Runtime scripts for the Claude companion plugin. Spawns the local claude CLI.",
+  "license": "Apache-2.0",
+  "engines": { "node": ">=18.18.0" }
+}

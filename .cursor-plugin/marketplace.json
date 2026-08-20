@@ -13,6 +13,12 @@
       "description": "Use the local Gemini CLI to review code or delegate tasks.",
       "version": "0.1.1",
       "source": "./plugins/gemini"
+    },
+    {
+      "name": "claude",
+      "description": "Use the local Claude Code CLI to review code or delegate tasks.",
+      "version": "0.1.0",
+      "source": "./plugins/claude"
     }
   ]
 }

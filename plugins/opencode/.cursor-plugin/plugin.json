@@ -1,0 +1,8 @@
+{
+  "name": "opencode",
+  "version": "0.2.0",
+  "description": "Use the local OpenCode CLI to review code or delegate tasks.",
+  "author": { "name": "mubeda" },
+  "license": "Apache-2.0",
+  "keywords": ["opencode", "review", "rescue"]
+}

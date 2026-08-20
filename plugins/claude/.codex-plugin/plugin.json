@@ -1,0 +1,17 @@
+{
+  "name": "claude",
+  "version": "0.1.0",
+  "description": "Use the local Claude Code CLI to review code or delegate tasks.",
+  "author": { "name": "mubeda" },
+  "license": "Apache-2.0",
+  "keywords": ["claude", "review", "rescue"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Claude",
+    "shortDescription": "Delegate reviews and rescue tasks to the local Claude Code CLI.",
+    "longDescription": "Skill parity with the Codex companion surface. Runs node scripts/claude-companion.mjs against your existing claude install.",
+    "developerName": "mubeda",
+    "category": "Developer tools",
+    "capabilities": ["Read", "Write"]
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "name": "gemini",
+  "version": "0.1.1",
+  "description": "Use the local Gemini CLI from Claude Code to review code or delegate tasks.",
+  "author": {
+    "name": "mubeda"
+  },
+  "hooks": "./hooks/hooks.json"
+}
