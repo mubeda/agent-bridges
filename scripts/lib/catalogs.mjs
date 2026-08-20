@@ -55,9 +55,20 @@ function requireAllowedPlugins(catalog, label, errors, { exactCount = 2 } = {}) 
     errors.push(`${label} must list exactly ${exactCount} plugins`);
     return;
   }
+  const names = catalog.plugins.map((plugin) => plugin.name);
+  const uniqueNames = new Set(names);
+  if (uniqueNames.size !== exactCount) {
+    errors.push(`${label} must list exactly one entry each for opencode and gemini`);
+    return;
+  }
   for (const plugin of catalog.plugins) {
     if (!ALLOWED_PLUGIN_NAMES.has(plugin.name)) {
       errors.push(`${label} plugin ${plugin.name} is not allowed`);
+    }
+  }
+  for (const required of PLUGIN_NAMES) {
+    if (!uniqueNames.has(required)) {
+      errors.push(`${label} missing required plugin ${required}`);
     }
   }
 }
