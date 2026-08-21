@@ -34,12 +34,22 @@ test("hooks.json is Stop-only", () => {
   }
 });
 
-test("plugin.json points at hooks", () => {
+test("plugin.json does not redeclare auto-loaded hooks/hooks.json", () => {
   for (const plugin of ["opencode", "gemini"]) {
+    const pluginRoot = path.join(ROOT, "plugins", plugin);
+    const defaultHooks = path.resolve(pluginRoot, "hooks", "hooks.json");
     const manifest = JSON.parse(
-      fs.readFileSync(path.join(ROOT, "plugins", plugin, ".claude-plugin", "plugin.json"), "utf8")
+      fs.readFileSync(path.join(pluginRoot, ".claude-plugin", "plugin.json"), "utf8")
     );
-    assert.equal(manifest.hooks, "./hooks/hooks.json");
+    assert.equal(fs.existsSync(defaultHooks), true);
+    if (typeof manifest.hooks === "string") {
+      const declared = path.resolve(pluginRoot, manifest.hooks);
+      assert.notEqual(
+        path.normalize(declared),
+        path.normalize(defaultHooks),
+        `${plugin} plugin.json hooks must not point at the auto-loaded hooks/hooks.json`
+      );
+    }
   }
 });
 

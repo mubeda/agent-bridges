@@ -5,13 +5,13 @@
     {
       "name": "opencode",
       "description": "Use the local OpenCode CLI to review code or delegate tasks.",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "source": "./plugins/opencode"
     },
     {
       "name": "gemini",
       "description": "Use the local Gemini CLI to review code or delegate tasks.",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "source": "./plugins/gemini"
     },
     {

@@ -1,9 +1,8 @@
 {
   "name": "opencode",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Use OpenCode from Claude Code to review code or delegate tasks.",
   "author": {
     "name": "mubeda"
-  },
-  "hooks": "./hooks/hooks.json"
+  }
 }

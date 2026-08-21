@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.2
+
+- Drop `"hooks": "./hooks/hooks.json"` from the Claude manifest. Claude Code
+  auto-loads that file, so the extra `plugin.json` pointer was a duplicate.
+
 ## 0.1.1 — 2026-05-12
 
 ### Fixed

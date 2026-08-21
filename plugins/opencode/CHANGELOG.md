@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1
+
+- Drop `"hooks": "./hooks/hooks.json"` from the Claude manifest. Claude Code
+  auto-loads `hooks/hooks.json`, and redeclaring it made `/plugin diagnose`
+  fail with a duplicate-hooks error while skipping the extra load.
+
 ## 0.1.0
 
 - Initial version of the OpenCode plugin for Claude Code.
