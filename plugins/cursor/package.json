@@ -1,0 +1,9 @@
+{
+  "name": "@mubeda/cursor-plugin-cc-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Runtime scripts for the Cursor Agent companion plugin. Spawns the local agent CLI.",
+  "license": "Apache-2.0",
+  "engines": { "node": ">=18.18.0" }
+}

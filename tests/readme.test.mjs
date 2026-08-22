@@ -48,3 +48,13 @@ test("README documents upgrade surface", () => {
   assert.doesNotMatch(readme, /MAU_PLUGIN/);
   assert.doesNotMatch(readme, /~\/\.mau-ai/);
 });
+
+test("README documents the Cursor companion", () => {
+  assert.match(readme, /cursor@agent-bridges/);
+  assert.match(readme, /\/plugin install cursor@agent-bridges/);
+  assert.match(readme, /codex plugin add cursor@agent-bridges/);
+  assert.match(readme, /CURSOR_BIN/);
+  assert.match(readme, /CURSOR_API_KEY/);
+  assert.match(readme, /agent login/);
+  assert.match(readme, /~\/\.cursor-companion/);
+});

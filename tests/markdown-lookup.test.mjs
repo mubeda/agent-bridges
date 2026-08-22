@@ -32,7 +32,7 @@ test("plugin markdown has no MAU_PLUGIN_ROOT", () => {
   }
 });
 
-for (const companion of ["opencode", "gemini"]) {
+for (const companion of ["opencode", "gemini", "cursor"]) {
   for (const command of ["review", "adversarial-review"]) {
     test(`${companion} ${command} command delegates background execution to the companion`, () => {
       const body = fs.readFileSync(
@@ -53,8 +53,8 @@ test("codex review skill exists", () => {
   assert.match(body, /review/);
 });
 
-test("transfer command exists for both plugins", () => {
-  for (const name of ["opencode", "gemini"]) {
+test("transfer command exists for companion plugins", () => {
+  for (const name of ["opencode", "gemini", "cursor"]) {
     const body = fs.readFileSync(path.join(root, `plugins/${name}/commands/transfer.md`), "utf8");
     assert.match(body, /PLUGIN_ROOT/);
     assert.match(body, /transfer/);
@@ -69,6 +69,10 @@ test("codex transfer skills exist", () => {
   assert.match(
     fs.readFileSync(path.join(root, "plugins/gemini/skills/gemini-transfer/SKILL.md"), "utf8"),
     /^name:\s*gemini-transfer/m
+  );
+  assert.match(
+    fs.readFileSync(path.join(root, "plugins/cursor/skills/cursor-transfer/SKILL.md"), "utf8"),
+    /^name:\s*cursor-transfer/m
   );
 });
 
@@ -100,4 +104,59 @@ test("claude skills document PLUGIN_ROOT lookup", () => {
   assert.match(body, /PLUGIN_ROOT/);
   assert.match(body, /claude-companion\.mjs/);
   assert.doesNotMatch(body, /MAU_PLUGIN_ROOT/);
+});
+
+test("cursor companion documentation has no inherited OpenCode instructions", () => {
+  const setup = fs.readFileSync(path.join(root, "plugins/cursor/commands/setup.md"), "utf8");
+  const rescue = fs.readFileSync(path.join(root, "plugins/cursor/commands/rescue.md"), "utf8");
+  const transfer = fs.readFileSync(
+    path.join(root, "plugins/cursor/skills/cursor-transfer/SKILL.md"),
+    "utf8"
+  );
+
+  assert.match(setup, /https:\/\/cursor\.com\/docs\/cli\/installation/);
+  assert.match(setup, /agent login|CURSOR_API_KEY/);
+  assert.doesNotMatch(setup, /opencode-ai|opencode auth/);
+  assert.doesNotMatch(rescue, /Skill\(opencode/);
+  assert.match(rescue, /Skill\(cursor:rescue\)/);
+  assert.match(transfer, /Claude, Codex, or Cursor/);
+  assert.doesNotMatch(transfer, /Cursor, Codex, or Cursor Agent/);
+});
+
+test("Cursor documentation contains no obsolete permission or OpenCode commands", () => {
+  const files = [];
+  function walk(dir) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith(".md")) files.push(full);
+    }
+  }
+  walk(path.join(root, "plugins/cursor"));
+  for (const file of files) {
+    const body = fs.readFileSync(file, "utf8");
+    assert.doesNotMatch(body, /dangerously-skip-permissions/i, file);
+    assert.doesNotMatch(body, /opencode-ai|opencode auth|Skill\(opencode/i, file);
+  }
+});
+
+test("Cursor documentation only invokes implemented companion subcommands", () => {
+  const script = fs.readFileSync(path.join(root, "plugins/cursor/scripts/cursor-companion.mjs"), "utf8");
+  const implemented = new Set([...script.matchAll(/case "([^"]+)"/g)].map((match) => match[1]));
+  const docs = [];
+  function walk(dir) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith(".md")) docs.push(full);
+    }
+  }
+  walk(path.join(root, "plugins/cursor/commands"));
+  walk(path.join(root, "plugins/cursor/skills"));
+  for (const file of docs) {
+    const body = fs.readFileSync(file, "utf8");
+    for (const match of body.matchAll(/cursor-companion\.mjs"\s+([a-z-]+)/g)) {
+      assert.ok(implemented.has(match[1]), `${file} invokes missing subcommand ${match[1]}`);
+    }
+  }
 });

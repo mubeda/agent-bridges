@@ -1,5 +1,6 @@
 {
   "name": "gemini",
+  "displayName": "Gemini",
   "version": "0.1.2",
   "description": "Use the local Gemini CLI to review code or delegate tasks.",
   "author": { "name": "mubeda" },

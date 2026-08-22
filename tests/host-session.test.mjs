@@ -18,6 +18,7 @@ import {
   resolveTransferSource as resolveClaudeTransferSource
 } from "../plugins/claude/scripts/lib/host-session.mjs";
 import { TRANSCRIPT_PATH_ENV as OPENCODE_TRANSCRIPT_PATH_ENV } from "../plugins/opencode/scripts/lib/host-session.mjs";
+import { TRANSCRIPT_PATH_ENV as CURSOR_TRANSCRIPT_PATH_ENV } from "../plugins/cursor/scripts/lib/host-session.mjs";
 
 const repoRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const fixtureRoot = path.join(repoRoot, "tests", ".tmp", "host-session");
@@ -127,6 +128,10 @@ test("OpenCode TRANSCRIPT_PATH_ENV is OPENCODE_COMPANION_TRANSCRIPT_PATH", () =>
 
 test("Claude companion TRANSCRIPT_PATH_ENV is CLAUDE_COMPANION_TRANSCRIPT_PATH", () => {
   assert.equal(CLAUDE_TRANSCRIPT_PATH_ENV, "CLAUDE_COMPANION_TRANSCRIPT_PATH");
+});
+
+test("Cursor companion TRANSCRIPT_PATH_ENV is CURSOR_COMPANION_TRANSCRIPT_PATH", () => {
+  assert.equal(CURSOR_TRANSCRIPT_PATH_ENV, "CURSOR_COMPANION_TRANSCRIPT_PATH");
 });
 
 test("Claude companion prefers Codex over a newer Claude file", () => {

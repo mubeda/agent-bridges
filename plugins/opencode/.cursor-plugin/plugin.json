@@ -1,5 +1,6 @@
 {
   "name": "opencode",
+  "displayName": "OpenCode",
   "version": "0.2.1",
   "description": "Use the local OpenCode CLI to review code or delegate tasks.",
   "author": { "name": "mubeda" },

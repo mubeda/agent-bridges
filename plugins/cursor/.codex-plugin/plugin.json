@@ -1,0 +1,17 @@
+{
+  "name": "cursor",
+  "version": "0.1.0",
+  "description": "Use the local Cursor Agent CLI to review code or delegate tasks.",
+  "author": { "name": "mubeda" },
+  "license": "Apache-2.0",
+  "keywords": ["cursor", "review", "rescue"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Cursor",
+    "shortDescription": "Delegate reviews and rescue tasks to the local Cursor Agent CLI.",
+    "longDescription": "Skill parity with the Codex companion surface. Runs node scripts/cursor-companion.mjs against your existing cursor-agent install.",
+    "developerName": "mubeda",
+    "category": "Developer tools",
+    "capabilities": ["Read", "Write"]
+  }
+}

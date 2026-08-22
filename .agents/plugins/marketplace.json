@@ -1,5 +1,6 @@
 {
   "name": "agent-bridges",
+  "version": "0.2.0",
   "interface": { "displayName": "Agent Bridges" },
   "plugins": [
     {
@@ -17,6 +18,12 @@
     {
       "name": "claude",
       "source": { "source": "local", "path": "./plugins/claude" },
+      "policy": { "installation": "AVAILABLE" },
+      "category": "Developer tools"
+    },
+    {
+      "name": "cursor",
+      "source": { "source": "local", "path": "./plugins/cursor" },
       "policy": { "installation": "AVAILABLE" },
       "category": "Developer tools"
     }

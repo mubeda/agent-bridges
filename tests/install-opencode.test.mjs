@@ -61,6 +61,10 @@ test("parseInstallArgs accepts claude plugin", () => {
   assert.equal(parseInstallArgs(["--plugin", "claude"]).plugin, "claude");
 });
 
+test("parseInstallArgs accepts cursor plugin", () => {
+  assert.equal(parseInstallArgs(["--plugin", "cursor"]).plugin, "cursor");
+});
+
 test("resolveInstallPaths uses OpenCode user directories", () => {
   const home = makeTemp("paths-");
   assert.deepEqual(
@@ -159,6 +163,12 @@ test("installing all plugins copies the Claude plugin tree without commands", ()
   assert.equal(
     fs.existsSync(
       path.join(home, ".config", "opencode", "plugins", "claude", "scripts", "claude-companion.mjs")
+    ),
+    true
+  );
+  assert.equal(
+    fs.existsSync(
+      path.join(home, ".config", "opencode", "plugins", "cursor", "scripts", "cursor-companion.mjs")
     ),
     true
   );
@@ -283,5 +293,5 @@ test("uninstall removes only files recorded for selected plugins", () => {
       "utf8"
     )
   );
-  assert.deepEqual(Object.keys(manifest.plugins), ["gemini", "claude"]);
+  assert.deepEqual(Object.keys(manifest.plugins), ["gemini", "claude", "cursor"]);
 });

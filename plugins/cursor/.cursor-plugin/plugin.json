@@ -1,0 +1,9 @@
+{
+  "name": "cursor",
+  "displayName": "Cursor",
+  "version": "0.1.0",
+  "description": "Use the local Cursor Agent CLI to review code or delegate tasks.",
+  "author": { "name": "mubeda" },
+  "license": "Apache-2.0",
+  "keywords": ["cursor", "review", "rescue"]
+}

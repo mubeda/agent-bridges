@@ -1,8 +1,10 @@
 {
   "name": "agent-bridges",
+  "version": "0.2.0",
   "plugins": [
     { "name": "opencode", "source": "./plugins/opencode", "companion": "scripts/opencode-companion.mjs" },
     { "name": "gemini", "source": "./plugins/gemini", "companion": "scripts/gemini-companion.mjs" },
-    { "name": "claude", "source": "./plugins/claude", "companion": "scripts/claude-companion.mjs" }
+    { "name": "claude", "source": "./plugins/claude", "companion": "scripts/claude-companion.mjs" },
+    { "name": "cursor", "source": "./plugins/cursor", "companion": "scripts/cursor-companion.mjs" }
   ]
 }

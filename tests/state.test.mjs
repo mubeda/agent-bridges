@@ -6,6 +6,7 @@ import test from "node:test";
 import { resolveStateRoot as resolveOpencodeStateRoot } from "../plugins/opencode/scripts/lib/state.mjs";
 import { resolveStateRoot as resolveGeminiStateRoot } from "../plugins/gemini/scripts/lib/state.mjs";
 import { resolveStateRoot as resolveClaudeStateRoot } from "../plugins/claude/scripts/lib/state.mjs";
+import { resolveStateRoot as resolveCursorStateRoot } from "../plugins/cursor/scripts/lib/state.mjs";
 
 test("default state roots are companion dirs", () => {
   const env = { ...process.env };
@@ -24,6 +25,10 @@ test("default state roots are companion dirs", () => {
     resolveClaudeStateRoot(env),
     path.join(os.homedir(), ".claude-companion", "state")
   );
+  assert.equal(
+    resolveCursorStateRoot(env),
+    path.join(os.homedir(), ".cursor-companion", "state")
+  );
 });
 
 test("PLUGIN_DATA wins over CLAUDE_PLUGIN_DATA", () => {
@@ -34,6 +39,7 @@ test("PLUGIN_DATA wins over CLAUDE_PLUGIN_DATA", () => {
   assert.equal(resolveOpencodeStateRoot(env), path.join(env.PLUGIN_DATA, "state"));
   assert.equal(resolveGeminiStateRoot(env), path.join(env.PLUGIN_DATA, "state"));
   assert.equal(resolveClaudeStateRoot(env), path.join(env.PLUGIN_DATA, "state"));
+  assert.equal(resolveCursorStateRoot(env), path.join(env.PLUGIN_DATA, "state"));
 });
 
 test("CLAUDE_PLUGIN_DATA is used when PLUGIN_DATA is unset", () => {
@@ -41,4 +47,5 @@ test("CLAUDE_PLUGIN_DATA is used when PLUGIN_DATA is unset", () => {
   delete env.PLUGIN_DATA;
   assert.equal(resolveOpencodeStateRoot(env), path.join(env.CLAUDE_PLUGIN_DATA, "state"));
   assert.equal(resolveClaudeStateRoot(env), path.join(env.CLAUDE_PLUGIN_DATA, "state"));
+  assert.equal(resolveCursorStateRoot(env), path.join(env.CLAUDE_PLUGIN_DATA, "state"));
 });

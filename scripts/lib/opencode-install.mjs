@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const PLUGINS = new Set(["opencode", "gemini", "claude", "all"]);
+const PLUGINS = new Set(["opencode", "gemini", "claude", "cursor", "all"]);
 const SCOPES = new Set(["user", "project"]);
 
 function takeValue(argv, index, option) {

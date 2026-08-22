@@ -38,34 +38,42 @@ test("empty directory fails validation", () => {
 
 test("fixture with catalogs and plugin manifests passes", () => {
   const { root, write } = createFixture();
-  const two = [
+  const claudePlugins = [
     { name: "opencode", source: "./plugins/opencode" },
-    { name: "gemini", source: "./plugins/gemini" }
+    { name: "gemini", source: "./plugins/gemini" },
+    { name: "cursor", source: "./plugins/cursor" }
   ];
-  const three = [...two, { name: "claude", source: "./plugins/claude" }];
+  const cursorPlugins = [
+    { name: "opencode", source: "./plugins/opencode" },
+    { name: "gemini", source: "./plugins/gemini" },
+    { name: "claude", source: "./plugins/claude" }
+  ];
+  const codexPlugins = [
+    { name: "opencode", source: { source: "local", path: "./plugins/opencode" } },
+    { name: "gemini", source: { source: "local", path: "./plugins/gemini" } },
+    { name: "claude", source: { source: "local", path: "./plugins/claude" } },
+    { name: "cursor", source: { source: "local", path: "./plugins/cursor" } }
+  ];
+  const opencodePlugins = [...cursorPlugins, { name: "cursor", source: "./plugins/cursor" }];
   write(".claude-plugin/marketplace.json", {
     name: "agent-bridges",
     owner: { name: "mubeda" },
-    plugins: two
+    plugins: claudePlugins
   });
   write(".agents/plugins/marketplace.json", {
     name: "agent-bridges",
-    plugins: [
-      { name: "opencode", source: { source: "local", path: "./plugins/opencode" } },
-      { name: "gemini", source: { source: "local", path: "./plugins/gemini" } },
-      { name: "claude", source: { source: "local", path: "./plugins/claude" } }
-    ]
+    plugins: codexPlugins
   });
   write(".cursor-plugin/marketplace.json", {
     name: "agent-bridges",
     owner: { name: "mubeda" },
-    plugins: three
+    plugins: cursorPlugins
   });
   write(".opencode/catalog.json", {
     name: "agent-bridges",
-    plugins: three
+    plugins: opencodePlugins
   });
-  writePluginManifests(write, ["opencode", "gemini", "claude"]);
+  writePluginManifests(write, ["opencode", "gemini", "claude", "cursor"]);
   const result = validateMarketplaceRepo(root);
   assert.deepEqual(result.errors, []);
   assert.equal(result.ok, true);
@@ -78,6 +86,7 @@ test("claude marketplace must not list the claude plugin", () => {
     { name: "gemini", source: "./plugins/gemini" }
   ];
   const three = [...two, { name: "claude", source: "./plugins/claude" }];
+  const four = [...three, { name: "cursor", source: "./plugins/cursor" }];
   write(".claude-plugin/marketplace.json", {
     name: "agent-bridges",
     owner: { name: "mubeda" },
@@ -88,7 +97,8 @@ test("claude marketplace must not list the claude plugin", () => {
     plugins: [
       { name: "opencode", source: { source: "local", path: "./plugins/opencode" } },
       { name: "gemini", source: { source: "local", path: "./plugins/gemini" } },
-      { name: "claude", source: { source: "local", path: "./plugins/claude" } }
+      { name: "claude", source: { source: "local", path: "./plugins/claude" } },
+      { name: "cursor", source: { source: "local", path: "./plugins/cursor" } }
     ]
   });
   write(".cursor-plugin/marketplace.json", {
@@ -96,11 +106,47 @@ test("claude marketplace must not list the claude plugin", () => {
     owner: { name: "mubeda" },
     plugins: three
   });
-  write(".opencode/catalog.json", { name: "agent-bridges", plugins: three });
-  writePluginManifests(write, ["opencode", "gemini", "claude"]);
+  write(".opencode/catalog.json", { name: "agent-bridges", plugins: four });
+  writePluginManifests(write, ["opencode", "gemini", "claude", "cursor"]);
   const result = validateMarketplaceRepo(root);
   assert.equal(result.ok, false);
-  assert.ok(result.errors.some((e) => e.includes("claude marketplace") && e.includes("exactly")));
+  assert.ok(result.errors.some((e) => e.includes("claude marketplace")));
+});
+
+test("claude marketplace must list cursor and must not list claude", () => {
+  const { root, write } = createFixture();
+  const cursorPlugins = [
+    { name: "opencode", source: "./plugins/opencode" },
+    { name: "gemini", source: "./plugins/gemini" },
+    { name: "claude", source: "./plugins/claude" }
+  ];
+  write(".claude-plugin/marketplace.json", {
+    name: "agent-bridges",
+    owner: { name: "mubeda" },
+    plugins: cursorPlugins
+  });
+  write(".agents/plugins/marketplace.json", {
+    name: "agent-bridges",
+    plugins: [
+      { name: "opencode", source: { source: "local", path: "./plugins/opencode" } },
+      { name: "gemini", source: { source: "local", path: "./plugins/gemini" } },
+      { name: "claude", source: { source: "local", path: "./plugins/claude" } },
+      { name: "cursor", source: { source: "local", path: "./plugins/cursor" } }
+    ]
+  });
+  write(".cursor-plugin/marketplace.json", {
+    name: "agent-bridges",
+    owner: { name: "mubeda" },
+    plugins: cursorPlugins
+  });
+  write(".opencode/catalog.json", {
+    name: "agent-bridges",
+    plugins: [...cursorPlugins, { name: "cursor", source: "./plugins/cursor" }]
+  });
+  writePluginManifests(write, ["opencode", "gemini", "claude", "cursor"]);
+  const result = validateMarketplaceRepo(root);
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((e) => e.includes("claude marketplace")));
 });
 
 test("extra plugin name in catalog fails validation", () => {
@@ -115,7 +161,8 @@ test("extra plugin name in catalog fails validation", () => {
     owner: { name: "mubeda" },
     plugins: [
       { name: "opencode", source: "./plugins/opencode" },
-      { name: "pathfinder", source: "./plugins/pathfinder" }
+      { name: "pathfinder", source: "./plugins/pathfinder" },
+      { name: "cursor", source: "./plugins/cursor" }
     ]
   });
   write(".agents/plugins/marketplace.json", {
@@ -149,7 +196,8 @@ test("duplicate plugin name in catalog fails validation", () => {
     owner: { name: "mubeda" },
     plugins: [
       { name: "opencode", source: "./plugins/opencode" },
-      { name: "opencode", source: "./plugins/opencode" }
+      { name: "opencode", source: "./plugins/opencode" },
+      { name: "cursor", source: "./plugins/cursor" }
     ]
   });
   write(".agents/plugins/marketplace.json", {
@@ -197,6 +245,52 @@ test("wrong catalog name fails validation", () => {
   const result = validateMarketplaceRepo(root);
   assert.equal(result.ok, false);
   assert.ok(result.errors.some((e) => e.includes("wrong-name") && e.includes("agent-bridges")));
+});
+
+test("cursor marketplace accepts pluginRoot sources", () => {
+  const { root, write } = createFixture();
+  const claudePlugins = [
+    { name: "opencode", source: "./plugins/opencode" },
+    { name: "gemini", source: "./plugins/gemini" },
+    { name: "cursor", source: "./plugins/cursor" }
+  ];
+  const cursorPlugins = [
+    { name: "opencode", source: "./plugins/opencode" },
+    { name: "gemini", source: "./plugins/gemini" },
+    { name: "claude", source: "./plugins/claude" }
+  ];
+  write(".claude-plugin/marketplace.json", {
+    name: "agent-bridges",
+    owner: { name: "mubeda" },
+    plugins: claudePlugins
+  });
+  write(".agents/plugins/marketplace.json", {
+    name: "agent-bridges",
+    plugins: [
+      { name: "opencode", source: { source: "local", path: "./plugins/opencode" } },
+      { name: "gemini", source: { source: "local", path: "./plugins/gemini" } },
+      { name: "claude", source: { source: "local", path: "./plugins/claude" } },
+      { name: "cursor", source: { source: "local", path: "./plugins/cursor" } }
+    ]
+  });
+  write(".cursor-plugin/marketplace.json", {
+    name: "agent-bridges",
+    owner: { name: "mubeda" },
+    metadata: { pluginRoot: "plugins", version: "0.1.1" },
+    plugins: [
+      { name: "opencode", source: "opencode" },
+      { name: "gemini", source: "gemini" },
+      { name: "claude", source: "claude" }
+    ]
+  });
+  write(".opencode/catalog.json", {
+    name: "agent-bridges",
+    plugins: [...cursorPlugins, { name: "cursor", source: "./plugins/cursor" }]
+  });
+  writePluginManifests(write, ["opencode", "gemini", "claude", "cursor"]);
+  const result = validateMarketplaceRepo(root);
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.ok, true);
 });
 
 test("this repo validates once catalogs exist", () => {

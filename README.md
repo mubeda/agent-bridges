@@ -1,6 +1,6 @@
 # Agent Bridges
 
-Catalog of three companion plugins — **OpenCode**, **Gemini**, and **Claude** — for Codex CLI, Cursor, and OpenCode.
+Catalog of four companion plugins — **OpenCode**, **Gemini**, **Claude**, and **Cursor Agent** — for Codex CLI, Cursor, and OpenCode.
 
 Repository: https://github.com/mubeda/agent-bridges
 
@@ -15,6 +15,7 @@ Install plugins with the catalog id `@agent-bridges`.
 | `opencode` | Review, rescue, and transfer via the local `opencode` CLI |
 | `gemini` | Review, rescue, and transfer via Antigravity (`agy`) or Gemini CLI |
 | `claude` | Review, rescue, and transfer via the Claude CLI |
+| `cursor` | Review, rescue, and transfer via the Cursor Agent CLI |
 
 Each plugin can be installed independently.
 
@@ -24,6 +25,7 @@ Each plugin can be installed independently.
 /plugin marketplace add mubeda/agent-bridges
 /plugin install opencode@agent-bridges
 /plugin install gemini@agent-bridges
+/plugin install cursor@agent-bridges
 ```
 
 Then `/opencode:setup` and `/gemini:setup`.
@@ -39,9 +41,10 @@ codex plugin marketplace add https://github.com/mubeda/agent-bridges.git
 codex plugin add opencode@agent-bridges
 codex plugin add gemini@agent-bridges
 codex plugin add claude@agent-bridges
+codex plugin add cursor@agent-bridges
 ```
 
-Invoke skills such as `opencode-review`, `gemini-setup`, `claude-review`, `opencode-transfer`, `gemini-transfer`, and `claude-transfer`.
+Invoke skills such as `opencode-review`, `gemini-setup`, `claude-review`, `cursor-review`, `opencode-transfer`, `gemini-transfer`, `claude-transfer`, and `cursor-transfer`.
 
 ## Cursor
 
@@ -79,6 +82,13 @@ This installer does not add entries to `opencode.json` `"plugin": []`.
 - Claude job state lives under `~/.claude-companion/state`.
 - Transfer packs Codex and Cursor transcripts first, then Claude JSONL transcripts last.
 
+## Cursor Agent CLI
+
+- The companion runs the `agent` CLI. Set `CURSOR_BIN` to use a specific executable.
+- Authenticate with `CURSOR_API_KEY` or run `agent login`.
+- Reviews use plan mode by default; pass `--force` only when the requested operation should write changes.
+- Cursor Agent job state lives under `~/.cursor-companion/state`.
+
 ## Gemini backends
 
 The Gemini companion prefers **`agy`** (Antigravity CLI) on PATH, then falls back to **`gemini`**.
@@ -87,7 +97,7 @@ Override with `GEMINI_BACKEND=agy` or `GEMINI_BACKEND=gemini`. Optional `GEMINI_
 
 ## Transfer
 
-All three companions support `transfer`: move the current host session (Claude, Codex, or Cursor — auto-detected, or `--source <path>`) into a resumable OpenCode or Gemini thread, or send a prompt handoff into Claude.
+All four companions support `transfer`: move the current host session (Claude, Codex, or Cursor — auto-detected, or `--source <path>`) into a resumable OpenCode or Gemini thread, or send a prompt handoff into Claude or Cursor Agent.
 
 - Claude / Cursor: `/opencode:transfer` or `/gemini:transfer`
 - Codex / Cursor: skills `opencode-transfer`, `gemini-transfer`, or `claude-transfer`
@@ -102,7 +112,7 @@ Companions resolve plugin roots via `PLUGIN_ROOT` / `CLAUDE_PLUGIN_ROOT` (host-s
 
 1. `$PLUGIN_DATA/state` when set
 2. else `$CLAUDE_PLUGIN_DATA/state`
-3. else `~/.opencode-companion/state`, `~/.gemini-companion/state`, or `~/.claude-companion/state`
+3. else `~/.opencode-companion/state`, `~/.gemini-companion/state`, `~/.claude-companion/state`, or `~/.cursor-companion/state`
 
 Use only `PLUGIN_*` / `CLAUDE_PLUGIN_*` env names and the companion state dirs above.
 
