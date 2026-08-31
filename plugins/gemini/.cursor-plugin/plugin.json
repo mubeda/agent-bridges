@@ -1,7 +1,7 @@
 {
   "name": "gemini",
   "displayName": "Gemini",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Use the local Gemini CLI to review code or delegate tasks.",
   "author": { "name": "mubeda" },
   "license": "Apache-2.0",

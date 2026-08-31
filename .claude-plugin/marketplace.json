@@ -3,13 +3,13 @@
   "owner": { "name": "mubeda" },
   "metadata": {
     "description": "OpenCode, Gemini, and Cursor Agent companion plugins for Claude, Codex, Cursor, and OpenCode.",
-    "version": "0.2.0"
+    "version": "0.3.0"
   },
   "plugins": [
     {
       "name": "opencode",
       "description": "Use the local OpenCode CLI to review code or delegate tasks.",
-      "version": "0.2.1",
+      "version": "0.3.0",
       "author": { "name": "mubeda" },
       "source": "./plugins/opencode",
       "category": "development"
@@ -17,7 +17,7 @@
     {
       "name": "gemini",
       "description": "Use the local Gemini CLI to review code or delegate tasks.",
-      "version": "0.1.2",
+      "version": "0.2.0",
       "author": { "name": "mubeda" },
       "source": "./plugins/gemini",
       "category": "development"
@@ -25,7 +25,7 @@
     {
       "name": "cursor",
       "description": "Use the local Cursor Agent CLI to review code or delegate tasks.",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "author": { "name": "mubeda" },
       "source": "./plugins/cursor",
       "category": "development"
