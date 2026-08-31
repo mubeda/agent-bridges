@@ -1,6 +1,6 @@
 {
   "name": "agent-bridges",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "plugins": [
     { "name": "opencode", "source": "./plugins/opencode", "companion": "scripts/opencode-companion.mjs" },
     { "name": "gemini", "source": "./plugins/gemini", "companion": "scripts/gemini-companion.mjs" },

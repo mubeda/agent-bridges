@@ -102,6 +102,15 @@ All four companions support `transfer`: move the current host session (Claude, C
 - Claude / Cursor: `/opencode:transfer` or `/gemini:transfer`
 - Codex / Cursor: skills `opencode-transfer`, `gemini-transfer`, or `claude-transfer`
 
+## Delegate
+
+All four companions ship a `delegate` skill: a strict manager/implementer split where the companion backend makes every repository change and the host session plans chunks, code-reviews every diff, and commits. It triggers only on an explicit delegation request ("delegate this to opencode") and never on ordinary coding requests.
+
+- Claude / Cursor: `/opencode:delegate` or `/gemini:delegate` (Claude Code also has `/cursor:delegate`)
+- Codex / OpenCode: skills `opencode-delegate`, `gemini-delegate`, `claude-delegate`, and `cursor-delegate`
+
+Implementation chunks run through the companion `task` runtime as fresh write-capable jobs (`--background --fresh --write`; the Claude backend uses `--wait` because `claude --bg` may isolate jobs in `.claude/worktrees/`). The supervising session re-runs every claimed-green suite itself and is the only party that commits.
+
 ## Review gate (Claude only)
 
 Stop review-gate is Claude Code only. It is off by default. Enable with setup `--enable-review-gate`; when on, a Stop hook may require a fresh read-only review before the turn ends. Codex, Cursor, and OpenCode do not use this gate.
@@ -122,6 +131,7 @@ Use only `PLUGIN_*` / `CLAUDE_PLUGIN_*` env names and the companion state dirs a
 - Review: run with `--background` when you want a detached review job
 - Rescue: defaults to `--write` for unattended edits; omit only for read-only asks
 - Transfer: `/opencode:transfer` / `/gemini:transfer` (or Codex transfer skills)
+- Delegate: explicit invocation only (`/opencode:delegate` or the `*-delegate` skills); the backend implements, the session reviews and commits
 - Claude only (optional): `--enable-review-gate` on setup
 
 ## Layout

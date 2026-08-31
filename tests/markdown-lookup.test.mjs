@@ -140,6 +140,32 @@ test("Cursor documentation contains no obsolete permission or OpenCode commands"
   }
 });
 
+test("delegate skills exist for all four companions", () => {
+  for (const name of ["opencode", "gemini", "claude", "cursor"]) {
+    const body = fs.readFileSync(
+      path.join(root, `plugins/${name}/skills/${name}-delegate/SKILL.md`),
+      "utf8"
+    );
+    assert.match(body, new RegExp(`^name:\\s*${name}-delegate`, "m"));
+    assert.match(body, new RegExp(`${name}-companion\\.mjs`));
+    assert.match(body, /PLUGIN_ROOT/);
+    // claude --bg may isolate jobs in .claude/worktrees/, so its delegate runs --wait
+    const launchFlags = name === "claude" ? "--wait --fresh --write" : "--background --fresh --write";
+    assert.match(body, new RegExp(launchFlags));
+    assert.match(body, /never commits/i);
+    assert.match(body, /Never auto-trigger/);
+  }
+});
+
+test("delegate command exists for Claude and Cursor host plugins", () => {
+  for (const name of ["opencode", "gemini", "cursor"]) {
+    const body = fs.readFileSync(path.join(root, `plugins/${name}/commands/delegate.md`), "utf8");
+    assert.match(body, /^name:\s*delegate/m);
+    assert.match(body, new RegExp(`${name}-delegate`));
+  }
+  assert.equal(fs.existsSync(path.join(root, "plugins/claude/commands")), false);
+});
+
 test("Cursor documentation only invokes implemented companion subcommands", () => {
   const script = fs.readFileSync(path.join(root, "plugins/cursor/scripts/cursor-companion.mjs"), "utf8");
   const implemented = new Set([...script.matchAll(/case "([^"]+)"/g)].map((match) => match[1]));
