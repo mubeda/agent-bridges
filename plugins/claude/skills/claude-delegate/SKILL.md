@@ -71,9 +71,9 @@ context compaction or interruption:
 Base commit: <sha>   Repo: <path>   Branch: <branch>
 Protected paths (beyond defaults): <list>
 
-| # | Chunk | Owned files | Job id | Status | Re-feeds | Commit |
-|---|-------|-------------|--------|--------|----------|--------|
-| 1 | <name> | <files/globs> | task-... | running/review/committed/escalated | 0 | - |
+| # | Chunk | Description | Owned files | Job id | Status | Progress | Re-feeds | Commit |
+|---|-------|-------------|-------------|--------|--------|----------|----------|--------|
+| 1 | <name> | <one-line what this chunk does> | <files/globs> | task-... | queued/running/blocked/restarted/review/committed/escalated | <evidence: files touched vs. owned, elapsed, attempt n/3> | 0 | - |
 ```
 
 ### 2. Launch each chunk as a fresh background job
@@ -135,13 +135,64 @@ anything incomplete.
 </task>
 ```
 
-### 3. Monitor
+### 3. Monitor: launch shells + 10-minute health loop
 
 A `--wait` launch blocks until the run finishes and prints the report
 directly — start each launch in a background host shell and collect its
 output when it exits. If a shell is lost, recover with
 `node "<plugin-root>/scripts/claude-companion.mjs" status` and
 `... result <job-id>`.
+
+Never wrap a `--wait` launch in `timeout` — that kills the implementation
+run. Instead, while any chunk is in flight, keep a heartbeat shell armed in
+the background as the health-loop tick:
+
+```bash
+sleep 600; echo HEALTH_TICK
+```
+
+Every time the heartbeat fires — and every time a launch shell exits — run
+one **health pass** over ALL in-flight chunks, then re-arm the heartbeat.
+Re-arm only while any chunk is queued or running; the loop ends when every
+chunk is committed or escalated.
+
+**Health pass** (also run once right after launching the first chunk):
+
+1. For every in-flight chunk, run
+   `node "<plugin-root>/scripts/claude-companion.mjs" status` and check the
+   launch shell is still alive; pull any new output.
+2. Snapshot `git status --short` and diff it against the previous tick's
+   snapshot (keep snapshots next to the docket).
+3. Classify each chunk:
+   - **alive** — still running AND (new output OR worktree changed since
+     last tick).
+   - **dead** — job failed/cancelled, the launch shell died without a
+     report, or the companion errors.
+   - **blocked** — still running but NO new output AND NO worktree change
+     for **2 consecutive ticks** (~20 min), or the output shows the
+     implementer waiting for approval/input. One quiet tick is not
+     blocked — it may be running tests or thinking without writing.
+4. Restart what needs it, always as a fresh `--wait --fresh --write` launch
+   whose prompt states the worktree may already contain partial edits from
+   the prior attempt and exactly what remains:
+   - A **dead** restart is environmental — it does NOT count against the
+     re-feed budget.
+   - A **blocked** restart DOES count against the two-re-feed budget; over
+     budget → escalate as usual.
+5. Update the docket's Status and Progress columns, then **print the
+   status table to the user** — every tick, even when nothing changed:
+
+```markdown
+| # | Chunk | Description | Status | Progress |
+|---|-------|-------------|--------|----------|
+| 1 | parser | extract tokenizer into module | running (alive) | 3/5 owned files touched, 12m elapsed, attempt 1/3 |
+| 2 | tests | port fixtures to new API | review | diff read, suites re-running |
+```
+
+The tick table is just the docket's live columns — never a second table
+kept in sync by hand. Progress is short free-text **evidence** (files
+touched vs. owned, elapsed time, attempt count), never a guessed
+percentage.
 
 ### 4. Review every chunk — mandatory checklist
 
