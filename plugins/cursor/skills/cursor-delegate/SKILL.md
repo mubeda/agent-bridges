@@ -71,9 +71,9 @@ context compaction or interruption:
 Base commit: <sha>   Repo: <path>   Branch: <branch>
 Protected paths (beyond defaults): <list>
 
-| # | Chunk | Owned files | Job id | Status | Re-feeds | Commit |
-|---|-------|-------------|--------|--------|----------|--------|
-| 1 | <name> | <files/globs> | task-... | running/review/committed/escalated | 0 | - |
+| # | Chunk | Description | Owned files | Job id | Status | Progress | Re-feeds | Commit |
+|---|-------|-------------|-------------|--------|--------|----------|----------|--------|
+| 1 | <name> | <one-line what this chunk does> | <files/globs> | task-... | queued/running/blocked/restarted/review/committed/escalated | <evidence: files touched vs. owned, elapsed, attempt n/3> | 0 | - |
 ```
 
 ### 2. Launch each chunk as a fresh background job
@@ -128,18 +128,63 @@ anything incomplete.
 </task>
 ```
 
-### 3. Monitor in the background
+### 3. Monitor: bounded polls + 10-minute health loop
 
 A background launch prints a job id (`task-...`). Poll per chunk while
 continuing other work — in a background shell if your harness supports one,
-otherwise between other steps:
+otherwise between other steps — and **cap every poll at 10 minutes** so it
+returns on completion OR on timeout; the timeout is the health-loop tick:
 
 ```bash
-until node "<plugin-root>/scripts/cursor-companion.mjs" status <job-id> --json | grep -qE '"status": *"(completed|failed|cancelled)"'; do sleep 30; done
+timeout 600 bash -c 'until node "<plugin-root>/scripts/cursor-companion.mjs" status <job-id> --json | grep -qE "\"status\": *\"(completed|failed|cancelled)\""; do sleep 30; done'
 ```
 
+Every time a poll returns — chunk finished or the 10 minutes lapsed — run
+one **health pass** over ALL in-flight chunks, then re-arm a capped poll
+for each chunk still running. Re-arm only while any chunk is queued or
+running; the loop ends when every chunk is committed or escalated.
+
+**Health pass** (also run once right after launching the first chunk):
+
+1. For every in-flight chunk, run
+   `node "<plugin-root>/scripts/cursor-companion.mjs" status <job-id> --json`
+   and pull any new output.
+2. Snapshot `git status --short` and diff it against the previous tick's
+   snapshot (keep snapshots next to the docket).
+3. Classify each chunk:
+   - **alive** — status running AND (new output OR worktree changed since
+     last tick).
+   - **dead** — status failed/cancelled, job id unknown, or the companion
+     errors.
+   - **blocked** — status running but NO new output AND NO worktree change
+     for **2 consecutive ticks** (~20 min), or the output shows the
+     implementer waiting for approval/input. One quiet tick is not
+     blocked — it may be running tests or thinking without writing.
+4. Restart what needs it, always as a fresh `--background --fresh --write`
+   job whose prompt states the worktree may already contain partial edits
+   from the prior attempt and exactly what remains:
+   - A **dead** restart is environmental — it does NOT count against the
+     re-feed budget.
+   - A **blocked** restart DOES count against the two-re-feed budget; over
+     budget → escalate as usual.
+5. Update the docket's Status and Progress columns, then **print the
+   status table to the user** — every tick, even when nothing changed:
+
+```markdown
+| # | Chunk | Description | Status | Progress |
+|---|-------|-------------|--------|----------|
+| 1 | parser | extract tokenizer into module | running (alive) | 3/5 owned files touched, 12m elapsed, attempt 1/3 |
+| 2 | tests | port fixtures to new API | review | diff read, suites re-running |
+```
+
+The tick table is just the docket's live columns — never a second table
+kept in sync by hand. Progress is short free-text **evidence** (files
+touched vs. owned, elapsed time, attempt count), never a guessed
+percentage.
+
 When a chunk finishes, pull the report with
-`node "<plugin-root>/scripts/cursor-companion.mjs" result <job-id>`.
+`node "<plugin-root>/scripts/cursor-companion.mjs" result <job-id>` and move
+it to review.
 
 ### 4. Review every chunk — mandatory checklist
 
