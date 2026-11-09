@@ -15,6 +15,7 @@ import {
     getOpencodeAvailability,
     getOpencodeDefaultModel,
     getSessionRuntimeStatus,
+    parseOpencodeMajorVersion,
     interruptAppServerTurn,
     parseStructuredOutput,
     readOutputSchema,
@@ -75,7 +76,7 @@ const ROOT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const REVIEW_SCHEMA = path.join(ROOT_DIR, "schemas", "review-output.schema.json");
 const DEFAULT_STATUS_WAIT_TIMEOUT_MS = 240000;
 const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
-const VALID_REASONING_EFFORTS = new Set(["minimal", "low", "medium", "high", "max"]);
+const VALID_REASONING_EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh", "max"]);
 
 function printUsage() {
   console.log(
@@ -84,7 +85,7 @@ function printUsage() {
       "  node scripts/opencode-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]",
       "  node scripts/opencode-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/opencode-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
-      "  node scripts/opencode-companion.mjs task [--background] [--resume-last|--resume|--fresh] [--model <provider/model>] [--effort <minimal|low|medium|high|max>] [prompt]",
+      "  node scripts/opencode-companion.mjs task [--background] [--resume-last|--resume|--fresh] [--model <provider/model>] [--effort <minimal|low|medium|high|xhigh|max>] [prompt]",
       "  node scripts/opencode-companion.mjs review-worker --cwd <path> --job-id <id>",
       "  node scripts/opencode-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/opencode-companion.mjs result [job-id] [--json]",
@@ -127,7 +128,7 @@ function normalizeReasoningEffort(effort) {
   }
   if (!VALID_REASONING_EFFORTS.has(normalized)) {
     throw new Error(
-      `Unsupported reasoning effort "${effort}". Use one of: minimal, low, medium, high, max.`
+      `Unsupported reasoning effort "${effort}". Use one of: minimal, low, medium, high, xhigh, max.`
     );
   }
   return normalized;
@@ -203,7 +204,7 @@ async function buildSetupReport(cwd, actionsTaken = []) {
   const config = getConfig(workspaceRoot);
   const nextSteps = [];
   if (!opencodeStatus.available) {
-    nextSteps.push("Install OpenCode with `npm install -g opencode-ai`.");
+    nextSteps.push("Install OpenCode with `npm install -g @opencode/cli`.");
   }
   if (opencodeStatus.available && !authStatus.loggedIn) {
     nextSteps.push("Run `!opencode auth login` to add a provider.");
@@ -268,8 +269,9 @@ function buildAdversarialReviewPrompt(context, focusText) {
 function ensureOpencodeAvailable(cwd) {
   const availability = getOpencodeAvailability(cwd);
   if (!availability.available) {
-    throw new Error("OpenCode CLI is not installed or is missing required runtime support. Install it with `npm install -g opencode-ai`, then rerun `/opencode:setup`.");
+    throw new Error("OpenCode CLI is not installed or is missing required runtime support. Install it with `npm install -g @opencode/cli`, then rerun `/opencode:setup`.");
   }
+  return parseOpencodeMajorVersion(availability.detail);
 }
 
 function validateReviewRequest(_target, focusText, { reviewName }) {
@@ -1054,7 +1056,7 @@ async function handleTransfer(argv) {
   });
 
   const cwd = resolveCommandCwd(options);
-  ensureOpencodeAvailable(cwd);
+  const majorVersion = ensureOpencodeAvailable(cwd);
 
   const resolved = resolveTransferSource(cwd, { source: options.source });
   const messages = parseTranscriptJsonl(resolved.path);
@@ -1066,7 +1068,8 @@ async function handleTransfer(argv) {
   }
 
   const imported = await importToOpencode(cwd, capped, {
-    title: `Transfer from ${resolved.host}`
+    title: `Transfer from ${resolved.host}`,
+    majorVersion
   });
 
   const payload = {

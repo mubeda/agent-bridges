@@ -39,7 +39,7 @@ test("parseInstallArgs accepts every supported option", () => {
   assert.deepEqual(
     parseInstallArgs([
       "--plugin",
-      "gemini",
+      "cursor",
       "--scope",
       "project",
       "--project",
@@ -48,7 +48,7 @@ test("parseInstallArgs accepts every supported option", () => {
       "--uninstall"
     ]),
     {
-      plugin: "gemini",
+      plugin: "cursor",
       scope: "project",
       force: true,
       uninstall: true,
@@ -76,8 +76,8 @@ test("resolveInstallPaths uses OpenCode user directories", () => {
     }),
     {
       pluginTree: path.join(home, ".config", "opencode", "plugins", "opencode"),
-      commandDir: path.join(home, ".config", "opencode", "command"),
-      agentDir: path.join(home, ".config", "opencode", "agent"),
+      commandDir: path.join(home, ".config", "opencode", "commands"),
+      agentDir: path.join(home, ".config", "opencode", "agents"),
       skillsDir: path.join(home, ".config", "opencode", "skills"),
       installedManifest: path.join(
         home,
@@ -101,8 +101,8 @@ test("user install copies and rewrites commands, agents, skills, and scripts", (
   });
   const root = path.join(home, ".config", "opencode");
   const pluginTree = path.join(root, "plugins", "opencode");
-  const review = path.join(root, "command", "opencode--review.md");
-  const agent = path.join(root, "agent", "opencode--opencode-rescue.md");
+  const review = path.join(root, "commands", "opencode--review.md");
+  const agent = path.join(root, "agents", "opencode--opencode-rescue.md");
   const skill = path.join(root, "skills", "opencode-review", "SKILL.md");
   const companion = path.join(pluginTree, "scripts", "opencode-companion.mjs");
 
@@ -117,6 +117,11 @@ test("user install copies and rewrites commands, agents, skills, and scripts", (
     assert.match(body, new RegExp(companionInvocation.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     assert.doesNotMatch(body, /<plugin-root>/);
   }
+
+  const agentFrontmatter = fs.readFileSync(agent, "utf8").split("\n---\n")[0];
+  assert.match(agentFrontmatter, /^mode: subagent$/m);
+  assert.doesNotMatch(agentFrontmatter, /^(tools|model|skills):/m);
+  assert.match(agentFrontmatter, /^description: /m);
 
   assert.equal(
     fs.existsSync(path.join(pluginTree, "commands", "review.md")),
@@ -140,7 +145,7 @@ test("installing the same plugin twice is idempotent", () => {
     home,
     ".config",
     "opencode",
-    "command",
+    "commands",
     "opencode--review.md"
   );
   const oldTime = new Date("2000-01-01T00:00:00.000Z");
@@ -185,13 +190,15 @@ test("reinstall removes files recorded by the plugin that are no longer produced
   };
   installPlugins(options);
   const root = path.join(home, ".config", "opencode");
-  const stale = path.join(root, "command", "opencode--stale.md");
-  const review = path.join(root, "command", "opencode--review.md");
+  // pre-plural installs recorded files under the legacy singular command/ dir
+  const stale = path.join(root, "command", "opencode--review.md");
+  const review = path.join(root, "commands", "opencode--review.md");
   const manifestPath = path.join(
     root,
     "plugins",
     "marketplace-installed.json"
   );
+  fs.mkdirSync(path.dirname(stale), { recursive: true });
   fs.writeFileSync(stale, "previously installed\n");
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
   manifest.plugins.opencode.files.push(stale);
@@ -207,7 +214,7 @@ test("reinstall removes files recorded by the plugin that are no longer produced
 
 test("install refuses to overwrite an unrecorded destination without force", () => {
   const home = makeTemp("collision-");
-  const commandDir = path.join(home, ".config", "opencode", "command");
+  const commandDir = path.join(home, ".config", "opencode", "commands");
   fs.mkdirSync(commandDir, { recursive: true });
   fs.writeFileSync(path.join(commandDir, "opencode--review.md"), "mine\n");
 
@@ -235,7 +242,7 @@ test("project scope installs beneath the requested project", () => {
   });
 
   assert.equal(
-    fs.existsSync(path.join(projectRoot, ".opencode", "command", "opencode--review.md")),
+    fs.existsSync(path.join(projectRoot, ".opencode", "commands", "opencode--review.md")),
     true
   );
 });
@@ -259,7 +266,7 @@ test("CLI installs project scope and prints a one-line summary", () => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^Installed opencode \(\d+ files\)\.\r?\n$/);
   assert.equal(
-    fs.existsSync(path.join(projectRoot, ".opencode", "command", "opencode--review.md")),
+    fs.existsSync(path.join(projectRoot, ".opencode", "commands", "opencode--review.md")),
     true
   );
 });
@@ -275,15 +282,15 @@ test("uninstall removes only files recorded for selected plugins", () => {
   };
   installPlugins(options);
   const root = path.join(home, ".config", "opencode");
-  const stray = path.join(root, "command", "stray.md");
-  const geminiReview = path.join(root, "command", "gemini--review.md");
-  const opencodeReview = path.join(root, "command", "opencode--review.md");
+  const stray = path.join(root, "commands", "stray.md");
+  const cursorReview = path.join(root, "commands", "cursor--review.md");
+  const opencodeReview = path.join(root, "commands", "opencode--review.md");
   fs.writeFileSync(stray, "mine\n");
 
   const result = uninstallPlugins({ ...options, plugin: "opencode" });
 
   assert.equal(fs.existsSync(stray), true);
-  assert.equal(fs.existsSync(geminiReview), true);
+  assert.equal(fs.existsSync(cursorReview), true);
   assert.equal(fs.existsSync(opencodeReview), false);
   assert.ok(result.removed.includes(opencodeReview));
 
@@ -293,5 +300,5 @@ test("uninstall removes only files recorded for selected plugins", () => {
       "utf8"
     )
   );
-  assert.deepEqual(Object.keys(manifest.plugins), ["gemini", "claude", "cursor"]);
+  assert.deepEqual(Object.keys(manifest.plugins), ["claude", "cursor"]);
 });

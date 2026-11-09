@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const PLUGINS = new Set(["opencode", "gemini", "claude", "cursor", "all"]);
+const PLUGINS = new Set(["opencode", "claude", "cursor", "all"]);
 const SCOPES = new Set(["user", "project"]);
 
 function takeValue(argv, index, option) {
@@ -79,8 +79,8 @@ export function resolveInstallPaths({
 
   return {
     pluginTree: path.join(root, "plugins", pluginName),
-    commandDir: path.join(root, "command"),
-    agentDir: path.join(root, "agent"),
+    commandDir: path.join(root, "commands"),
+    agentDir: path.join(root, "agents"),
     skillsDir: path.join(root, "skills"),
     installedManifest: path.join(root, "plugins", "marketplace-installed.json")
   };
@@ -158,6 +158,26 @@ function fileContent(sourcePath, sourceRoot, pluginTree, companion) {
   return Buffer.from(rewriteMarkdown(content.toString("utf8"), pluginTree, companion));
 }
 
+// Claude Code agent keys OpenCode V2 rejects: a string `tools` makes it skip the agent silently,
+// `model: sonnet` is not a provider/model ref, and `skills` is not an OpenCode field.
+export function toOpencodeAgent(body) {
+  const match = body.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n/);
+  if (!match) {
+    return body;
+  }
+  const kept = [];
+  let dropping = false;
+  for (const line of match[1].split(/\r?\n/)) {
+    if (/^\s/.test(line) && dropping) continue;
+    dropping = /^(tools|model|skills):/.test(line);
+    if (!dropping) kept.push(line);
+  }
+  if (!kept.some((line) => line.startsWith("mode:"))) {
+    kept.push("mode: subagent");
+  }
+  return `---\n${kept.join("\n")}\n---\n${body.slice(match[0].length)}`;
+}
+
 function addTree(
   plan,
   sourceRoot,
@@ -196,7 +216,11 @@ function buildPlan(repoRoot, plugin, paths) {
     if (path.extname(sourcePath) !== ".md") continue;
     plan.set(
       path.join(paths.agentDir, `${plugin.name}--${path.basename(sourcePath)}`),
-      fileContent(sourcePath, sourceRoot, paths.pluginTree, plugin.companion)
+      Buffer.from(
+        toOpencodeAgent(
+          fileContent(sourcePath, sourceRoot, paths.pluginTree, plugin.companion).toString("utf8")
+        )
+      )
     );
   }
 

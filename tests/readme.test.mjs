@@ -21,7 +21,7 @@ test("README documents all four hosts", () => {
 test("README uses catalog id and GitHub repo agent-bridges", () => {
   assert.match(readme, /# Agent Bridges/);
   assert.match(readme, /opencode@agent-bridges/);
-  assert.match(readme, /gemini@agent-bridges/);
+  assert.doesNotMatch(readme, /gemini@agent-bridges/);
   assert.match(readme, /claude@agent-bridges/);
   assert.match(readme, /github\.com\/mubeda\/agent-bridges/);
   assert.match(readme, /marketplace add mubeda\/agent-bridges/);
@@ -41,8 +41,7 @@ test("README documents the Claude companion for three hosts", () => {
 });
 
 test("README documents upgrade surface", () => {
-  assert.match(readme, /agy/);
-  assert.match(readme, /GEMINI_BACKEND/);
+  assert.doesNotMatch(readme, /GEMINI_BACKEND/);
   assert.match(readme, /transfer/);
   assert.match(readme, /review-gate|review gate/);
   assert.doesNotMatch(readme, /MAU_PLUGIN/);

@@ -14,14 +14,6 @@ test("opencode plugin tree is present", () => {
   assert.equal(fs.existsSync(path.join(root, "plugins/opencode/commands/review.md")), true);
 });
 
-test("gemini plugin tree is present", () => {
-  assert.equal(
-    fs.existsSync(path.join(root, "plugins/gemini/scripts/gemini-companion.mjs")),
-    true
-  );
-  assert.equal(fs.existsSync(path.join(root, "plugins/gemini/commands/review.md")), true);
-});
-
 test("cursor plugin tree is present", () => {
   assert.equal(
     fs.existsSync(path.join(root, "plugins/cursor/scripts/cursor-companion.mjs")),

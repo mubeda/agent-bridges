@@ -62,6 +62,14 @@ export function getOpencodeAvailability(cwd) {
   return binaryAvailable("opencode", ["--version"], { cwd });
 }
 
+// `opencode --version` prints `opencode v2.2.6` on V2 and a bare semver on V1.
+export function parseOpencodeMajorVersion(versionText) {
+  const match = String(versionText ?? "").match(/v?(\d+)\.\d+/);
+  return match ? Number(match[1]) : null;
+}
+
+export const OPENCODE_INSTALL_HINT = "npm install -g @opencode/cli";
+
 export async function getOpencodeAuthStatus(cwd) {
   const availability = getOpencodeAvailability(cwd);
   if (!availability.available) {
@@ -101,14 +109,25 @@ export async function getOpencodeAuthStatus(cwd) {
   };
 }
 
+// V1 config stores "provider/model"; V2 `debug config` reports {providerID, model}.
+function modelRef(value) {
+  if (typeof value === "string") {
+    return value.trim() || null;
+  }
+  if (value && typeof value.providerID === "string" && typeof value.model === "string") {
+    return `${value.providerID}/${value.model}`;
+  }
+  return null;
+}
+
 export function extractConfiguredModel(config) {
   if (!config || typeof config !== "object") {
     return null;
   }
-  if (typeof config.model === "string" && config.model.trim()) {
-    return { model: config.model.trim(), source: "config" };
+  if (modelRef(config.model)) {
+    return { model: modelRef(config.model), source: "config" };
   }
-  const agents = config.agent;
+  const agents = config.agents ?? config.agent;
   if (!agents || typeof agents !== "object") {
     return null;
   }
@@ -119,13 +138,8 @@ export function extractConfiguredModel(config) {
       ? config.default_agent.trim()
       : "build";
   const agentEntry = agents[defaultAgent];
-  if (
-    agentEntry &&
-    typeof agentEntry === "object" &&
-    typeof agentEntry.model === "string" &&
-    agentEntry.model.trim()
-  ) {
-    return { model: agentEntry.model.trim(), source: "agent", agent: defaultAgent };
+  if (agentEntry && typeof agentEntry === "object" && modelRef(agentEntry.model)) {
+    return { model: modelRef(agentEntry.model), source: "agent", agent: defaultAgent };
   }
   return null;
 }
@@ -163,7 +177,10 @@ export function getOpencodeDefaultModel(cwd) {
     };
   }
 
-  const extracted = extractConfiguredModel(parsed);
+  // V2 prints a list of config sources ({type, path, info}) instead of one merged object; later sources win.
+  const extracted = Array.isArray(parsed)
+    ? parsed.map((source) => extractConfiguredModel(source?.info)).filter(Boolean).at(-1) ?? null
+    : extractConfiguredModel(parsed);
   if (!extracted) {
     return {
       configured: false,
@@ -287,18 +304,20 @@ function applyOpencodeEvent(state, event) {
     }
 
     case "tool":
+    case "tool_use":
     case "tool_call":
     case "tool-call": {
       const tool = part.tool ?? part.name ?? "tool";
       emitProgress(state.onProgress, `Calling tool: ${tool}.`, "investigating");
       if (tool === "edit" || tool === "write" || tool === "patch") {
-        const path = part.input?.filePath ?? part.input?.path;
+        const input = part.input ?? part.state?.input;
+        const path = input?.filePath ?? input?.path;
         if (path && !state.fileChanges.some((change) => change.path === path)) {
           state.fileChanges.push({ path });
         }
       }
       if (tool === "bash" || tool === "shell") {
-        const command = part.input?.command;
+        const command = (part.input ?? part.state?.input)?.command;
         if (command) {
           state.commandExecutions.push({ command, status: "started" });
           emitProgress(state.onProgress, `Running command: ${shorten(command, 96)}.`, "running");
@@ -314,7 +333,8 @@ function applyOpencodeEvent(state, event) {
     }
 
     case "error": {
-      const message = part.message ?? event.message ?? "OpenCode reported an error.";
+      const message =
+        part.message ?? event.error?.message ?? event.message ?? "OpenCode reported an error.";
       state.error = { message };
       emitProgress(state.onProgress, `Error: ${message}`, "failed");
       return;
@@ -434,15 +454,22 @@ function spawnOpencodeRun(cwd, args, onProgress) {
   });
 }
 
+// The working directory comes from the spawn cwd: V2 removed `run --dir`.
 export function buildRunArgs(cwd, options = {}) {
-  const args = ["run", "--format", "json", "--dir", cwd];
+  const args = ["run", "--format", "json"];
+  const v1 = options.majorVersion != null && options.majorVersion < 2;
   if (options.write) {
     args.push("--auto");
   }
-  if (options.model) {
-    args.push("-m", options.model);
+  // V2 removed `--variant`; effort rides on the model as `provider/model#effort` and needs a model.
+  const model =
+    options.model && options.effort && !v1 && !String(options.model).includes("#")
+      ? `${options.model}#${options.effort}`
+      : options.model;
+  if (model) {
+    args.push("-m", model);
   }
-  if (options.effort) {
+  if (options.effort && v1) {
     args.push("--variant", options.effort);
   }
   if (options.resumeThreadId) {
@@ -457,20 +484,35 @@ function ensureOpencodeAvailable(cwd) {
   const availability = getOpencodeAvailability(cwd);
   if (!availability.available) {
     throw new Error(
-      "OpenCode CLI is not installed or is missing required runtime support. Install it with `npm install -g opencode-ai`, then rerun `/opencode:setup`."
+      `OpenCode CLI is not installed or is missing required runtime support. Install it with \`${OPENCODE_INSTALL_HINT}\`, then rerun \`/opencode:setup\`.`
     );
   }
+  return parseOpencodeMajorVersion(availability.detail);
 }
 
 export async function runAppServerTurn(cwd, options = {}) {
-  ensureOpencodeAvailable(cwd);
+  const majorVersion = ensureOpencodeAvailable(cwd);
 
   const prompt = options.prompt?.trim() || options.defaultPrompt || "";
   if (!prompt) {
     throw new Error("A prompt is required for this OpenCode run.");
   }
 
-  const args = buildRunArgs(cwd, options);
+  let model = options.model ?? null;
+  let effort = options.effort ?? null;
+  if (effort && !model && majorVersion !== null && majorVersion >= 2) {
+    model = getOpencodeDefaultModel(cwd).model ?? null;
+    if (!model) {
+      emitProgress(
+        options.onProgress,
+        `Ignoring --effort ${effort}: OpenCode 2 needs a model for effort variants (pass --model provider/model).`,
+        "starting"
+      );
+      effort = null;
+    }
+  }
+
+  const args = buildRunArgs(cwd, { ...options, model, effort, majorVersion });
   args.push(prompt);
 
   emitProgress(

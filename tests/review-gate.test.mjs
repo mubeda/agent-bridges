@@ -10,10 +10,6 @@ import {
   getConfig as getOpencodeConfig,
   setConfig as setOpencodeConfig
 } from "../plugins/opencode/scripts/lib/state.mjs";
-import {
-  getConfig as getGeminiConfig,
-  setConfig as setGeminiConfig
-} from "../plugins/gemini/scripts/lib/state.mjs";
 
 const ROOT = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 
@@ -23,7 +19,7 @@ test("ALLOW and BLOCK parse", () => {
 });
 
 test("hooks.json is Stop-only", () => {
-  for (const plugin of ["opencode", "gemini"]) {
+  for (const plugin of ["opencode"]) {
     const hooks = JSON.parse(
       fs.readFileSync(path.join(ROOT, "plugins", plugin, "hooks", "hooks.json"), "utf8")
     );
@@ -35,7 +31,7 @@ test("hooks.json is Stop-only", () => {
 });
 
 test("plugin.json does not redeclare auto-loaded hooks/hooks.json", () => {
-  for (const plugin of ["opencode", "gemini"]) {
+  for (const plugin of ["opencode"]) {
     const pluginRoot = path.join(ROOT, "plugins", plugin);
     const defaultHooks = path.resolve(pluginRoot, "hooks", "hooks.json");
     const manifest = JSON.parse(
@@ -54,7 +50,7 @@ test("plugin.json does not redeclare auto-loaded hooks/hooks.json", () => {
 });
 
 test("setup.md advertises review-gate flags", () => {
-  for (const plugin of ["opencode", "gemini"]) {
+  for (const plugin of ["opencode"]) {
     const setup = fs.readFileSync(
       path.join(ROOT, "plugins", plugin, "commands", "setup.md"),
       "utf8"
@@ -74,9 +70,6 @@ test("setConfig stopReviewGate toggles via PLUGIN_DATA", () => {
     assert.equal(getOpencodeConfig(cwd).stopReviewGate, true);
     setOpencodeConfig(cwd, "stopReviewGate", false);
     assert.equal(getOpencodeConfig(cwd).stopReviewGate, false);
-
-    setGeminiConfig(cwd, "stopReviewGate", true);
-    assert.equal(getGeminiConfig(cwd).stopReviewGate, true);
   } finally {
     if (prev === undefined) {
       delete process.env.PLUGIN_DATA;

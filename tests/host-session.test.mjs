@@ -6,18 +6,17 @@ import { fileURLToPath } from "node:url";
 
 import {
   PACKED_TRANSCRIPT_LIMIT,
-  TRANSCRIPT_PATH_ENV as GEMINI_TRANSCRIPT_PATH_ENV,
+  TRANSCRIPT_PATH_ENV as OPENCODE_TRANSCRIPT_PATH_ENV,
   capTranscriptMessages,
   claudeProjectDirName,
   packTranscript,
   parseTranscriptJsonl,
   resolveTransferSource
-} from "../plugins/gemini/scripts/lib/host-session.mjs";
+} from "../plugins/opencode/scripts/lib/host-session.mjs";
 import {
   TRANSCRIPT_PATH_ENV as CLAUDE_TRANSCRIPT_PATH_ENV,
   resolveTransferSource as resolveClaudeTransferSource
 } from "../plugins/claude/scripts/lib/host-session.mjs";
-import { TRANSCRIPT_PATH_ENV as OPENCODE_TRANSCRIPT_PATH_ENV } from "../plugins/opencode/scripts/lib/host-session.mjs";
 import { TRANSCRIPT_PATH_ENV as CURSOR_TRANSCRIPT_PATH_ENV } from "../plugins/cursor/scripts/lib/host-session.mjs";
 
 const repoRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -122,7 +121,6 @@ function resetFixtures() {
 }
 
 test("OpenCode TRANSCRIPT_PATH_ENV is OPENCODE_COMPANION_TRANSCRIPT_PATH", () => {
-  assert.equal(GEMINI_TRANSCRIPT_PATH_ENV, "GEMINI_COMPANION_TRANSCRIPT_PATH");
   assert.equal(OPENCODE_TRANSCRIPT_PATH_ENV, "OPENCODE_COMPANION_TRANSCRIPT_PATH");
 });
 
@@ -145,7 +143,7 @@ test("--source wins over env and auto-detect", () => {
   const resolved = resolveTransferSource(workspaceRoot, {
     source: explicitFile,
     home,
-    env: { [GEMINI_TRANSCRIPT_PATH_ENV]: claudeFile }
+    env: { [OPENCODE_TRANSCRIPT_PATH_ENV]: claudeFile }
   });
   assert.equal(resolved.host, "explicit");
   assert.equal(resolved.path, explicitFile);
@@ -155,7 +153,7 @@ test("env transcript path wins when --source is omitted", () => {
   const { home, cursorFile, explicitFile } = resetFixtures();
   const resolved = resolveTransferSource(workspaceRoot, {
     home,
-    env: { [GEMINI_TRANSCRIPT_PATH_ENV]: explicitFile }
+    env: { [OPENCODE_TRANSCRIPT_PATH_ENV]: explicitFile }
   });
   assert.equal(resolved.host, "explicit");
   assert.equal(resolved.path, explicitFile);

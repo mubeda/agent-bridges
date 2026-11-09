@@ -29,7 +29,7 @@ If the result says OpenCode is unavailable and npm is available:
 - If the user chooses install, run:
 
 ```bash
-npm install -g opencode-ai
+npm install -g @opencode/cli
 ```
 
 - Then rerun:

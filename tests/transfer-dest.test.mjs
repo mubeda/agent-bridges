@@ -4,10 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import {
-  buildHandoffPrompt,
-  formatTransferResult
-} from "../plugins/gemini/scripts/lib/transfer-dest.mjs";
+import { buildHandoffPrompt } from "../plugins/cursor/scripts/lib/transfer-dest.mjs";
 import { buildHandoffPrompt as buildClaudeHandoffPrompt } from "../plugins/claude/scripts/lib/transfer-dest.mjs";
 import {
   PACKED_TRANSCRIPT_LIMIT,
@@ -16,6 +13,7 @@ import {
 } from "../plugins/opencode/scripts/lib/host-session.mjs";
 import {
   buildOpencodeImportPayload,
+  buildOpencodeV2ImportPayload,
   importToOpencode,
   parseOpencodeImportOutput
 } from "../plugins/opencode/scripts/lib/transfer-dest.mjs";
@@ -44,13 +42,14 @@ test("parseOpencodeImportOutput falls back to ses_ id match", () => {
   assert.equal(parseOpencodeImportOutput("ok ses_abc123 done"), "ses_abc123");
 });
 
-test("importToOpencode calls runCommand with import and tempfile", async () => {
+test("importToOpencode calls runCommand with import and tempfile on V1", async () => {
   const recorded = [];
   const result = await importToOpencode(
     repoRoot,
     [{ role: "user", text: "hello" }],
     {
       title: "Transfer test",
+      majorVersion: 1,
       runCommand: async (argv) => {
         recorded.push(argv);
         const filePath = argv[1];
@@ -86,6 +85,7 @@ test("OpenCode transfer caps messages to PACKED_TRANSCRIPT_LIMIT before import",
   let importedMessages = null;
   await importToOpencode(repoRoot, capped, {
     title: "Capped transfer",
+    majorVersion: 1,
     runCommand: async (argv) => {
       const written = JSON.parse(fs.readFileSync(argv[1], "utf8"));
       importedMessages = written.messages;
@@ -114,14 +114,44 @@ test("Claude handoff prompt appends continue instruction", () => {
   assert.match(prompt, /Continue this work in this repository/);
 });
 
-test("formatTransferResult agy resume command", () => {
-  const result = formatTransferResult({ backend: "agy", threadId: "x" });
-  assert.equal(result.sessionId, "x");
-  assert.equal(result.resumeCommand, "agy --conversation x");
+test("importToOpencode uses session import with the export shape on V2", async () => {
+  let argvSeen = null;
+  let written = null;
+  const result = await importToOpencode(
+    repoRoot,
+    [
+      { role: "user", text: "hello" },
+      { role: "assistant", text: "hi" }
+    ],
+    {
+      title: "V2 transfer",
+      majorVersion: 2,
+      runCommand: async (argv) => {
+        argvSeen = argv;
+        written = JSON.parse(fs.readFileSync(argv[2], "utf8"));
+        return { status: 0, stdout: "Imported session: ses_v2\n", stderr: "" };
+      }
+    }
+  );
+  assert.deepEqual(argvSeen.slice(0, 2), ["session", "import"]);
+  assert.equal(written.info.location.directory, repoRoot);
+  assert.match(written.info.id, /^ses_/);
+  assert.deepEqual(
+    written.messages.map((m) => [m.type, m.text ?? m.content[0].text]),
+    [
+      ["user", "hello"],
+      ["assistant", "hi"]
+    ]
+  );
+  assert.equal(result.sessionId, "ses_v2");
 });
 
-test("formatTransferResult gemini resume command", () => {
-  const result = formatTransferResult({ backend: "gemini", threadId: "sess-1" });
-  assert.equal(result.sessionId, "sess-1");
-  assert.equal(result.resumeCommand, "gemini -r sess-1");
+test("buildOpencodeV2ImportPayload fills every key V2 requires", () => {
+  const payload = buildOpencodeV2ImportPayload([{ role: "assistant", text: "x" }], { cwd: "/r" });
+  for (const key of ["id", "projectID", "agent", "title", "subpath", "cost", "tokens", "time", "location"]) {
+    assert.ok(key in payload.info, key);
+  }
+  for (const key of ["id", "agent", "model", "content", "cost", "tokens", "finish", "time"]) {
+    assert.ok(key in payload.messages[0], key);
+  }
 });

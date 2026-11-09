@@ -34,15 +34,7 @@ export function resolveStateRoot(env = process.env) {
   if (claude) {
     return path.join(claude, "state");
   }
-  const homeName =
-    PLUGIN_NAME === "gemini"
-      ? ".gemini-companion"
-      : PLUGIN_NAME === "claude"
-        ? ".claude-companion"
-        : PLUGIN_NAME === "cursor"
-          ? ".cursor-companion"
-          : ".opencode-companion";
-  return path.join(os.homedir(), homeName, "state");
+  return path.join(os.homedir(), `.${PLUGIN_NAME}-companion`, "state");
 }
 
 export function resolveStateDir(cwd, env = process.env) {

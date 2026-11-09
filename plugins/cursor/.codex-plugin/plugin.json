@@ -9,7 +9,7 @@
   "interface": {
     "displayName": "Cursor",
     "shortDescription": "Delegate reviews and rescue tasks to the local Cursor Agent CLI.",
-    "longDescription": "Skill parity with the Codex companion surface. Runs node scripts/cursor-companion.mjs against your existing cursor-agent install.",
+    "longDescription": "Skill parity with the Codex companion surface. Runs node scripts/cursor-companion.mjs against your existing Cursor Agent CLI (`agent`) install.",
     "developerName": "mubeda",
     "category": "Developer tools",
     "capabilities": ["Read", "Write"]

@@ -63,7 +63,9 @@ export function buildRunArgs(options = {}) {
   if (invoke === "print") {
     args.push("--output-format", "json");
     if (review && options.schemaPath) {
-      args.push("--json-schema", String(options.schemaPath));
+      // --json-schema takes inline JSON, not a file path.
+      const schema = JSON.stringify(JSON.parse(fs.readFileSync(String(options.schemaPath), "utf8")));
+      args.push("--json-schema", schema);
     }
     const platform = options.platform ?? process.platform;
     args.push("-p");

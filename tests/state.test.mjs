@@ -4,7 +4,6 @@ import path from "node:path";
 import test from "node:test";
 
 import { resolveStateRoot as resolveOpencodeStateRoot } from "../plugins/opencode/scripts/lib/state.mjs";
-import { resolveStateRoot as resolveGeminiStateRoot } from "../plugins/gemini/scripts/lib/state.mjs";
 import { resolveStateRoot as resolveClaudeStateRoot } from "../plugins/claude/scripts/lib/state.mjs";
 import { resolveStateRoot as resolveCursorStateRoot } from "../plugins/cursor/scripts/lib/state.mjs";
 
@@ -16,10 +15,6 @@ test("default state roots are companion dirs", () => {
   assert.equal(
     resolveOpencodeStateRoot(env),
     path.join(os.homedir(), ".opencode-companion", "state")
-  );
-  assert.equal(
-    resolveGeminiStateRoot(env),
-    path.join(os.homedir(), ".gemini-companion", "state")
   );
   assert.equal(
     resolveClaudeStateRoot(env),
@@ -37,7 +32,6 @@ test("PLUGIN_DATA wins over CLAUDE_PLUGIN_DATA", () => {
     CLAUDE_PLUGIN_DATA: path.join(os.tmpdir(), "claude-data")
   };
   assert.equal(resolveOpencodeStateRoot(env), path.join(env.PLUGIN_DATA, "state"));
-  assert.equal(resolveGeminiStateRoot(env), path.join(env.PLUGIN_DATA, "state"));
   assert.equal(resolveClaudeStateRoot(env), path.join(env.PLUGIN_DATA, "state"));
   assert.equal(resolveCursorStateRoot(env), path.join(env.PLUGIN_DATA, "state"));
 });

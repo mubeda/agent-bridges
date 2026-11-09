@@ -32,7 +32,7 @@ test("plugin markdown has no MAU_PLUGIN_ROOT", () => {
   }
 });
 
-for (const companion of ["opencode", "gemini", "cursor"]) {
+for (const companion of ["opencode", "cursor"]) {
   for (const command of ["review", "adversarial-review"]) {
     test(`${companion} ${command} command delegates background execution to the companion`, () => {
       const body = fs.readFileSync(
@@ -54,7 +54,7 @@ test("codex review skill exists", () => {
 });
 
 test("transfer command exists for companion plugins", () => {
-  for (const name of ["opencode", "gemini", "cursor"]) {
+  for (const name of ["opencode", "cursor"]) {
     const body = fs.readFileSync(path.join(root, `plugins/${name}/commands/transfer.md`), "utf8");
     assert.match(body, /PLUGIN_ROOT/);
     assert.match(body, /transfer/);
@@ -65,10 +65,6 @@ test("codex transfer skills exist", () => {
   assert.match(
     fs.readFileSync(path.join(root, "plugins/opencode/skills/opencode-transfer/SKILL.md"), "utf8"),
     /^name:\s*opencode-transfer/m
-  );
-  assert.match(
-    fs.readFileSync(path.join(root, "plugins/gemini/skills/gemini-transfer/SKILL.md"), "utf8"),
-    /^name:\s*gemini-transfer/m
   );
   assert.match(
     fs.readFileSync(path.join(root, "plugins/cursor/skills/cursor-transfer/SKILL.md"), "utf8"),
@@ -116,7 +112,7 @@ test("cursor companion documentation has no inherited OpenCode instructions", ()
 
   assert.match(setup, /https:\/\/cursor\.com\/docs\/cli\/installation/);
   assert.match(setup, /agent login|CURSOR_API_KEY/);
-  assert.doesNotMatch(setup, /opencode-ai|opencode auth/);
+  assert.doesNotMatch(setup, /opencode-ai|@opencode\/cli|opencode auth/);
   assert.doesNotMatch(rescue, /Skill\(opencode/);
   assert.match(rescue, /Skill\(cursor:rescue\)/);
   assert.match(transfer, /Claude, Codex, or Cursor/);
@@ -136,12 +132,12 @@ test("Cursor documentation contains no obsolete permission or OpenCode commands"
   for (const file of files) {
     const body = fs.readFileSync(file, "utf8");
     assert.doesNotMatch(body, /dangerously-skip-permissions/i, file);
-    assert.doesNotMatch(body, /opencode-ai|opencode auth|Skill\(opencode/i, file);
+    assert.doesNotMatch(body, /opencode-ai|@opencode\/cli|opencode auth|Skill\(opencode/i, file);
   }
 });
 
-test("delegate skills exist for all four companions", () => {
-  for (const name of ["opencode", "gemini", "claude", "cursor"]) {
+test("delegate skills exist for all companions", () => {
+  for (const name of ["opencode", "claude", "cursor"]) {
     const body = fs.readFileSync(
       path.join(root, `plugins/${name}/skills/${name}-delegate/SKILL.md`),
       "utf8"
@@ -158,7 +154,7 @@ test("delegate skills exist for all four companions", () => {
 });
 
 test("delegate command exists for Claude and Cursor host plugins", () => {
-  for (const name of ["opencode", "gemini", "cursor"]) {
+  for (const name of ["opencode", "cursor"]) {
     const body = fs.readFileSync(path.join(root, `plugins/${name}/commands/delegate.md`), "utf8");
     assert.match(body, /^name:\s*delegate/m);
     assert.match(body, new RegExp(`${name}-delegate`));

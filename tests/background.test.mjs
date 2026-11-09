@@ -44,7 +44,7 @@ test("spawned pid does not revert a completed job to queued", () => {
   });
 });
 
-for (const companion of ["opencode", "gemini"]) {
+for (const companion of ["opencode"]) {
   test(`${companion} review background mode dispatches a review worker`, () => {
     const source = fs.readFileSync(
       new URL(`../plugins/${companion}/scripts/${companion}-companion.mjs`, import.meta.url),
@@ -68,8 +68,7 @@ for (const companion of ["opencode", "gemini"]) {
     assert.notEqual(functionEnd, -1, "handleReview source should follow handleReviewCommand");
 
     const functionBody = source.slice(functionStart, functionEnd);
-    const availabilityHelper =
-      companion === "opencode" ? "ensureOpencodeAvailable(cwd)" : "ensureGeminiAvailable(cwd)";
+    const availabilityHelper = "ensureOpencodeAvailable(cwd)";
     const availabilityIndex = functionBody.indexOf(availabilityHelper);
     const enqueueIndex = functionBody.indexOf("enqueueBackgroundTask(");
 

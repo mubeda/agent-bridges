@@ -10,10 +10,10 @@ export const REQUIRED_CATALOG_FILES = [
   ".opencode/catalog.json"
 ];
 
-export const CLAUDE_HOST_PLUGIN_NAMES = ["opencode", "gemini", "cursor"];
-export const CODEX_OPENCODE_PLUGIN_NAMES = ["opencode", "gemini", "claude", "cursor"];
-export const CURSOR_HOST_PLUGIN_NAMES = ["opencode", "gemini", "claude"];
-export const PLUGIN_TREES = ["opencode", "gemini", "claude", "cursor"];
+export const CLAUDE_HOST_PLUGIN_NAMES = ["opencode", "cursor"];
+export const CODEX_OPENCODE_PLUGIN_NAMES = ["opencode", "claude", "cursor"];
+export const CURSOR_HOST_PLUGIN_NAMES = ["opencode", "claude"];
+export const PLUGIN_TREES = ["opencode", "claude", "cursor"];
 
 function displayPath(filePath) {
   return filePath.split(path.sep).join("/");
@@ -96,7 +96,7 @@ export function validateMarketplaceRepo(rootDir) {
     requireName(claude, "claude marketplace", errors);
     requireCatalogId(claude, "claude marketplace", errors);
     requireAllowedPlugins(claude, "claude marketplace", errors, CLAUDE_HOST_PLUGIN_NAMES);
-    if (Array.isArray(claude.plugins) && claude.plugins.length === 3) {
+    if (Array.isArray(claude.plugins)) {
       for (const plugin of claude.plugins) {
         if (typeof plugin.source !== "string" || !plugin.source.startsWith("./plugins/")) {
           errors.push(`claude plugin ${plugin.name} source must be a ./plugins/... string`);
@@ -110,7 +110,7 @@ export function validateMarketplaceRepo(rootDir) {
     requireName(codex, "codex marketplace", errors);
     requireCatalogId(codex, "codex marketplace", errors);
     requireAllowedPlugins(codex, "codex marketplace", errors, CODEX_OPENCODE_PLUGIN_NAMES);
-    if (Array.isArray(codex.plugins) && codex.plugins.length === 4) {
+    if (Array.isArray(codex.plugins)) {
       for (const plugin of codex.plugins) {
         const p = plugin.source?.path;
         if (typeof p !== "string" || !p.startsWith("./plugins/")) {
@@ -125,7 +125,7 @@ export function validateMarketplaceRepo(rootDir) {
     requireName(cursor, "cursor marketplace", errors);
     requireCatalogId(cursor, "cursor marketplace", errors);
     requireAllowedPlugins(cursor, "cursor marketplace", errors, CURSOR_HOST_PLUGIN_NAMES);
-    if (Array.isArray(cursor.plugins) && cursor.plugins.length === 3) {
+    if (Array.isArray(cursor.plugins)) {
       const pluginRoot = cursor.metadata?.pluginRoot;
       for (const plugin of cursor.plugins) {
         const source = plugin.source;
@@ -145,7 +145,7 @@ export function validateMarketplaceRepo(rootDir) {
     requireName(opencode, "opencode catalog", errors);
     requireCatalogId(opencode, "opencode catalog", errors);
     requireAllowedPlugins(opencode, "opencode catalog", errors, CODEX_OPENCODE_PLUGIN_NAMES);
-    if (Array.isArray(opencode.plugins) && opencode.plugins.length === 4) {
+    if (Array.isArray(opencode.plugins)) {
       for (const plugin of opencode.plugins) {
         if (typeof plugin.source !== "string" || !plugin.source.startsWith("./plugins/")) {
           errors.push(`opencode plugin ${plugin.name} source must be a ./plugins/... string`);

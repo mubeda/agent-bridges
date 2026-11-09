@@ -1,7 +1,7 @@
 ---
 name: rescue
 description: Delegate investigation, an explicit fix request, or follow-up rescue work to the OpenCode rescue subagent
-argument-hint: "[--background|--wait] [--write] [--resume|--fresh] [--model <provider/model>] [--effort <minimal|low|medium|high|max>] [what OpenCode should investigate, solve, or continue]"
+argument-hint: "[--background|--wait] [--write] [--resume|--fresh] [--model <provider/model>] [--effort <minimal|low|medium|high|xhigh|max>] [what OpenCode should investigate, solve, or continue]"
 allowed-tools: Bash(node:*), AskUserQuestion, Agent
 ---
 

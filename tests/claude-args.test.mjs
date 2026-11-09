@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   WIN32_ARGV_PROMPT_LIMIT,
   buildRunArgs,
@@ -20,7 +21,7 @@ test("review wait uses plan, json, and json-schema", () => {
   const args = buildReviewArgs({
     prompt: "review",
     invoke: "print",
-    schemaPath: "/plugin/schemas/review-output.schema.json"
+    schemaPath: fileURLToPath(new URL("../plugins/claude/schemas/review-output.schema.json", import.meta.url))
   });
   assert.ok(args.includes("-p"));
   assert.ok(args.includes("--permission-mode"));
@@ -28,6 +29,7 @@ test("review wait uses plan, json, and json-schema", () => {
   assert.ok(args.includes("--output-format"));
   assert.equal(args[args.indexOf("--output-format") + 1], "json");
   assert.ok(args.includes("--json-schema"));
+  assert.equal(JSON.parse(args[args.indexOf("--json-schema") + 1]).type, "object");
   assert.equal(args.includes("--dangerously-skip-permissions"), false);
   assert.equal(args.includes("--bg"), false);
 });

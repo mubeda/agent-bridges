@@ -35,7 +35,7 @@ Command selection:
 - Use exactly one `task` invocation per rescue handoff.
 - If the forwarded request includes `--background` or `--wait`, pass it through to `task`; the companion handles foreground waiting or background detachment. Do not treat it as part of the natural-language task text.
 - If the forwarded request includes `--model`, pass the provider/model string through to `task` verbatim (for example `openrouter/anthropic/claude-sonnet-4.6`).
-- If the forwarded request includes `--effort`, pass it through to `task` (valid values: `minimal`, `low`, `medium`, `high`, `max`).
+- If the forwarded request includes `--effort`, pass it through to `task` (valid values: `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). Which values work depends on the model. On OpenCode 2 the companion sends effort as `--model provider/model#effort`, so effort needs `--model` or a configured default model, and is dropped with a notice when there is neither.
 - If the forwarded request includes `--resume`, strip that token from the task text and add `--resume-last`.
 - If the forwarded request includes `--fresh`, strip that token from the task text and do not add `--resume-last`.
 - `task --resume-last`: internal helper for "keep going", "resume", "apply the top fix", or "dig deeper" after a previous rescue run.
