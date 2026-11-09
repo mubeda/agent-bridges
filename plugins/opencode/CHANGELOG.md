@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.1 — 2026-11-09
+
+### Fixed
+- **`opencode-delegate` cancels a blocked job before relaunching it**, so two implementers never edit the same owned files, and requires a clean worktree before the first launch.
+- **`opencode-delegate` polling is portable.** The `timeout`/`grep`/`sleep` loop is replaced by `status <job-id> --wait --timeout-ms 600000 --json`; stock macOS has no `timeout`.
+- `opencode-delegate` describes `--write` as `--auto` instead of a "workspace-write sandbox".
+- Runtime and prompting skills say "host" instead of "Claude", since they also ship to Codex, Cursor, and OpenCode.
+- **Rescue keeps task text intact.** `opencode-rescue`, `opencode-cli-runtime`, and the rescue agent pass flags separately and the task text as one argument after `--`; a lone combined string was re-split by the companion and lost apostrophes.
+- The `opencode-rescue` skill reports companion failures and points to `opencode-setup` instead of returning nothing.
+- Wrapper skills no longer paste raw `$ARGUMENTS` into the shell command.
+
+### Changed
+- Plugin-root lookup names the Codex and Claude plugin caches as examples.
+
 ## 0.3.0 — 2026-08-31
 
 ### Added
