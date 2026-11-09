@@ -30,10 +30,10 @@ The gemini CLI runs prompts through Google Gemini (Pro / Flash / Flash-Lite, aut
 ## What to strip out
 
 - Routing flags (`--background`, `--wait`, `--resume`, `--fresh`).
-- Runtime flags (`--model`). Gemini has no `--effort` flag; drop it.
-- Claude-side conversational filler ("can you ask Gemini to...", "please have the model...").
+- Runtime flags (`--model`, `--effort`).
+- Host-side conversational filler ("can you ask Gemini to...", "please have the model...").
 
-The prompt text passed to `task` should read as a direct instruction to whoever is solving the problem, with no meta-references to Claude Code or to the delegation step itself.
+The prompt text passed to `task` should read as a direct instruction to whoever is solving the problem, with no meta-references to the host agent or to the delegation step itself.
 
 ## What not to do
 

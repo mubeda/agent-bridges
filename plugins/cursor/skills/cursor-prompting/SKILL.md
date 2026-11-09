@@ -15,7 +15,7 @@ Use this skill only inside `cursor-rescue` and only to shape the user's natural-
 3. State constraints plainly: read-only, no unrelated refactor, preserve a public API, or keep a named test green.
 4. Define done: a patch, findings, options with tradeoffs, or a passing test command.
 
-For a background task, make the objective and definition of done self-contained because Cursor is launched with `--bg`. For an interactive task, use the same concise shape with Cursor `-p` execution.
+For a background task, make the objective and definition of done self-contained: the job runs detached and nobody can answer follow-up questions. A foreground task uses the same concise shape.
 
 ## When to use which framing
 

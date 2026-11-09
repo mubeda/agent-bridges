@@ -1,7 +1,7 @@
 ---
 name: rescue
 description: Delegate investigation, an explicit fix request, or follow-up rescue work to the Cursor rescue subagent
-argument-hint: "[--background|--wait] [--write] [--resume|--fresh] [--model <provider/model>] [what Cursor should investigate, solve, or continue]"
+argument-hint: "[--background|--wait] [--write] [--resume|--fresh] [--model <id>] [what Cursor should investigate, solve, or continue]"
 allowed-tools: Bash(node:*), AskUserQuestion, Agent
 ---
 
@@ -17,7 +17,7 @@ Resolve `<plugin-root>` as the first directory that contains `scripts/cursor-com
 2. `$PLUGIN_ROOT`
 3. `~/.cursor/plugins/local/cursor`
 4. `~/.config/opencode/plugins/cursor`
-5. otherwise search the host plugin cache for this plugin's `scripts/cursor-companion.mjs`
+5. otherwise search the host plugin cache (for example `~/.codex/plugins/cache` or `~/.claude/plugins/cache`) for this plugin's `scripts/cursor-companion.mjs`
 
 If none exist, stop and print those paths. Do not invent a companion elsewhere.
 
@@ -53,7 +53,7 @@ Operating rules:
 - Do not paraphrase, summarize, rewrite, or add commentary before or after it.
 - Do not ask the subagent to inspect files, monitor progress, poll `/cursor:status`, fetch `/cursor:result`, call `/cursor:cancel`, summarize output, or do follow-up work of its own.
 - Default to a write-capable Cursor run by adding `--write` to the companion `task` invocation unless the user clearly asked for read-only / review-only behavior.
-- Leave the model unset unless the user explicitly asks for one. Forward whatever provider/model string they pass verbatim (for example `openrouter/anthropic/claude-sonnet-4.6`).
+- Leave the model unset unless the user explicitly asks for one. Forward whatever model string they pass verbatim.
 - Leave `--resume` and `--fresh` in the forwarded request. The subagent handles that routing when it builds the `task` command.
 - If the helper reports that Cursor is missing or unauthenticated, stop and tell the user to run `/cursor:setup`.
 - If the user did not supply a request, ask what Cursor should investigate or fix.

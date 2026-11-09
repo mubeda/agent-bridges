@@ -13,12 +13,12 @@ Resolve `<plugin-root>` as the first directory that contains `scripts/opencode-c
 2. `$PLUGIN_ROOT`
 3. `~/.cursor/plugins/local/opencode`
 4. `~/.config/opencode/plugins/opencode`
-5. otherwise search the host plugin cache for this plugin's `scripts/opencode-companion.mjs`
+5. otherwise search the host plugin cache (for example `~/.codex/plugins/cache` or `~/.claude/plugins/cache`) for this plugin's `scripts/opencode-companion.mjs`
 
 If none exist, stop and print those paths. Do not invent a companion elsewhere.
 
 Primary helper:
-- `node "<plugin-root>/scripts/opencode-companion.mjs" task "<raw arguments>"`
+- `node "<plugin-root>/scripts/opencode-companion.mjs" task <flags> -- "<task text>"`
 
 Execution rules:
 - The rescue subagent is a forwarder, not an orchestrator. Its only job is to invoke `task` once and return that stdout unchanged.
@@ -26,13 +26,14 @@ Execution rules:
 - Do not call `setup`, `review`, `adversarial-review`, `status`, `result`, or `cancel` from `opencode:opencode-rescue`.
 - Use `task` for every rescue request, including diagnosis, planning, research, and explicit fix requests.
 - You may use the `opencode-prompting` skill to rewrite the user's request into a tighter OpenCode prompt before the single `task` call.
-- That prompt drafting is the only Claude-side work allowed. Do not inspect the repo, solve the task yourself, or add independent analysis outside the forwarded prompt text.
+- That prompt drafting is the only host-side work allowed. Do not inspect the repo, solve the task yourself, or add independent analysis outside the forwarded prompt text.
 - Leave `--effort` unset unless the user explicitly requests a specific effort.
 - Leave model unset by default. Add `--model` only when the user explicitly asks for one, and pass the provider/model string verbatim.
 - Default to a write-capable OpenCode run by adding `--write` unless the user clearly asked for read-only / review-only behavior.
 
 Command selection:
 - Use exactly one `task` invocation per rescue handoff.
+- Pass each runtime flag as its own shell argument, then `--`, then the task text as one quoted argument (use a quoted heredoc when the text contains quotes, `$`, or backticks). Never pass flags and task text together as a single string: the companion re-splits a lone argument and mangles apostrophes.
 - If the forwarded request includes `--background` or `--wait`, pass it through to `task`; the companion handles foreground waiting or background detachment. Do not treat it as part of the natural-language task text.
 - If the forwarded request includes `--model`, pass the provider/model string through to `task` verbatim (for example `openrouter/anthropic/claude-sonnet-4.6`).
 - If the forwarded request includes `--effort`, pass it through to `task` (valid values: `minimal`, `low`, `medium`, `high`, `max`).

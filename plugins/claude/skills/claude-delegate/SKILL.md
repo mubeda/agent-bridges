@@ -18,7 +18,7 @@ Resolve `<plugin-root>` as the first directory that contains `scripts/claude-com
 2. `$PLUGIN_ROOT`
 3. `~/.cursor/plugins/local/claude`
 4. `~/.config/opencode/plugins/claude`
-5. otherwise search the host plugin cache for this plugin's `scripts/claude-companion.mjs`
+5. otherwise search the host plugin cache (for example `~/.codex/plugins/cache` or `~/.claude/plugins/cache`) for this plugin's `scripts/claude-companion.mjs`
 
 If none exist, stop and print those paths. Do not invent a companion elsewhere.
 
@@ -50,6 +50,10 @@ subcommands; never invoke the backend CLI directly.
 
 ### 1. Plan chunks and open the docket
 
+Preflight: run `git status --short`. If the worktree is not clean, stop and
+ask the user to commit or stash first — the review boundary in hard rule 2
+only holds when every uncommitted change belongs to a chunk.
+
 Decompose the task into chunks, each with a **predicted-disjoint owned file
 set**. Chunks with no dependency between them may run in parallel; a chunk
 that needs another's output serializes behind it.
@@ -76,7 +80,7 @@ Protected paths (beyond defaults): <list>
 | 1 | <name> | <one-line what this chunk does> | <files/globs> | task-... | queued/running/blocked/restarted/review/committed/escalated | <evidence: files touched vs. owned, elapsed, attempt n/3> | 0 | - |
 ```
 
-### 2. Launch each chunk as a fresh background job
+### 2. Launch each chunk as a fresh blocking job
 
 ```bash
 cd <repo> && node "<plugin-root>/scripts/claude-companion.mjs" task --wait --fresh --write "$(cat <<'CHUNK_PROMPT'
@@ -139,7 +143,11 @@ anything incomplete.
 
 A `--wait` launch blocks until the run finishes and prints the report
 directly — start each launch in a background host shell and collect its
-output when it exits. If a shell is lost, recover with
+output when it exits. Right after each launch, run
+`node "<plugin-root>/scripts/claude-companion.mjs" status` and record the
+new active job id (`task-...`) in the docket — the id not yet listed there
+belongs to this chunk, and you need it to cancel or recover the run. If a
+shell is lost, recover with
 `node "<plugin-root>/scripts/claude-companion.mjs" status` and
 `... result <job-id>`.
 
@@ -160,21 +168,26 @@ chunk is committed or escalated.
 
 1. For every in-flight chunk, run
    `node "<plugin-root>/scripts/claude-companion.mjs" status` and check the
-   launch shell is still alive; pull any new output.
+   launch shell is still alive. A `--wait` run prints nothing until it
+   finishes, so output is not a liveness signal here.
 2. Snapshot `git status --short` and diff it against the previous tick's
    snapshot (keep snapshots next to the docket).
 3. Classify each chunk:
-   - **alive** — still running AND (new output OR worktree changed since
-     last tick).
+   - **alive** — job still running and launch shell alive, with fewer than
+     3 consecutive ticks without a worktree change.
    - **dead** — job failed/cancelled, the launch shell died without a
      report, or the companion errors.
-   - **blocked** — still running but NO new output AND NO worktree change
-     for **2 consecutive ticks** (~20 min), or the output shows the
-     implementer waiting for approval/input. One quiet tick is not
-     blocked — it may be running tests or thinking without writing.
+   - **blocked** — still running but NO worktree change for **3 consecutive
+     ticks** (~30 min). One or two quiet ticks are not blocked — it may be
+     running tests or thinking without writing.
 4. Restart what needs it, always as a fresh `--wait --fresh --write` launch
    whose prompt states the worktree may already contain partial edits from
    the prior attempt and exactly what remains:
+   - A **blocked** chunk is still running: stop it first with
+     `node "<plugin-root>/scripts/claude-companion.mjs" cancel <job-id>`
+     and confirm `status <job-id>` reports `cancelled` before
+     relaunching — two implementers must never edit the same owned
+     files at once.
    - A **dead** restart is environmental — it does NOT count against the
      re-feed budget.
    - A **blocked** restart DOES count against the two-re-feed budget; over
@@ -225,7 +238,7 @@ way.
 ### 5. Findings: re-feed, at most twice
 
 Every finding — however small — goes back to Claude with precise
-file-and-line feedback. Launch the re-feed as a **fresh `--fresh --write`
+file-and-line feedback. Launch the re-feed as a **fresh `--wait --fresh --write`
 job** whose prompt states that the worktree already contains the prior
 attempt's edits and lists exactly what to change. (The companion can only
 resume the *latest* thread in a workspace, so with parallel chunks in

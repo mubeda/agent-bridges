@@ -1,12 +1,12 @@
 ---
 name: review
-description: Run an Gemini code review against local git state
+description: Run a Gemini code review against local git state
 argument-hint: '[--wait|--background] [--base <ref>] [--scope auto|working-tree|branch]'
 disable-model-invocation: true
 allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*), AskUserQuestion
 ---
 
-Run an Gemini review through the shared plugin runtime.
+Run a Gemini review through the shared plugin runtime.
 
 Raw slash-command arguments:
 `$ARGUMENTS`
@@ -45,7 +45,7 @@ Resolve `<plugin-root>` as the first directory that contains `scripts/gemini-com
 2. `$PLUGIN_ROOT`
 3. `~/.cursor/plugins/local/gemini`
 4. `~/.config/opencode/plugins/gemini`
-5. otherwise search the host plugin cache for this plugin's `scripts/gemini-companion.mjs`
+5. otherwise search the host plugin cache (for example `~/.codex/plugins/cache` or `~/.claude/plugins/cache`) for this plugin's `scripts/gemini-companion.mjs`
 
 If none exist, stop and print those paths. Do not invent a companion elsewhere.
 

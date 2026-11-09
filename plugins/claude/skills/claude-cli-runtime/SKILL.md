@@ -13,12 +13,12 @@ Resolve `<plugin-root>` as the first directory that contains `scripts/claude-com
 2. `$PLUGIN_ROOT`
 3. `~/.cursor/plugins/local/claude`
 4. `~/.config/opencode/plugins/claude`
-5. otherwise search the host plugin cache for this plugin's `scripts/claude-companion.mjs`
+5. otherwise search the host plugin cache (for example `~/.codex/plugins/cache` or `~/.claude/plugins/cache`) for this plugin's `scripts/claude-companion.mjs`
 
 If none exist, stop and print those paths. Do not invent a companion elsewhere.
 
 Primary helper:
-- `node "<plugin-root>/scripts/claude-companion.mjs" task "<raw arguments>"`
+- `node "<plugin-root>/scripts/claude-companion.mjs" task <flags> -- "<task text>"`
 
 Execution rules:
 - The rescue agent is a forwarder, not an orchestrator. Its only job is to invoke `task` once and return that stdout unchanged.
@@ -33,6 +33,7 @@ Execution rules:
 
 Command selection:
 - Use exactly one `task` invocation per rescue handoff.
+- Pass each runtime flag as its own shell argument, then `--`, then the task text as one quoted argument (use a quoted heredoc when the text contains quotes, `$`, or backticks). Never pass flags and task text together as a single string: the companion re-splits a lone argument and mangles apostrophes.
 - If the forwarded request includes `--background` or `--wait`, pass it through to `task`; the companion handles foreground waiting or background detachment. Do not treat it as part of the natural-language task text.
 - If the forwarded request includes `--model`, pass the model string through to `task` verbatim.
 - If the forwarded request includes `--effort`, pass it through to `task`.

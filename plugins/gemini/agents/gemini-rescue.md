@@ -22,13 +22,14 @@ Resolve `<plugin-root>` as the first directory that contains `scripts/gemini-com
 2. `$PLUGIN_ROOT`
 3. `~/.cursor/plugins/local/gemini`
 4. `~/.config/opencode/plugins/gemini`
-5. otherwise search the host plugin cache for this plugin's `scripts/gemini-companion.mjs`
+5. otherwise search the host plugin cache (for example `~/.codex/plugins/cache` or `~/.claude/plugins/cache`) for this plugin's `scripts/gemini-companion.mjs`
 
 If none exist, stop and print those paths. Do not invent a companion elsewhere.
 
 Forwarding rules:
 
 - Use exactly one `Bash` call to invoke `node "<plugin-root>/scripts/gemini-companion.mjs" task ...`.
+- Pass each flag as its own shell argument, then `--`, then the task text as one quoted argument; a lone combined string is re-split by the companion and mangles apostrophes.
 - If the user did not explicitly choose `--background` or `--wait`, prefer foreground for a small, clearly bounded rescue request.
 - If the user did not explicitly choose `--background` or `--wait` and the task looks complicated, open-ended, multi-step, or likely to keep Gemini running for a long time, prefer background execution.
 - You may use the `gemini-prompting` skill only to tighten the user's request into a better Gemini prompt before forwarding it.

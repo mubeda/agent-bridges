@@ -18,7 +18,7 @@ Resolve `<plugin-root>` as the first directory that contains `scripts/cursor-com
 2. `$PLUGIN_ROOT`
 3. `~/.cursor/plugins/local/cursor`
 4. `~/.config/opencode/plugins/cursor`
-5. otherwise search the host plugin cache for this plugin's `scripts/cursor-companion.mjs`
+5. otherwise search the host plugin cache (for example `~/.codex/plugins/cache` or `~/.claude/plugins/cache`) for this plugin's `scripts/cursor-companion.mjs`
 
 If none exist, stop and print those paths. Do not invent a companion elsewhere.
 
@@ -49,6 +49,10 @@ subcommands; never invoke the backend CLI directly.
 ## Workflow
 
 ### 1. Plan chunks and open the docket
+
+Preflight: run `git status --short`. If the worktree is not clean, stop and
+ask the user to commit or stash first — the review boundary in hard rule 2
+only holds when every uncommitted change belongs to a chunk.
 
 Decompose the task into chunks, each with a **predicted-disjoint owned file
 set**. Chunks with no dependency between them may run in parallel; a chunk
@@ -136,8 +140,13 @@ otherwise between other steps — and **cap every poll at 10 minutes** so it
 returns on completion OR on timeout; the timeout is the health-loop tick:
 
 ```bash
-timeout 600 bash -c 'until node "<plugin-root>/scripts/cursor-companion.mjs" status <job-id> --json | grep -qE "\"status\": *\"(completed|failed|cancelled)\""; do sleep 30; done'
+node "<plugin-root>/scripts/cursor-companion.mjs" status <job-id> --wait --timeout-ms 600000 --json
 ```
+
+The companion does the waiting, so the poll needs no `timeout` or `sleep`
+utility (stock macOS has no `timeout`). Read `job.status` from the JSON:
+`completed`, `failed`, or `cancelled` means the chunk finished; anything
+else means the 10 minutes lapsed.
 
 Every time a poll returns — chunk finished or the 10 minutes lapsed — run
 one **health pass** over ALL in-flight chunks, then re-arm a capped poll
@@ -163,6 +172,11 @@ running; the loop ends when every chunk is committed or escalated.
 4. Restart what needs it, always as a fresh `--background --fresh --write`
    job whose prompt states the worktree may already contain partial edits
    from the prior attempt and exactly what remains:
+   - A **blocked** chunk is still running: stop it first with
+     `node "<plugin-root>/scripts/cursor-companion.mjs" cancel <job-id>`
+     and confirm `status <job-id>` reports `cancelled` before
+     relaunching — two implementers must never edit the same owned
+     files at once.
    - A **dead** restart is environmental — it does NOT count against the
      re-feed budget.
    - A **blocked** restart DOES count against the two-re-feed budget; over
