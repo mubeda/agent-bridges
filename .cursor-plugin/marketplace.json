@@ -4,26 +4,26 @@
   "owner": { "name": "mubeda" },
   "metadata": {
     "description": "OpenCode, Gemini, and Claude companion plugins for Cursor.",
-    "version": "0.3.0",
+    "version": "0.3.1",
     "pluginRoot": "plugins"
   },
   "plugins": [
     {
       "name": "opencode",
       "description": "Use the local OpenCode CLI to review code or delegate tasks.",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "source": "opencode"
     },
     {
       "name": "gemini",
       "description": "Use the local Gemini CLI to review code or delegate tasks.",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "source": "gemini"
     },
     {
       "name": "claude",
       "description": "Use the local Claude Code CLI to review code or delegate tasks.",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "source": "claude"
     }
   ]

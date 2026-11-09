@@ -8,7 +8,7 @@ user-invocable: false
 
 Use this skill only inside `opencode:opencode-rescue` and only to shape the user's natural-language request into a tighter OpenCode prompt **before** the single forwarded `task` call.
 
-This skill is provider-neutral. OpenCode forwards prompts to whatever provider and model the user has configured (Anthropic Claude via Bedrock, OpenRouter, Anthropic direct, OpenAI, local Ollama, etc.). Tailor the prompt to the kind of work being requested, not to a specific model family.
+This skill is provider-neutral. OpenCode forwards prompts to whatever provider and model the user has configured (Anthropic models via Bedrock, OpenRouter, Anthropic direct, OpenAI, local Ollama, etc.). Tailor the prompt to the kind of work being requested, not to a specific model family.
 
 ## When to use which framing
 
@@ -28,9 +28,9 @@ This skill is provider-neutral. OpenCode forwards prompts to whatever provider a
 
 - Routing flags (`--background`, `--wait`, `--resume`, `--fresh`).
 - Runtime flags (`--model`, `--effort`).
-- Claude-side conversational filler ("can you ask OpenCode to...", "please have OpenCode...").
+- Host-side conversational filler ("can you ask OpenCode to...", "please have OpenCode...").
 
-The prompt text passed to `task` should read as a direct instruction to whoever is solving the problem, with no meta-references to Claude Code or to the delegation step itself.
+The prompt text passed to `task` should read as a direct instruction to whoever is solving the problem, with no meta-references to the host agent or to the delegation step itself.
 
 ## What not to do
 

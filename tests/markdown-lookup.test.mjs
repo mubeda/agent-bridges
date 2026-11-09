@@ -186,3 +186,84 @@ test("Cursor documentation only invokes implemented companion subcommands", () =
     }
   }
 });
+
+const COMPANIONS = ["opencode", "gemini", "claude", "cursor"];
+const THIN_SKILLS = ["adversarial-review", "cancel", "result", "review", "setup", "status", "transfer"];
+
+function readSkill(name, skill) {
+  return fs.readFileSync(path.join(root, `plugins/${name}/skills/${name}-${skill}/SKILL.md`), "utf8");
+}
+
+test("delegate skills require a clean worktree and cancel blocked jobs before restarting", () => {
+  for (const name of COMPANIONS) {
+    const body = readSkill(name, "delegate");
+    assert.match(body, /Preflight: run `git status --short`/, name);
+    assert.match(body, new RegExp(`${name}-companion\\.mjs" cancel <job-id>`), name);
+  }
+});
+
+test("delegate polling uses the companion wait instead of non-portable shell utilities", () => {
+  for (const name of ["opencode", "gemini", "cursor"]) {
+    const body = readSkill(name, "delegate");
+    assert.doesNotMatch(body, /timeout 600/, name);
+    assert.match(body, /status <job-id> --wait --timeout-ms 600000 --json/, name);
+  }
+});
+
+test("claude delegate does not treat output as a liveness signal or call launches background jobs", () => {
+  const body = readSkill("claude", "delegate");
+  assert.doesNotMatch(body, /fresh background job/);
+  assert.doesNotMatch(body, /new output OR worktree changed/);
+  assert.match(body, /3 consecutive ticks/);
+});
+
+test("rescue surfaces pass task text as one argument after -- and report failures", () => {
+  for (const name of COMPANIONS) {
+    for (const skill of ["cli-runtime", "rescue"]) {
+      const body = readSkill(name, skill);
+      assert.doesNotMatch(body, /task "<raw arguments>"/, `${name}-${skill}`);
+      assert.match(body, new RegExp(`${name}-companion\\.mjs" task <flags> -- "<task text>"`), `${name}-${skill}`);
+    }
+    assert.doesNotMatch(readSkill(name, "rescue"), /return nothing/, name);
+    assert.match(readSkill(name, "rescue"), new RegExp(`${name}-setup`), name);
+  }
+});
+
+test("thin skills do not paste raw user arguments into the shell command", () => {
+  for (const name of COMPANIONS) {
+    for (const skill of THIN_SKILLS) {
+      const body = readSkill(name, skill);
+      assert.doesNotMatch(body, /\.mjs" [a-z-]+ \$ARGUMENTS/, `${name}-${skill}`);
+      assert.match(body, /`\$ARGUMENTS`/, `${name}-${skill}`);
+      assert.match(body, /\.mjs" [a-z-]+ <arguments>/, `${name}-${skill}`);
+    }
+  }
+});
+
+test("user-invocable skill descriptions state when to use them", () => {
+  for (const name of COMPANIONS) {
+    for (const skill of [...THIN_SKILLS, "rescue", "delegate"]) {
+      const description = readSkill(name, skill).match(/^description:\s*(.*)$/m)?.[1] ?? "";
+      assert.match(description, /Use (ONLY )?when/, `${name}-${skill}`);
+    }
+  }
+});
+
+test("skills carry no host-specific or contradictory backend wording", () => {
+  for (const name of ["opencode", "gemini"]) {
+    for (const skill of ["cli-runtime", "prompting"]) {
+      const body = readSkill(name, skill);
+      assert.doesNotMatch(body, /Claude-side|Claude Code/, `${name}-${skill}`);
+    }
+  }
+  assert.doesNotMatch(readSkill("cursor", "prompting"), /--bg/);
+  assert.doesNotMatch(readSkill("gemini", "prompting"), /no `--effort` flag/);
+  assert.doesNotMatch(readSkill("opencode", "delegate"), /workspace-write sandbox/);
+  assert.match(readSkill("gemini", "cli-runtime"), /agy --continue/);
+});
+
+test("plugin-root lookup names the Codex and Claude plugin caches", () => {
+  for (const name of COMPANIONS) {
+    assert.match(readSkill(name, "review"), /~\/\.codex\/plugins\/cache/, name);
+  }
+});

@@ -1,6 +1,6 @@
 ---
 name: claude-rescue
-description: Forward a substantial investigation, implementation, or follow-up task to Claude.
+description: Forward a substantial investigation, implementation, or follow-up task to Claude. Use when the user asks for a Claude rescue.
 user-invocable: true
 ---
 
@@ -11,7 +11,7 @@ Resolve `<plugin-root>` as the first directory that contains `scripts/claude-com
 2. `$PLUGIN_ROOT`
 3. `~/.cursor/plugins/local/claude`
 4. `~/.config/opencode/plugins/claude`
-5. otherwise search the host plugin cache for this plugin's `scripts/claude-companion.mjs`
+5. otherwise search the host plugin cache (for example `~/.codex/plugins/cache` or `~/.claude/plugins/cache`) for this plugin's `scripts/claude-companion.mjs`
 
 If none exist, stop and print those paths. Do not invent a companion elsewhere.
 
@@ -26,11 +26,12 @@ Forwarding rules:
 - Strip `--resume` and add `--resume-last`. Strip `--fresh` without adding `--resume-last`.
 - For a clear continuation request such as "continue", "keep going", "resume", "apply the top fix", or "dig deeper", add `--resume-last` unless `--fresh` is present.
 - Otherwise forward a fresh task, preserving the user's task text apart from routing flags.
+- Pass each runtime flag as its own shell argument, then `--`, then the task text as one quoted argument (use a quoted heredoc when the text contains quotes, `$`, or backticks). Never pass flags and task text together as a single string: the companion re-splits a lone argument and mangles apostrophes.
 
 Run exactly once and return stdout verbatim, with no commentary:
 
 ```bash
-node "<plugin-root>/scripts/claude-companion.mjs" task <forwarded-arguments>
+node "<plugin-root>/scripts/claude-companion.mjs" task <flags> -- "<task text>"
 ```
 
-If the command fails or Claude cannot be invoked, return nothing.
+If the command fails or Claude cannot be invoked, return the companion's error output verbatim and tell the user to run the `claude-setup` skill.

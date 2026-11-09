@@ -11,7 +11,7 @@ Resolve `<plugin-root>` as the first directory that contains `scripts/gemini-com
 2. `$PLUGIN_ROOT`
 3. `~/.cursor/plugins/local/gemini`
 4. `~/.config/opencode/plugins/gemini`
-5. otherwise search the host plugin cache for this plugin's `scripts/gemini-companion.mjs`
+5. otherwise search the host plugin cache (for example `~/.codex/plugins/cache` or `~/.claude/plugins/cache`) for this plugin's `scripts/gemini-companion.mjs`
 
 If none exist, stop and print those paths. Do not invent a companion elsewhere.
 
@@ -27,11 +27,12 @@ Forwarding rules:
 - Strip `--resume` and add `--resume-last`. Strip `--fresh` without adding `--resume-last`.
 - For a clear continuation request such as "continue", "keep going", "resume", "apply the top fix", or "dig deeper", add `--resume-last` unless `--fresh` is present.
 - Otherwise forward a fresh task, preserving the user's task text apart from routing flags.
+- Pass each runtime flag as its own shell argument, then `--`, then the task text as one quoted argument (use a quoted heredoc when the text contains quotes, `$`, or backticks). Never pass flags and task text together as a single string: the companion re-splits a lone argument and mangles apostrophes.
 
 Run exactly once and return stdout verbatim, with no commentary:
 
 ```bash
-node "<plugin-root>/scripts/gemini-companion.mjs" task <forwarded-arguments>
+node "<plugin-root>/scripts/gemini-companion.mjs" task <flags> -- "<task text>"
 ```
 
-If the command fails or Gemini cannot be invoked, return nothing.
+If the command fails or Gemini cannot be invoked, return the companion's error output verbatim and tell the user to run the `gemini-setup` skill.

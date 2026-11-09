@@ -1,6 +1,6 @@
 ---
 name: cursor-cancel
-description: Cancel an active Cursor companion job.
+description: Cancel an active Cursor companion job. Use when the user asks for /cursor:cancel.
 user-invocable: true
 ---
 
@@ -9,13 +9,15 @@ Resolve `<plugin-root>` as the first directory that contains `scripts/cursor-com
 2. `$PLUGIN_ROOT`
 3. `~/.cursor/plugins/local/cursor`
 4. `~/.config/opencode/plugins/cursor`
-5. otherwise search the host plugin cache for this plugin's `scripts/cursor-companion.mjs`
+5. otherwise search the host plugin cache (for example `~/.codex/plugins/cache` or `~/.claude/plugins/cache`) for this plugin's `scripts/cursor-companion.mjs`
 
 If none exist, stop and print those paths. Do not invent a companion elsewhere.
 
-Run and return stdout verbatim:
+User arguments (hosts that support it substitute them here; otherwise take them from the user's request): `$ARGUMENTS`
+
+Run and return stdout verbatim. Pass each flag and its value as a separate shell argument:
 
 ```bash
-node "<plugin-root>/scripts/cursor-companion.mjs" cancel $ARGUMENTS
+node "<plugin-root>/scripts/cursor-companion.mjs" cancel <arguments>
 ```
 

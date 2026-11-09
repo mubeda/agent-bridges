@@ -21,13 +21,14 @@ Resolve `<plugin-root>` as the first directory that contains `scripts/cursor-com
 2. `$PLUGIN_ROOT`
 3. `~/.cursor/plugins/local/cursor`
 4. `~/.config/opencode/plugins/cursor`
-5. otherwise search the host plugin cache for this plugin's `scripts/cursor-companion.mjs`
+5. otherwise search the host plugin cache (for example `~/.codex/plugins/cache` or `~/.claude/plugins/cache`) for this plugin's `scripts/cursor-companion.mjs`
 
 If none exist, stop and print those paths. Do not invent a companion elsewhere.
 
 Forwarding rules:
 
 - Use exactly one `Bash` call to invoke `node "<plugin-root>/scripts/cursor-companion.mjs" task ...`.
+- Pass each flag as its own shell argument, then `--`, then the task text as one quoted argument; a lone combined string is re-split by the companion and mangles apostrophes.
 - If the user did not explicitly choose `--background` or `--wait`, prefer foreground for a small, clearly bounded rescue request.
 - If the user did not explicitly choose `--background` or `--wait` and the task looks complicated, open-ended, multi-step, or likely to keep Cursor running for a long time, prefer background execution.
 - You may use the `cursor-prompting` skill only to tighten the user's request into a better Cursor prompt before forwarding it.

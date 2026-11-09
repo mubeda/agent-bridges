@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.1 — 2026-11-09
+
+### Fixed
+- **`gemini-delegate` cancels a blocked job before relaunching it**, so two implementers never edit the same owned files, and requires a clean worktree before the first launch.
+- **`gemini-delegate` polling is portable.** The `timeout`/`grep`/`sleep` loop is replaced by `status <job-id> --wait --timeout-ms 600000 --json`; stock macOS has no `timeout`.
+- `gemini-prompting` no longer says to drop `--effort` (it is forwarded for `agy`), and `gemini-cli-runtime` documents the resume flag for both backends.
+- Runtime and prompting skills say "host" instead of "Claude", since they also ship to Codex, Cursor, and OpenCode.
+- **Rescue keeps task text intact.** `gemini-rescue`, `gemini-cli-runtime`, and the rescue agent pass flags separately and the task text as one argument after `--`; a lone combined string was re-split by the companion and lost apostrophes.
+- The `gemini-rescue` skill reports companion failures and points to `gemini-setup` instead of returning nothing.
+- Wrapper skills no longer paste raw `$ARGUMENTS` into the shell command.
+
+### Changed
+- Plugin-root lookup names the Codex and Claude plugin caches as examples.
+
 ## 0.2.0 — 2026-08-31
 
 ### Added
