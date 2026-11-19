@@ -1,0 +1,40 @@
+---
+name: antigravity-rescue
+description: Forward a substantial investigation, implementation, or follow-up task to Antigravity. Use when the user asks for /antigravity:rescue or a Antigravity rescue.
+user-invocable: true
+---
+
+You are a thin forwarding wrapper around the Antigravity companion task runtime. Forward the user's rescue request and do not do independent work.
+
+Resolve `<plugin-root>` as the first directory that contains `scripts/antigravity-companion.mjs`:
+1. `$CLAUDE_PLUGIN_ROOT`
+2. `$PLUGIN_ROOT`
+3. the `antigravity-cli-runtime` folder next to the folder that holds this SKILL.md (`<this skill's folder>/../antigravity-cli-runtime`, installed with `npx skills`)
+4. `~/.cursor/plugins/local/antigravity`
+5. `~/.config/opencode/plugins/antigravity`
+6. otherwise search the host plugin cache (for example `~/.codex/plugins/cache` or `~/.claude/plugins/cache`) for this plugin's `scripts/antigravity-companion.mjs`
+
+If none exist, stop and print those paths, and say that an `npx skills` install also needs `antigravity-cli-runtime`. Do not invent a companion elsewhere.
+
+Forwarding rules:
+- Invoke `task` exactly once.
+- Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, cancel jobs, summarize output, or do follow-up work.
+- Do not call `review`, `adversarial-review`, `status`, `result`, or `cancel`.
+- Default to a write-capable Antigravity run by adding `--write` unless the user clearly asked for read-only / review-only behavior. When `--write` is set, the companion adds `--dangerously-skip-permissions`; never tell the host to pass that flag itself. Without `--write`, the companion denies file writes and shell commands for the run.
+- Leave `--model` unset unless the user explicitly requests it. Forward an explicit model string verbatim.
+- Leave `--effort` unset unless the user explicitly requests it. Forward one of `low`, `medium`, `high`, `xhigh` or `max` verbatim.
+- Treat `--model <value>`, `--effort <value>` and `--write` as runtime controls, not task text.
+- Forward `--background` and `--wait` to `task`; they are companion runtime controls, not task text.
+- Strip `--resume` and add `--resume-last`. Strip `--fresh` without adding `--resume-last`.
+- For a clear continuation request such as "continue", "keep going", "resume", "apply the top fix", or "dig deeper", add `--resume-last` unless `--fresh` is present.
+- Otherwise forward a fresh task, preserving the user's task text apart from routing flags.
+- Pass each runtime flag as its own shell argument, then `--`, then the task text as one quoted argument (use a quoted heredoc when the text contains quotes, `$`, or backticks). Never pass flags and task text together as a single string: the companion re-splits a lone argument and mangles apostrophes.
+
+Run exactly once and return stdout verbatim, with no commentary:
+
+```bash
+node "<plugin-root>/scripts/antigravity-companion.mjs" task <flags> -- "<task text>"
+```
+
+If the command fails or Antigravity cannot be invoked, return the companion's error output verbatim and tell the user to run the `antigravity-setup` skill.
+

@@ -41,18 +41,21 @@ test("fixture with catalogs and plugin manifests passes", () => {
   const claudePlugins = [
     { name: "opencode", source: "./plugins/opencode" },
     { name: "gemini", source: "./plugins/gemini" },
-    { name: "cursor", source: "./plugins/cursor" }
+    { name: "cursor", source: "./plugins/cursor" },
+    { name: "antigravity", source: "./plugins/antigravity" }
   ];
   const cursorPlugins = [
     { name: "opencode", source: "./plugins/opencode" },
     { name: "gemini", source: "./plugins/gemini" },
-    { name: "claude", source: "./plugins/claude" }
+    { name: "claude", source: "./plugins/claude" },
+    { name: "antigravity", source: "./plugins/antigravity" }
   ];
   const codexPlugins = [
     { name: "opencode", source: { source: "local", path: "./plugins/opencode" } },
     { name: "gemini", source: { source: "local", path: "./plugins/gemini" } },
     { name: "claude", source: { source: "local", path: "./plugins/claude" } },
-    { name: "cursor", source: { source: "local", path: "./plugins/cursor" } }
+    { name: "cursor", source: { source: "local", path: "./plugins/cursor" } },
+    { name: "antigravity", source: { source: "local", path: "./plugins/antigravity" } }
   ];
   const opencodePlugins = [...cursorPlugins, { name: "cursor", source: "./plugins/cursor" }];
   write(".claude-plugin/marketplace.json", {
@@ -73,7 +76,7 @@ test("fixture with catalogs and plugin manifests passes", () => {
     name: "agent-bridges",
     plugins: opencodePlugins
   });
-  writePluginManifests(write, ["opencode", "gemini", "claude", "cursor"]);
+  writePluginManifests(write, ["opencode", "gemini", "claude", "cursor", "antigravity"]);
   const result = validateMarketplaceRepo(root);
   assert.deepEqual(result.errors, []);
   assert.equal(result.ok, true);
@@ -252,12 +255,14 @@ test("cursor marketplace accepts pluginRoot sources", () => {
   const claudePlugins = [
     { name: "opencode", source: "./plugins/opencode" },
     { name: "gemini", source: "./plugins/gemini" },
-    { name: "cursor", source: "./plugins/cursor" }
+    { name: "cursor", source: "./plugins/cursor" },
+    { name: "antigravity", source: "./plugins/antigravity" }
   ];
   const cursorPlugins = [
     { name: "opencode", source: "./plugins/opencode" },
     { name: "gemini", source: "./plugins/gemini" },
-    { name: "claude", source: "./plugins/claude" }
+    { name: "claude", source: "./plugins/claude" },
+    { name: "antigravity", source: "./plugins/antigravity" }
   ];
   write(".claude-plugin/marketplace.json", {
     name: "agent-bridges",
@@ -270,7 +275,8 @@ test("cursor marketplace accepts pluginRoot sources", () => {
       { name: "opencode", source: { source: "local", path: "./plugins/opencode" } },
       { name: "gemini", source: { source: "local", path: "./plugins/gemini" } },
       { name: "claude", source: { source: "local", path: "./plugins/claude" } },
-      { name: "cursor", source: { source: "local", path: "./plugins/cursor" } }
+      { name: "cursor", source: { source: "local", path: "./plugins/cursor" } },
+      { name: "antigravity", source: { source: "local", path: "./plugins/antigravity" } }
     ]
   });
   write(".cursor-plugin/marketplace.json", {
@@ -280,14 +286,15 @@ test("cursor marketplace accepts pluginRoot sources", () => {
     plugins: [
       { name: "opencode", source: "opencode" },
       { name: "gemini", source: "gemini" },
-      { name: "claude", source: "claude" }
+      { name: "claude", source: "claude" },
+      { name: "antigravity", source: "antigravity" }
     ]
   });
   write(".opencode/catalog.json", {
     name: "agent-bridges",
     plugins: [...cursorPlugins, { name: "cursor", source: "./plugins/cursor" }]
   });
-  writePluginManifests(write, ["opencode", "gemini", "claude", "cursor"]);
+  writePluginManifests(write, ["opencode", "gemini", "claude", "cursor", "antigravity"]);
   const result = validateMarketplaceRepo(root);
   assert.deepEqual(result.errors, []);
   assert.equal(result.ok, true);
@@ -298,4 +305,62 @@ test("this repo validates once catalogs exist", () => {
   const result = validateMarketplaceRepo(root);
   assert.deepEqual(result.errors, []);
   assert.equal(result.ok, true);
+});
+
+function validFiveFixture() {
+  const { root, write } = createFixture();
+  const local = (name) => ({ name, source: { source: "local", path: `./plugins/${name}` } });
+  const rel = (name) => ({ name, source: `./plugins/${name}` });
+  const catalogs = {
+    ".claude-plugin/marketplace.json": { name: "agent-bridges", owner: { name: "mubeda" }, plugins: ["opencode", "gemini", "cursor", "antigravity"].map(rel) },
+    ".agents/plugins/marketplace.json": { name: "agent-bridges", plugins: ["opencode", "gemini", "claude", "cursor", "antigravity"].map(local) },
+    ".cursor-plugin/marketplace.json": { name: "agent-bridges", owner: { name: "mubeda" }, plugins: ["opencode", "gemini", "claude", "antigravity"].map(rel) },
+    ".opencode/catalog.json": { name: "agent-bridges", plugins: ["opencode", "gemini", "claude", "cursor", "antigravity"].map(rel) }
+  };
+  const save = () => {
+    for (const [file, body] of Object.entries(catalogs)) write(file, body);
+    writePluginManifests(write, ["opencode", "gemini", "claude", "cursor", "antigravity"]);
+  };
+  return { root, catalogs, save };
+}
+
+test("a five-plugin fixture passes", () => {
+  const fixture = validFiveFixture();
+  fixture.save();
+  assert.deepEqual(validateMarketplaceRepo(fixture.root).errors, []);
+});
+
+test("cursor marketplace without antigravity fails and names it", () => {
+  const fixture = validFiveFixture();
+  const cursor = fixture.catalogs[".cursor-plugin/marketplace.json"];
+  cursor.plugins = cursor.plugins.filter((plugin) => plugin.name !== "antigravity");
+  fixture.save();
+  const result = validateMarketplaceRepo(fixture.root);
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((e) => e.includes("cursor marketplace") && e.includes("antigravity")), result.errors.join("; "));
+});
+
+test("a malformed source at the five-plugin count is reported", () => {
+  const fixture = validFiveFixture();
+  fixture.catalogs[".opencode/catalog.json"].plugins[4] = { name: "antigravity", source: "antigravity" };
+  fixture.save();
+  const result = validateMarketplaceRepo(fixture.root);
+  assert.ok(result.errors.some((e) => e.includes("opencode plugin antigravity source")), result.errors.join("; "));
+});
+
+test("a null catalog entry is an error, not a crash", () => {
+  const fixture = validFiveFixture();
+  fixture.catalogs[".claude-plugin/marketplace.json"].plugins.push(null);
+  fixture.save();
+  const result = validateMarketplaceRepo(fixture.root);
+  assert.ok(result.errors.some((e) => e.includes("claude marketplace entry 4 is not an object")), result.errors.join("; "));
+});
+
+test("a catalog file containing null is an error", () => {
+  const fixture = validFiveFixture();
+  fixture.save();
+  fs.writeFileSync(path.join(fixture.root, ".cursor-plugin", "marketplace.json"), "null\n");
+  const result = validateMarketplaceRepo(fixture.root);
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((e) => e.includes(".cursor-plugin/marketplace.json")), result.errors.join("; "));
 });

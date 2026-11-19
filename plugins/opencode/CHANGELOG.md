@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.2 — 2026-11-19
+
+### Security
+- **Reviews no longer follow untracked symlinks.** A symlink to a file outside the repository is listed as skipped, not inlined into the review prompt.
+- **Git is run without a shell**, so a ref containing `&` reaches git intact on Windows.
+
+### Changed
+- **Skills find the companion in the sibling `<plugin>-cli-runtime` folder**, so installs with `npx skills` work. The runtime skill now carries synced copies of `scripts/`, `prompts/` and `schemas/` (`npm run sync:skills`).
+
 ## 0.3.1 — 2026-11-09
 
 ### Fixed

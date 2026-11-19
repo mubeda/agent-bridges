@@ -469,6 +469,9 @@ export function getSessionRuntimeStatus(_env = process.env, _cwd = process.cwd()
  *   write → `--dangerously-skip-permissions`; resume via `--conversation` /
  *   `--continue`; model via `--model`; effort via `--effort`.
  */
+/** Read-only agy runs deny every file write and shell command for the session (agy --mode plan does not). */
+export const AGY_READ_ONLY_SETTINGS = '{"permissions":{"deny":["write_file(*)","command(*)"]}}';
+
 export function buildRunArgs(_cwd, options = {}) {
   const prompt = options.prompt;
   if (typeof prompt !== "string" || !prompt) {
@@ -483,6 +486,8 @@ export function buildRunArgs(_cwd, options = {}) {
     args.push("--output-format=stream-json", "--print-timeout", "15m");
     if (write) {
       args.push("--dangerously-skip-permissions");
+    } else {
+      args.push("--settings", AGY_READ_ONLY_SETTINGS);
     }
     if (options.model) {
       args.push("--model", String(options.model));

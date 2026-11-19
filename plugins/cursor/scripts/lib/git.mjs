@@ -9,12 +9,13 @@ const DEFAULT_INLINE_DIFF_MAX_FILES = 2;
 const DEFAULT_INLINE_DIFF_MAX_BYTES = 256 * 1024;
 const LIGHTWEIGHT_UNTRACKED_LIST_LIMIT = 200;
 
+// shell: false, so a ref such as `topic&docs` reaches git intact on Windows, where runCommand defaults to a shell.
 function git(cwd, args, options = {}) {
-  return runCommand("git", args, { cwd, ...options });
+  return runCommand("git", args, { cwd, shell: false, ...options });
 }
 
 function gitChecked(cwd, args, options = {}) {
-  return runCommandChecked("git", args, { cwd, ...options });
+  return runCommandChecked("git", args, { cwd, shell: false, ...options });
 }
 
 function listUniqueFiles(...groups) {
@@ -196,24 +197,49 @@ function formatSection(title, body) {
 
 function formatUntrackedFile(cwd, relativePath) {
   const absolutePath = path.join(cwd, relativePath);
+  // lstat (not stat) so we see symlinks as symlinks instead of following them.
+  // An untracked symlink to e.g. ~/.ssh/id_rsa would otherwise have its target
+  // contents inlined into the review prompt.
   let stat;
   try {
-    stat = fs.statSync(absolutePath);
+    stat = fs.lstatSync(absolutePath);
   } catch {
-    return `### ${relativePath}\n(skipped: broken symlink or unreadable file)`;
+    return `### ${relativePath}\n(skipped: unreadable file)`;
+  }
+  if (stat.isSymbolicLink()) {
+    let target = "";
+    try {
+      target = fs.readlinkSync(absolutePath);
+    } catch {
+      target = "<unreadable>";
+    }
+    return `### ${relativePath}\n(skipped: symlink -> ${target}; symlink targets are never followed for untracked files)`;
   }
   if (stat.isDirectory()) {
     return `### ${relativePath}\n(skipped: directory)`;
+  }
+  if (!stat.isFile()) {
+    return `### ${relativePath}\n(skipped: not a regular file)`;
   }
   if (stat.size > MAX_UNTRACKED_BYTES) {
     return `### ${relativePath}\n(skipped: ${stat.size} bytes exceeds ${MAX_UNTRACKED_BYTES} byte limit)`;
   }
 
+  // Open with O_NOFOLLOW so a TOCTOU swap to a symlink between lstat and
+  // read still can't redirect the read off-tree.
+  let fd;
+  try {
+    fd = fs.openSync(absolutePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  } catch {
+    return `### ${relativePath}\n(skipped: unreadable file)`;
+  }
   let buffer;
   try {
-    buffer = fs.readFileSync(absolutePath);
+    buffer = fs.readFileSync(fd);
   } catch {
-    return `### ${relativePath}\n(skipped: broken symlink or unreadable file)`;
+    return `### ${relativePath}\n(skipped: unreadable file)`;
+  } finally {
+    fs.closeSync(fd);
   }
   if (!isProbablyText(buffer)) {
     return `### ${relativePath}\n(skipped: binary file)`;

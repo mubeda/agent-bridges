@@ -1,0 +1,69 @@
+# Progress: Antigravity companion plugin and npx skills installs
+
+Plan: plan.md
+Spec: spec.md (sha256 003d064427de)
+Plan status: Approved 2026-11-19
+Plan review: Codex gpt-6.2-astra (high), rounds 1 and 2, Needs rework both times; all findings processed, see reviews/
+Executor: inline
+Branch: mubeda/antigravity-companion (one commit, by the user's choice)
+
+| Task | Title | Phase | State | Owner | Note |
+|---|---|---|---|---|---|
+| 1.1 | Make the Cursor spawn assertion win32-only | 1 | Closed | inline | |
+| 1.2 | Clone the Cursor tree as antigravity, renamed and wired | 1 | Closed | inline | |
+| 1.3 | Setup report and preflight | 1 | Closed | inline | |
+| 1.4 | The agy argument builder | 1 | Closed | inline | |
+| 1.5 | Parse the envelope and render status and results | 1 | Closed | inline | |
+| 1.6 | Background lifecycle and process-tree cancel | 1 | Closed | inline | |
+| 1.7 | Transfer and delegate | 1 | Closed | inline | |
+| 2.1 | Deny writes and shell on agy read-only runs | 2 | Closed | inline | |
+| 3.1 | The discovery catalog | 3 | Closed | inline | |
+| 3.2 | npm run sync:skills and the byte-equality guard | 3 | Closed | inline | |
+| 3.3 | The lookup order in the other 40 skills | 3 | Closed | inline | |
+| 4.1 | List antigravity in the catalogs, the validator and the installer | 4 | Closed | inline | |
+| 4.2 | README | 4 | Closed | inline | |
+| 4.3 | Versions, changelogs and the full suite | 4 | Closed | inline | |
+
+## Log
+- 2026-11-19 Plan written by mstack-plan in Claude Code. Draft.
+- 2026-11-19 Plan approved in chat by the user, as written. Not applied at approval: adding `mcp(*)` to the read-only deny list (would change spec D2/R5), and treating `--write` as a flag only before the prompt text in the antigravity copy. Both stay open follow-ups.
+- 2026-11-19 18:42 1.1 In progress. Owner: inline.
+- 2026-11-19 18:43 1.1 Closed. Evidence: `node --test tests/cursor-args.test.mjs` 11 pass, 0 fail; `npm test` 169 tests, 0 fail. Uncommitted (user choice).
+- 2026-11-19 21:47 1.2 Closed. Evidence: `node --test tests/copy-plugins.test.mjs tests/markdown-lookup.test.mjs` 37 pass, 0 fail; red first (14 fail); prove-fail by renaming antigravity-cancel (1 fail), restored. Every script passes node --check.
+- 2026-11-19 21:47 Ruling: the residue grep of 1.2 step 7 still hits CURSOR_API_KEY, --force and --trust in scripts/lib/agy.mjs, because Tasks 1.3 and 1.4 rewrite those functions. Cost if wrong: none, 1.4 greps again.
+- 2026-11-19 21:47 1.3 In progress. Owner: inline.
+- 2026-11-19 21:49 1.3 Closed. Evidence: `node --test tests/antigravity-backend.test.mjs tests/state.test.mjs` 12 pass, 0 fail (red first: 7 fail). Prove-fail: dropping the review preflight gives 1 fail, restored. Also fixed the state-dir chain, which fell through to .opencode-companion. Test-helper bug (env order) fixed during green.
+- 2026-11-19 21:49 1.4 In progress. Owner: inline.
+- 2026-11-19 21:51 1.4 Closed. Evidence: `node --test tests/antigravity-args.test.mjs` 12 pass, 0 fail (red first: missing export). Prove-fail: command(rm) gives 7 fail, and dropping --settings gives 6 fail; both restored. Manual real agy 1.5.12, read-only: create, edit and touch all denied, git status clean, job completed. --write: probe.txt and shell.txt created and README.md edited. agySessionId was null in that run, because the parser was still the Cursor shape until 1.5. The residue grep is now clean.
+- 2026-11-19 21:51 1.5 In progress. Owner: inline.
+- 2026-11-19 21:53 1.5 Closed. Evidence: `node --test tests/antigravity-jobs.test.mjs` 12 pass (red first: missing export); with args and backend, 32 pass and 0 fail. Prove-fail: ok ignoring status gives 2 fail, restored. Also covers the end-to-end C1 → C2 → next-resume case.
+- 2026-11-19 21:53 1.6 In progress. Owner: inline.
+- 2026-11-19 21:56 1.6 Closed. Evidence: node --test tests/antigravity-jobs.test.mjs 18 pass, 0 fail, twice (red first: foreground cancel and SIGTERM/SIGINT failed, 3 fail).
+- 2026-11-19 21:56 Ruling: the single mutation in the plan (skip the agyPid termination) stays green, because the SIGTERM that cancel sends to the companion triggers the new signal forwarding. Proved the two layers separately instead: no forwarding gives 2 fail; no forwarding and no agyPid kill gives 1 fail; restored. Cost if wrong: none.
+- 2026-11-19 21:56 1.7 In progress. Owner: inline.
+- 2026-11-19 21:57 1.7 Closed. Evidence: node --test tests/host-session.test.mjs tests/antigravity-jobs.test.mjs 37 pass, 0 fail (red first: b and c failed). Prove-fail: restoring the Codex fallback gives 2 fail, restored. Also replaced lowercase cursor prose that the clone script had missed (delegate triggers, keywords).
+- 2026-11-19 21:57 Phase 1 checkpoint: 8 focused files, 109 pass, 0 fail. Setup prints the real agy, now auto-updated to 1.5.13. npm test: 218 tests, 0 fail.
+- 2026-11-19 21:57 2.1 In progress. Owner: inline.
+- 2026-11-19 21:59 2.1 Closed. Evidence: phase 2 checkpoint (gemini-args, gemini-backend, gemini-render, agy-stream) 24 pass, 0 fail (red first: 1 fail). Prove-fail: settings only on write runs gives 2 fail, restored. Manual, real agy 1.5.13 through the Gemini companion (GEMINI_BACKEND=agy, GEMINI_BIN unset): every tool call blocked by the deny rules, git status clean, README unchanged.
+- 2026-11-19 21:59 3.1 In progress. Owner: inline.
+- 2026-11-19 21:59 3.1 Closed. Evidence: node --test tests/skill-runtimes.test.mjs 1 pass (red first: ENOENT). Prove-fail: dropping the antigravity entry gives 1 fail, restored.
+- 2026-11-19 21:59 3.2 In progress. Owner: inline.
+- 2026-11-19 22:00 3.2 Closed. Evidence: npm run sync:skills, then node --test tests/skill-runtimes.test.mjs 5 pass (red first: module missing). A second sync gives no new changes. Prove-fail: one byte appended to a generated copy gives a fail naming lib/agy.mjs; re-sync, then pass. npm test: 226 tests, 0 fail.
+- 2026-11-19 22:00 3.3 In progress. Owner: inline.
+- 2026-11-19 22:01 3.3 Closed. Evidence: 40 skills edited (only the lookup block, 200 insertions and 160 deletions). node --test skill-lookup, markdown-lookup, install-opencode and skill-runtimes: 55 pass, 0 fail (red first: opencode-adversarial-review). Prove-fail: swapping entries 1 and 2 in cursor-review gives 1 fail naming it, restored. Phase 3 checkpoint: sync is idempotent.
+- 2026-11-19 22:01 4.1 In progress. Owner: inline.
+- 2026-11-19 22:03 4.1 Closed. Evidence: node --test tests/catalogs.test.mjs tests/install-opencode.test.mjs 27 pass (red first: 6 catalog fails). Validator CLI on a temp copy without the Cursor antigravity entry: exit 1, "cursor marketplace missing required plugin antigravity". The real repo validates (exit 0). Catalog entries were inserted as text to keep the inline JSON style.
+- 2026-11-19 22:03 Ruling: the installer PLUGINS set was edited before its test went red (an earlier, reverted catalog script also touched it), so the installer test went straight to green. Cost if wrong: low; the assertion is a direct name check.
+- 2026-11-19 22:03 4.2 In progress. Owner: inline.
+- 2026-11-19 22:04 4.2 Closed. Evidence: node --test tests/readme.test.mjs 7 pass (red first: 2 fail). The table row appears once. The README notes that MCP tools are not denied.
+- 2026-11-19 22:04 4.3 In progress. Owner: inline.
+- 2026-11-19 22:04 4.3 Closed. Evidence: catalogs at 0.4.0; opencode 0.3.2; gemini, claude and cursor 0.2.2; antigravity 0.1.0; the grep finds no leftover 0.2.1 or 0.3.1 in manifests or catalogs. CHANGELOG entries added for opencode, gemini, claude and cursor; catalog and package descriptions name Antigravity. npm run sync:skills is a no-op. npm test: 237 tests, 237 pass, 0 fail. npm run validate exits 0.
+- 2026-11-19 22:04 Ruling: the plugins package.json files keep their own runtime-package version (cursor package.json is 0.1.0 while the plugin is 0.2.1), so only manifests and catalog entries were bumped, not the plan wording "and package.json". Cost if wrong: none for hosts, which read the manifests.
+- 2026-11-19 22:04 Phase 4 checkpoint: npm test 237/237 and npm run validate, both green.
+- 2026-11-19 22:05 End-to-end checks: (1) npm test 237/237. (2) npm run validate exit 0. (3) Setup reports the real agy, 1.5.13, apiKeySet false and the sign-in note, with only the --version probe. (4) Real agy read-only task: job completed, agySessionId stored, create, edit and touch all denied, git status clean; the --write control created and edited (logged at 1.4). (5) Gemini on agy, read-only: clean (logged at 2.1). (6) The runtime-copy companion setup works. (7) Version grep clean.
+- 2026-11-19 22:07 Security review (automated, security-guidance plugin): an untracked symlink was followed when building the review prompt. Fixed in plugins/antigravity/scripts/lib/git.mjs by porting the hardened gemini formatUntrackedFile (lstat, skip symlinks and non-files, O_NOFOLLOW read), then re-synced. Test "a review never follows an untracked symlink out of the repository": red (secret leaked), green, and fails again when statSync is put back. Follow-up, not fixed: the same pattern exists on main in plugins/opencode, plugins/claude and plugins/cursor scripts/lib/git.mjs (and so in their synced runtime copies).
+- 2026-11-19 22:15 Final cross-vendor review: Codex gpt-6.2-astra (high), read-only, verdict "hold". 12 findings: 9 fixed with a failing test first (cancelled-job race, worker replay permission, job left running on interrupt, SIGKILL escalation, stdin for prompts over 100,000 bytes, null catalog, array structured output, executable PATH check, git without a shell), 1 rejected (transfer host order is the documented repo order), 2 deferred (OpenCode command names, Windows .cmd launcher; both inherited from the other companions). Details in reviews/branch-review-1.md.
+- 2026-11-19 22:15 After the review fixes: npm run sync:skills, npm test 246 tests, 246 pass, 0 fail; npm run validate exit 0; real agy 1.5.13 review --wait returned structured findings, tree unchanged. Not re-reviewed after these fixes. Nothing committed (user choice).
+- 2026-11-19 22:21 Closing checks: added a test that background task --write and transfer --write keep the bypass through the worker while a background read-only task gets the deny rules (fails when the worker forces write off); removed two leftover Cursor "agent CLI" mentions, with a test; tests/antigravity-jobs.test.mjs ran 3 times, 25 pass each. Real agy 1.5.13 review of a 194 KB one-file diff (prompt on stdin) completed. claude plugin validate plugins/antigravity passed. Final: npm test and npm run validate green.
+- 2026-11-19 22:21 Not done: no re-review after the review fixes; Windows untested; --settings merge-or-replace against the user settings file unverified; the tdd and security-audit skills named in the plan were not loaded (the steps were followed without them).
+- 2026-11-19 23:09 User asked to finish everything in one commit. Fixed the two security follow-ups in the other plugins: opencode, claude and cursor no longer follow untracked symlinks into the review prompt (hardened reader ported from gemini), and all five plugins run git with shell: false. tests/review-symlink.test.mjs: red first (7 fail), then green. CHANGELOG Security lines added. npm test 258 tests, 258 pass; npm run validate exit 0. Windows still untested: it needs the Parallels VM on the Mac.

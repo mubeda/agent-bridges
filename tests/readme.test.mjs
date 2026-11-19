@@ -58,3 +58,25 @@ test("README documents the Cursor companion", () => {
   assert.match(readme, /agent login/);
   assert.match(readme, /~\/\.cursor-companion/);
 });
+
+test("README documents the Antigravity companion", () => {
+  assert.match(readme, /\| `antigravity` \|/);
+  assert.match(readme, /\/plugin install antigravity@agent-bridges/);
+  assert.match(readme, /codex plugin add antigravity@agent-bridges/);
+  assert.match(readme, /~\/\.cursor\/plugins\/local\/antigravity/);
+  assert.match(readme, /install-opencode\.mjs --plugin antigravity/);
+  assert.match(readme, /ANTIGRAVITY_BIN/);
+  assert.match(readme, /~\/\.antigravity-companion\/state/);
+  assert.match(readme, /write_file\(\*\)/);
+  assert.match(readme, /command\(\*\)/);
+  assert.match(readme, /modelProvider/);
+});
+
+test("README documents npx skills installs", () => {
+  assert.match(readme, /npx skills add mubeda\/agent-bridges --list/);
+  assert.match(readme, /npx skills add mubeda\/agent-bridges [^\n]*-g [^\n]*-y/);
+  assert.match(readme, /npx skills add mubeda\/agent-bridges [^\n]*--copy[^\n]*-y/);
+  assert.match(readme, /must be installed with the other skills/);
+  assert.match(readme, /only with a host plugin install/);
+  assert.match(readme, /npm run sync:skills/);
+});

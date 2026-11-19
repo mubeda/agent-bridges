@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.2 — 2026-11-19
+
+### Security
+- **Git is run without a shell**, so a ref containing `&` reaches git intact on Windows.
+
+### Changed
+- **Skills find the companion in the sibling `<plugin>-cli-runtime` folder**, so installs with `npx skills` work. The runtime skill now carries synced copies of `scripts/`, `prompts/` and `schemas/` (`npm run sync:skills`).
+- **Read-only `agy` runs deny file writes and shell commands** with `--settings` (`write_file(*)`, `command(*)`). Before, an `agy` review could edit files.
+
 ## 0.2.1 — 2026-11-09
 
 ### Fixed

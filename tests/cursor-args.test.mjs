@@ -51,7 +51,7 @@ test("resolved installed agent path is directly spawnable", (t) => {
     return;
   }
   const command = resolveCursorSpawnCommand();
-  assert.match(command.file, /(?:\.exe|powershell\.exe)$/i);
+  if (process.platform === "win32") assert.match(command.file, /(?:\.exe|powershell\.exe)$/i);
   const result = spawnSync(command.file, [...command.args, "--version"], { encoding: "utf8", shell: false });
   assert.equal(result.error, undefined);
 });

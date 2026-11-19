@@ -1,6 +1,6 @@
 {
   "name": "agent-bridges",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "interface": { "displayName": "Agent Bridges" },
   "plugins": [
     {
@@ -24,6 +24,12 @@
     {
       "name": "cursor",
       "source": { "source": "local", "path": "./plugins/cursor" },
+      "policy": { "installation": "AVAILABLE" },
+      "category": "Developer tools"
+    },
+    {
+      "name": "antigravity",
+      "source": { "source": "local", "path": "./plugins/antigravity" },
       "policy": { "installation": "AVAILABLE" },
       "category": "Developer tools"
     }

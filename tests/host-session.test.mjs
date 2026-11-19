@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -250,4 +252,95 @@ test("capTranscriptMessages drops oldest so packed size stays within limit", () 
     capped.some((message) => message.text.includes("A".repeat(1000))),
     false
   );
+});
+
+// --- antigravity transfer (Task 1.7): private temp roots and a fake agy, never tests/.tmp ---
+const AGY_COMPANION = path.join(repoRoot, "plugins/antigravity/scripts/antigravity-companion.mjs");
+const AGY_POSIX_ONLY = process.platform === "win32" ? "fake agy needs a POSIX shebang" : false;
+const AGY_FAKE = `#!/usr/bin/env node
+const fs = require("node:fs");
+const argv = process.argv.slice(2);
+let stdin = "";
+try { if (!process.stdin.isTTY) stdin = fs.readFileSync(0, "utf8"); } catch {}
+fs.appendFileSync(process.env.FAKE_AGY_LOG, JSON.stringify({ argv, stdin }) + "\\n");
+if (argv.includes("--version")) { process.stdout.write("1.5.12\\n"); process.exit(0); }
+process.stdout.write('{"conversation_id":"C1","status":"SUCCESS","response":"ok","num_turns":1}');
+`;
+
+function agySandbox(t) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-transfer-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const fake = path.join(dir, "fake-agy");
+  fs.writeFileSync(fake, AGY_FAKE, { mode: 0o755 });
+  const repo = path.join(dir, "repo");
+  fs.mkdirSync(repo);
+  return { dir, fake, repo, home: path.join(dir, "home"), data: path.join(dir, "data"), log: path.join(dir, "agy.log") };
+}
+
+function codexRollout(home, cwd, text, name = "rollout-2026-11-19T10-00-00-a.jsonl") {
+  writeFile(
+    path.join(home, ".codex", "sessions", "2026", "11", "19", name),
+    `${JSON.stringify({ type: "session_meta", payload: { cwd, session_id: "x" } })}\n${JSON.stringify({
+      type: "response_item",
+      payload: { type: "message", role: "user", content: [{ type: "input_text", text }] }
+    })}\n`
+  );
+}
+
+function runAgy(sandbox, args) {
+  const env = { ...process.env, HOME: sandbox.home, USERPROFILE: sandbox.home, PLUGIN_DATA: sandbox.data, ANTIGRAVITY_BIN: sandbox.fake, FAKE_AGY_LOG: sandbox.log };
+  delete env.CLAUDE_PLUGIN_DATA;
+  delete env.CODEX_HOME;
+  delete env.ANTIGRAVITY_COMPANION_TRANSCRIPT_PATH;
+  return spawnSync(process.execPath, [AGY_COMPANION, ...args], { cwd: sandbox.repo, env, encoding: "utf8" });
+}
+
+function agyModelCalls(sandbox) {
+  if (!fs.existsSync(sandbox.log)) return [];
+  return fs.readFileSync(sandbox.log, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((e) => !e.argv.includes("--version"));
+}
+
+test("antigravity transfer packs the matching Codex rollout and stores the conversation", { skip: AGY_POSIX_ONLY }, (t) => {
+  const sandbox = agySandbox(t);
+  codexRollout(sandbox.home, sandbox.repo, "matching codex text");
+  const result = runAgy(sandbox, ["transfer", "--wait", "--json"]);
+  assert.equal(result.status, 0, result.stderr);
+  const calls = agyModelCalls(sandbox);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].argv[calls[0].argv.length - 1], /matching codex text/);
+  assert.equal(JSON.parse(result.stdout).job.agySessionId, "C1");
+});
+
+test("antigravity transfer refuses a Codex rollout from another workspace", { skip: AGY_POSIX_ONLY }, (t) => {
+  const sandbox = agySandbox(t);
+  codexRollout(sandbox.home, path.join(sandbox.dir, "elsewhere"), "unrelated codex text");
+  const result = runAgy(sandbox, ["transfer", "--wait"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /--source/);
+  assert.deepEqual(agyModelCalls(sandbox), []);
+});
+
+test("antigravity transfer prefers a local Claude transcript over an unrelated Codex rollout", { skip: AGY_POSIX_ONLY }, (t) => {
+  const sandbox = agySandbox(t);
+  codexRollout(sandbox.home, path.join(sandbox.dir, "elsewhere"), "unrelated codex text");
+  writeFile(
+    path.join(sandbox.home, ".claude", "projects", claudeProjectDirName(sandbox.repo), "s.jsonl"),
+    `${JSON.stringify({ type: "user", message: { role: "user", content: "local claude text" } })}\n`
+  );
+  const result = runAgy(sandbox, ["transfer", "--wait"]);
+  assert.equal(result.status, 0, result.stderr);
+  const prompt = agyModelCalls(sandbox)[0].argv.at(-1);
+  assert.match(prompt, /local claude text/);
+  assert.doesNotMatch(prompt, /unrelated codex text/);
+});
+
+test("antigravity transfer --write auto-approves, and without it the run is read-only", { skip: AGY_POSIX_ONLY }, (t) => {
+  const sandbox = agySandbox(t);
+  const source = path.join(sandbox.dir, "source.jsonl");
+  writeFile(source, `${JSON.stringify({ type: "user", message: { role: "user", content: "explicit" } })}\n`);
+  assert.equal(runAgy(sandbox, ["transfer", "--wait", "--write", "--source", source]).status, 0);
+  assert.equal(runAgy(sandbox, ["transfer", "--wait", "--source", source]).status, 0);
+  const [write, readOnly] = agyModelCalls(sandbox);
+  assert.equal(write.argv[0], "--dangerously-skip-permissions");
+  assert.equal(readOnly.argv[0], "--settings");
 });

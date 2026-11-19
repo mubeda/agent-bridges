@@ -10,10 +10,10 @@ export const REQUIRED_CATALOG_FILES = [
   ".opencode/catalog.json"
 ];
 
-export const CLAUDE_HOST_PLUGIN_NAMES = ["opencode", "gemini", "cursor"];
-export const CODEX_OPENCODE_PLUGIN_NAMES = ["opencode", "gemini", "claude", "cursor"];
-export const CURSOR_HOST_PLUGIN_NAMES = ["opencode", "gemini", "claude"];
-export const PLUGIN_TREES = ["opencode", "gemini", "claude", "cursor"];
+export const CLAUDE_HOST_PLUGIN_NAMES = ["opencode", "gemini", "cursor", "antigravity"];
+export const CODEX_OPENCODE_PLUGIN_NAMES = ["opencode", "gemini", "claude", "cursor", "antigravity"];
+export const CURSOR_HOST_PLUGIN_NAMES = ["opencode", "gemini", "claude", "antigravity"];
+export const PLUGIN_TREES = ["opencode", "gemini", "claude", "cursor", "antigravity"];
 
 function displayPath(filePath) {
   return filePath.split(path.sep).join("/");
@@ -26,7 +26,12 @@ function readJson(filePath, errors) {
     return null;
   }
   try {
-    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      errors.push(`${label} must hold a JSON object`);
+      return null;
+    }
+    return parsed;
   } catch (error) {
     errors.push(`invalid JSON ${label}: ${error.message}`);
     return null;
@@ -55,32 +60,32 @@ function formatNameList(names) {
   return `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
 }
 
+function pluginEntries(catalog) {
+  return Array.isArray(catalog.plugins) ? catalog.plugins.filter((plugin) => plugin && typeof plugin === "object") : [];
+}
+
 function requireAllowedPlugins(catalog, label, errors, requiredNames) {
   const allowed = new Set(requiredNames);
-  const exactCount = requiredNames.length;
   if (!Array.isArray(catalog.plugins)) {
     errors.push(`${label} missing plugins array`);
     return;
   }
-  if (catalog.plugins.length !== exactCount) {
-    errors.push(`${label} must list exactly ${exactCount} plugins`);
-    return;
-  }
-  const names = catalog.plugins.map((plugin) => plugin.name);
+  catalog.plugins.forEach((plugin, index) => {
+    if (!plugin || typeof plugin !== "object") errors.push(`${label} entry ${index} is not an object`);
+  });
+  const names = pluginEntries(catalog).map((plugin) => plugin.name);
   const uniqueNames = new Set(names);
-  if (uniqueNames.size !== exactCount) {
-    errors.push(`${label} must list exactly one entry each for ${formatNameList(requiredNames)}`);
-    return;
-  }
-  for (const plugin of catalog.plugins) {
-    if (!allowed.has(plugin.name)) {
-      errors.push(`${label} plugin ${plugin.name} is not allowed`);
-    }
-  }
+  // Name the missing and unexpected plugins first: a bare count mismatch hides which one is wrong.
   for (const required of requiredNames) {
-    if (!uniqueNames.has(required)) {
-      errors.push(`${label} missing required plugin ${required}`);
-    }
+    if (!uniqueNames.has(required)) errors.push(`${label} missing required plugin ${required}`);
+  }
+  for (const name of uniqueNames) {
+    if (!allowed.has(name)) errors.push(`${label} plugin ${name} is not allowed`);
+  }
+  if (uniqueNames.size !== names.length) {
+    errors.push(`${label} must list exactly one entry each for ${formatNameList(requiredNames)}`);
+  } else if (catalog.plugins.length !== requiredNames.length) {
+    errors.push(`${label} must list exactly ${requiredNames.length} plugins`);
   }
 }
 
@@ -96,8 +101,8 @@ export function validateMarketplaceRepo(rootDir) {
     requireName(claude, "claude marketplace", errors);
     requireCatalogId(claude, "claude marketplace", errors);
     requireAllowedPlugins(claude, "claude marketplace", errors, CLAUDE_HOST_PLUGIN_NAMES);
-    if (Array.isArray(claude.plugins) && claude.plugins.length === 3) {
-      for (const plugin of claude.plugins) {
+    {
+      for (const plugin of pluginEntries(claude)) {
         if (typeof plugin.source !== "string" || !plugin.source.startsWith("./plugins/")) {
           errors.push(`claude plugin ${plugin.name} source must be a ./plugins/... string`);
         }
@@ -110,8 +115,8 @@ export function validateMarketplaceRepo(rootDir) {
     requireName(codex, "codex marketplace", errors);
     requireCatalogId(codex, "codex marketplace", errors);
     requireAllowedPlugins(codex, "codex marketplace", errors, CODEX_OPENCODE_PLUGIN_NAMES);
-    if (Array.isArray(codex.plugins) && codex.plugins.length === 4) {
-      for (const plugin of codex.plugins) {
+    {
+      for (const plugin of pluginEntries(codex)) {
         const p = plugin.source?.path;
         if (typeof p !== "string" || !p.startsWith("./plugins/")) {
           errors.push(`codex plugin ${plugin.name} missing source.path`);
@@ -125,9 +130,9 @@ export function validateMarketplaceRepo(rootDir) {
     requireName(cursor, "cursor marketplace", errors);
     requireCatalogId(cursor, "cursor marketplace", errors);
     requireAllowedPlugins(cursor, "cursor marketplace", errors, CURSOR_HOST_PLUGIN_NAMES);
-    if (Array.isArray(cursor.plugins) && cursor.plugins.length === 3) {
+    {
       const pluginRoot = cursor.metadata?.pluginRoot;
-      for (const plugin of cursor.plugins) {
+      for (const plugin of pluginEntries(cursor)) {
         const source = plugin.source;
         const shortOk = pluginRoot === "plugins" && source === plugin.name;
         const prefixedOk = typeof source === "string" && source === `./plugins/${plugin.name}`;
@@ -145,8 +150,8 @@ export function validateMarketplaceRepo(rootDir) {
     requireName(opencode, "opencode catalog", errors);
     requireCatalogId(opencode, "opencode catalog", errors);
     requireAllowedPlugins(opencode, "opencode catalog", errors, CODEX_OPENCODE_PLUGIN_NAMES);
-    if (Array.isArray(opencode.plugins) && opencode.plugins.length === 4) {
-      for (const plugin of opencode.plugins) {
+    {
+      for (const plugin of pluginEntries(opencode)) {
         if (typeof plugin.source !== "string" || !plugin.source.startsWith("./plugins/")) {
           errors.push(`opencode plugin ${plugin.name} source must be a ./plugins/... string`);
         }

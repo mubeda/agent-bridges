@@ -87,3 +87,27 @@ test("win32 long prompt is omitted from argv (delivered via stdin)", () => {
   assert.ok(pIndex >= 0);
   assert.equal(shortArgs[pIndex + 1], "short");
 });
+
+// Task 2.1: the agy backend's read-only runs deny writes and shell (spec R19). Literal on purpose.
+const AGY_DENY = '{"permissions":{"deny":["write_file(*)","command(*)"]}}';
+
+test("agy read-only review denies writes and shell, with no mode flag", async () => {
+  const { AGY_READ_ONLY_SETTINGS } = await import("../plugins/gemini/scripts/lib/gemini.mjs");
+  assert.equal(AGY_READ_ONLY_SETTINGS, AGY_DENY);
+  assert.deepEqual(JSON.parse(AGY_DENY), { permissions: { deny: ["write_file(*)", "command(*)"] } });
+  assert.deepEqual(buildReviewArgs("/repo", { backend: "agy", prompt: "review" }), [
+    "--output-format=stream-json", "--print-timeout", "15m", "--settings", AGY_DENY, "-p", "review"
+  ]);
+});
+
+test("agy write run auto-approves and carries no deny settings", () => {
+  assert.deepEqual(buildRunArgs("/repo", { backend: "agy", write: true, prompt: "fix it" }), [
+    "--output-format=stream-json", "--print-timeout", "15m", "--dangerously-skip-permissions", "-p", "fix it"
+  ]);
+});
+
+test("gemini CLI read-only review argv is unchanged", () => {
+  assert.deepEqual(buildReviewArgs("/repo", { backend: "gemini", prompt: "review" }), [
+    "--skip-trust", "--approval-mode=plan", "--output-format=stream-json", "-p", "review"
+  ]);
+});

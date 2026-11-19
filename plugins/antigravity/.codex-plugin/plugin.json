@@ -1,0 +1,17 @@
+{
+  "name": "antigravity",
+  "version": "0.1.0",
+  "description": "Use the local Antigravity CLI to review code or delegate tasks.",
+  "author": { "name": "mubeda" },
+  "license": "Apache-2.0",
+  "keywords": ["antigravity", "review", "rescue"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Antigravity",
+    "shortDescription": "Delegate reviews and rescue tasks to the local Antigravity CLI.",
+    "longDescription": "Skill parity with the Codex companion surface. Runs node scripts/antigravity-companion.mjs against your existing Antigravity CLI (`agy`) install.",
+    "developerName": "mubeda",
+    "category": "Developer tools",
+    "capabilities": ["Read", "Write"]
+  }
+}
