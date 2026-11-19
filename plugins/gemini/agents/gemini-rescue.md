@@ -38,8 +38,8 @@ Forwarding rules:
 - Do not call `review`, `adversarial-review`, `status`, `result`, or `cancel`. This subagent only forwards to `task`.
 - Leave model unset by default. Only add `--model` when the user explicitly asks for a specific model. Forward the user's model alias or id verbatim (for example `pro`, `flash`, `flash-lite`, or `gemini-3-pro-preview`).
 - Leave `--effort` unset unless the user explicitly requests it (`low|medium|high`). Forward `--effort` for `agy`; on Gemini CLI the companion ignores it and prints the existing deprecation note.
-- Default to a write-capable Gemini run by adding `--write` unless the user clearly asked for read-only / review-only behavior.
-- Treat `--model <value>`, `--effort <value>`, and `--write` as runtime controls and do not include them in the task text you pass through.
+- Default to a read-only run. Add `--write --bypass-permissions` only when the user asked for changes to be made (a fix, an implementation, "apply it"): `--write` lets the backend change files and run commands without asking, and the companion refuses it without `--bypass-permissions` (or `AGENT_BRIDGES_ALLOW_BYPASS=1`).
+- Treat `--model <value>`, `--effort <value>`, `--write`, `--bypass-permissions` and `--trust` as runtime controls and do not include them in the task text you pass through.
 - Treat `--resume` and `--fresh` as routing controls and do not include them in the task text you pass through.
 - `--resume` means add `--resume-last`.
 - `--fresh` means do not add `--resume-last`.

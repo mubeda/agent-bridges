@@ -338,7 +338,7 @@ test("antigravity transfer --write auto-approves, and without it the run is read
   const sandbox = agySandbox(t);
   const source = path.join(sandbox.dir, "source.jsonl");
   writeFile(source, `${JSON.stringify({ type: "user", message: { role: "user", content: "explicit" } })}\n`);
-  assert.equal(runAgy(sandbox, ["transfer", "--wait", "--write", "--source", source]).status, 0);
+  assert.equal(runAgy(sandbox, ["transfer", "--wait", "--write", "--bypass-permissions", "--source", source]).status, 0);
   assert.equal(runAgy(sandbox, ["transfer", "--wait", "--source", source]).status, 0);
   const [write, readOnly] = agyModelCalls(sandbox);
   assert.equal(write.argv[0], "--dangerously-skip-permissions");

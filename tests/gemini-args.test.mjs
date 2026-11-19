@@ -9,8 +9,8 @@ import {
 } from "../plugins/gemini/scripts/lib/gemini.mjs";
 
 test("gemini review uses plan", () => {
-  const args = buildReviewArgs("/repo", { backend: "gemini", prompt: "review" });
-  assert.ok(args.includes("--skip-trust"));
+  const args = buildReviewArgs("/repo", { backend: "gemini", prompt: "review", env: {} });
+  assert.equal(args.includes("--skip-trust"), false);
   assert.ok(args.includes("--approval-mode=plan"));
   assert.ok(args.includes("--output-format=stream-json"));
   assert.equal(args.includes("--dangerously-skip-permissions"), false);
@@ -106,8 +106,8 @@ test("agy write run auto-approves and carries no deny settings", () => {
   ]);
 });
 
-test("gemini CLI read-only review argv is unchanged", () => {
-  assert.deepEqual(buildReviewArgs("/repo", { backend: "gemini", prompt: "review" }), [
-    "--skip-trust", "--approval-mode=plan", "--output-format=stream-json", "-p", "review"
+test("gemini CLI read-only review argv has plan mode and no trust bypass", () => {
+  assert.deepEqual(buildReviewArgs("/repo", { backend: "gemini", prompt: "review", env: {} }), [
+    "--approval-mode=plan", "--output-format=stream-json", "-p", "review"
   ]);
 });

@@ -1,7 +1,7 @@
 ---
 name: rescue
 description: Delegate investigation, an explicit fix request, or follow-up rescue work to the OpenCode rescue subagent
-argument-hint: "[--background|--wait] [--write] [--resume|--fresh] [--model <provider/model>] [--effort <minimal|low|medium|high|max>] [what OpenCode should investigate, solve, or continue]"
+argument-hint: "[--background|--wait] [--write --bypass-permissions] [--trust] [--resume|--fresh] [--model <provider/model>] [--effort <minimal|low|medium|high|max>] [what OpenCode should investigate, solve, or continue]"
 allowed-tools: Bash(node:*), AskUserQuestion, Agent
 ---
 
@@ -27,7 +27,7 @@ Execution mode:
 - If the request includes `--wait`, forward it to the companion `task` call so the task runs in the foreground.
 - If neither flag is present, omit both and let `task` default to foreground.
 - `--background` and `--wait` are companion runtime controls. Preserve them for the forwarded `task` call, but do not treat them as part of the natural-language task text.
-- `--model`, `--effort`, and `--write` are runtime-selection flags. Preserve them for the forwarded `task` call, but do not treat them as part of the natural-language task text.
+- `--model`, `--effort`, `--write`, `--bypass-permissions` and `--trust` are runtime-selection flags. Preserve them for the forwarded `task` call, but do not treat them as part of the natural-language task text.
 - If the request includes `--resume`, do not ask whether to continue. The user already chose.
 - If the request includes `--fresh`, do not ask whether to continue. The user already chose.
 - Otherwise, before starting OpenCode, check for a resumable rescue thread from this Claude session by running:
@@ -52,7 +52,7 @@ Operating rules:
 - Return the OpenCode companion stdout verbatim to the user.
 - Do not paraphrase, summarize, rewrite, or add commentary before or after it.
 - Do not ask the subagent to inspect files, monitor progress, poll `/opencode:status`, fetch `/opencode:result`, call `/opencode:cancel`, summarize output, or do follow-up work of its own.
-- Default to a write-capable OpenCode run by adding `--write` to the companion `task` invocation unless the user clearly asked for read-only / review-only behavior.
+- Default to a read-only run. Add `--write --bypass-permissions` only when the user asked for changes to be made (a fix, an implementation, "apply it"): `--write` lets the backend change files and run commands without asking, and the companion refuses it without `--bypass-permissions` (or `AGENT_BRIDGES_ALLOW_BYPASS=1`).
 - Leave `--effort` unset unless the user explicitly asks for a specific reasoning effort.
 - Leave the model unset unless the user explicitly asks for one. Forward whatever provider/model string they pass verbatim (for example `openrouter/anthropic/claude-sonnet-4.6`).
 - Leave `--resume` and `--fresh` in the forwarded request. The subagent handles that routing when it builds the `task` command.

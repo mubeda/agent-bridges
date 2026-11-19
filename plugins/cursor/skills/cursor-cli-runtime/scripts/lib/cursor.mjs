@@ -115,7 +115,8 @@ export function buildRunArgs(options = {}) {
   } else {
     args.push("--force");
   }
-  args.push("--trust");
+  // Folder trust is opt-in: --trust on the companion, or AGENT_BRIDGES_TRUST=1.
+  if ((options.env ?? process.env).AGENT_BRIDGES_TRUST === "1") args.push("--trust");
   if (options.model) args.push("--model", String(options.model));
   if (options.resumeSessionId) args.push("--resume", String(options.resumeSessionId));
   args.push("--output-format", "json");

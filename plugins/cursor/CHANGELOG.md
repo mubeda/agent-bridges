@@ -3,6 +3,7 @@
 ## 0.2.2 — 2026-11-19
 
 ### Security
+- **BREAKING: `--write` needs an explicit opt-in.** The companion refuses `--write` without `--bypass-permissions` or `AGENT_BRIDGES_ALLOW_BYPASS=1`. Rescue is read-only by default. The backend's folder-trust bypass is passed only with `--trust` or `AGENT_BRIDGES_TRUST=1`.
 - **Reviews no longer follow untracked symlinks.** A symlink to a file outside the repository is listed as skipped, not inlined into the review prompt.
 - **Git is run without a shell**, so a ref containing `&` reaches git intact on Windows.
 

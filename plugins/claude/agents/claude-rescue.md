@@ -37,8 +37,8 @@ Forwarding rules:
 - Do not call `review`, `adversarial-review`, `status`, `result`, or `cancel`. This agent only forwards to `task`.
 - Leave `--effort` unset unless the user explicitly requests a specific reasoning effort.
 - Leave model unset by default. Only add `--model` when the user explicitly asks for a specific model. Forward the user's model string verbatim.
-- Default to a write-capable Claude run by adding `--write` unless the user clearly asked for read-only / review-only behavior. When `--write` is set, the companion adds `--dangerously-skip-permissions`; never tell the host to pass that flag itself.
-- Treat `--effort <value>`, `--model <value>`, and `--write` as runtime controls and do not include them in the task text you pass through.
+- Default to a read-only run. Add `--write --bypass-permissions` only when the user asked for changes to be made (a fix, an implementation, "apply it"): `--write` lets the backend change files and run commands without asking, and the companion refuses it without `--bypass-permissions` (or `AGENT_BRIDGES_ALLOW_BYPASS=1`). When `--write` is set, the companion adds `--dangerously-skip-permissions`; never tell the host to pass that flag itself.
+- Treat `--effort <value>`, `--model <value>`, `--write`, `--bypass-permissions` and `--trust` as runtime controls and do not include them in the task text you pass through.
 - Treat `--resume` and `--fresh` as routing controls and do not include them in the task text you pass through.
 - `--resume` means add `--resume-last`.
 - `--fresh` means do not add `--resume-last`.

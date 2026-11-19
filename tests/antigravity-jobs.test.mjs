@@ -363,9 +363,9 @@ test("background write runs keep the write permission through the worker", { ski
   const sandbox = makeSandbox(t);
   const source = path.join(sandbox.dir, "source.jsonl");
   fs.writeFileSync(source, `${JSON.stringify({ type: "user", message: { role: "user", content: "explicit" } })}\n`);
-  const task = JSON.parse(run(sandbox, ["task", "--background", "--write", "--json", "P"]).stdout);
+  const task = JSON.parse(run(sandbox, ["task", "--background", "--write", "--bypass-permissions", "--json", "P"]).stdout);
   run(sandbox, ["status", task.jobId, "--wait"]);
-  const transfer = JSON.parse(run(sandbox, ["transfer", "--write", "--json", "--source", source]).stdout);
+  const transfer = JSON.parse(run(sandbox, ["transfer", "--write", "--bypass-permissions", "--json", "--source", source]).stdout);
   run(sandbox, ["status", transfer.jobId, "--wait"]);
   const readOnly = JSON.parse(run(sandbox, ["task", "--background", "--json", "P"]).stdout);
   run(sandbox, ["status", readOnly.jobId, "--wait"]);

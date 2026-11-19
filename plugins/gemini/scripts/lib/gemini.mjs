@@ -504,11 +504,9 @@ export function buildRunArgs(_cwd, options = {}) {
     // Approval mode is derived solely from write — ignore options.approvalMode
     // so reviews cannot be overridden to yolo.
     const approvalMode = write ? "yolo" : "plan";
-    args.push(
-      "--skip-trust",
-      `--approval-mode=${approvalMode}`,
-      "--output-format=stream-json"
-    );
+    // Folder trust is opt-in: --trust on the companion, or AGENT_BRIDGES_TRUST=1.
+    if ((options.env ?? process.env).AGENT_BRIDGES_TRUST === "1") args.push("--skip-trust");
+    args.push(`--approval-mode=${approvalMode}`, "--output-format=stream-json");
 
     if (options.model) {
       args.push("-m", String(options.model));

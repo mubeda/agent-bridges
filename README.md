@@ -123,7 +123,15 @@ All five companions ship a `delegate` skill: a strict manager/implementer split 
 - Claude / Cursor: `/opencode:delegate`, `/gemini:delegate`, or `/antigravity:delegate` (Claude Code also has `/cursor:delegate`)
 - Codex / OpenCode: skills `opencode-delegate`, `gemini-delegate`, `claude-delegate`, `cursor-delegate`, and `antigravity-delegate`
 
-Implementation chunks run through the companion `task` runtime as fresh write-capable jobs (`--background --fresh --write`; the Claude backend uses `--wait` because `claude --bg` may isolate jobs in `.claude/worktrees/`). The supervising session re-runs every claimed-green suite itself and is the only party that commits.
+Implementation chunks run through the companion `task` runtime as fresh write-capable jobs (`--background --fresh --write --bypass-permissions`; the Claude backend uses `--wait` because `claude --bg` may isolate jobs in `.claude/worktrees/`). The supervising session re-runs every claimed-green suite itself and is the only party that commits.
+
+## Permissions are opt-in
+
+No companion bypasses a backend CLI's safety checks unless you say so.
+
+- **Write runs.** `--write` makes the backend auto-approve its tools (`--dangerously-skip-permissions` for Claude and Antigravity, `--force` for Cursor, `--approval-mode=yolo` for Gemini, `--auto` for OpenCode). The companion refuses `--write` unless the same command has `--bypass-permissions`, or `AGENT_BRIDGES_ALLOW_BYPASS=1` is set in the environment.
+- **Folder trust.** Cursor's `--trust` and Gemini's `--skip-trust` are passed only with `--trust` on the companion command, or with `AGENT_BRIDGES_TRUST=1`. Without it, the backend applies its own folder-trust check, and a headless run in a folder you have not trusted can stop with the backend's error.
+- Rescue is read-only by default. Delegate passes `--write --bypass-permissions` itself, because invoking it is an explicit request for the backend to make the changes.
 
 ## Review gate (Claude only)
 
@@ -159,7 +167,7 @@ npx skills add mubeda/agent-bridges --skill antigravity-cli-runtime --skill anti
 
 - Setup: `/opencode:setup` and `/gemini:setup` (or Codex/Cursor equivalents, including `claude-setup`)
 - Review: run with `--background` when you want a detached review job
-- Rescue: defaults to `--write` for unattended edits; omit only for read-only asks
+- Rescue: read-only by default; add `--write --bypass-permissions` for unattended edits
 - Transfer: `/opencode:transfer` / `/gemini:transfer` (or Codex transfer skills)
 - Delegate: explicit invocation only (`/opencode:delegate` or the `*-delegate` skills); the backend implements, the session reviews and commits
 - Claude only (optional): `--enable-review-gate` on setup

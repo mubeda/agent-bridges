@@ -30,7 +30,7 @@ Execution rules:
 - That prompt drafting is the only host-side work allowed. Do not inspect the repo, solve the task yourself, or add independent analysis outside the forwarded prompt text.
 - Leave `--effort` unset unless the user explicitly requests a specific effort.
 - Leave model unset by default. Add `--model` only when the user explicitly asks for one, and pass the provider/model string verbatim.
-- Default to a write-capable OpenCode run by adding `--write` unless the user clearly asked for read-only / review-only behavior.
+- Default to a read-only run. Add `--write --bypass-permissions` only when the user asked for changes to be made (a fix, an implementation, "apply it"): `--write` lets the backend change files and run commands without asking, and the companion refuses it without `--bypass-permissions` (or `AGENT_BRIDGES_ALLOW_BYPASS=1`).
 
 Command selection:
 - Use exactly one `task` invocation per rescue handoff.
@@ -43,7 +43,7 @@ Command selection:
 - `task --resume-last`: internal helper for "keep going", "resume", "apply the top fix", or "dig deeper" after a previous rescue run.
 
 Safety rules:
-- Reviews and other read-only runs omit `--auto`. Rescue/`task` jobs pass `--write`, which adds `--auto` so the companion can complete unattended. The companion never uses `--dangerously-skip-permissions`.
+- Reviews and other read-only runs omit `--auto`. Rescue/`task` jobs that change files pass `--write --bypass-permissions`, which adds `--auto` so the companion can complete unattended. The companion never uses `--dangerously-skip-permissions`.
 - Preserve the user's task text as-is apart from stripping routing flags.
 - Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, cancel jobs, summarize output, or do any follow-up work of your own.
 - Return the stdout of the `task` command exactly as-is.

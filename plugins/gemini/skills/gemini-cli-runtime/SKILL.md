@@ -30,7 +30,7 @@ Execution rules:
 - That prompt drafting is the only host-side work allowed. Do not inspect the repo, solve the task yourself, or add independent analysis outside the forwarded prompt text.
 - Leave the model unset by default. Add `--model` only when the user explicitly asks for one, and pass the alias or id verbatim. Supported aliases: `auto` (default, routes Pro↔Flash by phase), `pro` (Gemini Pro), `flash` (Gemini 2.5 Flash), `flash-lite` (Gemini 2.5 Flash-Lite). Full ids like `gemini-3-pro-preview` are also accepted.
 - Leave `--effort` unset unless the user explicitly requests it (`low|medium|high`). Forward `--effort` for `agy`; on Gemini CLI the companion ignores it and prints the existing deprecation note.
-- Default to a write-capable Gemini run by adding `--write` unless the user clearly asked for read-only / review-only behavior.
+- Default to a read-only run. Add `--write --bypass-permissions` only when the user asked for changes to be made (a fix, an implementation, "apply it"): `--write` lets the backend change files and run commands without asking, and the companion refuses it without `--bypass-permissions` (or `AGENT_BRIDGES_ALLOW_BYPASS=1`).
 
 Command selection:
 - Use exactly one `task` invocation per rescue handoff.

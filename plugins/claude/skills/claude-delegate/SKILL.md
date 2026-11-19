@@ -84,13 +84,13 @@ Protected paths (beyond defaults): <list>
 ### 2. Launch each chunk as a fresh blocking job
 
 ```bash
-cd <repo> && node "<plugin-root>/scripts/claude-companion.mjs" task --wait --fresh --write "$(cat <<'CHUNK_PROMPT'
+cd <repo> && node "<plugin-root>/scripts/claude-companion.mjs" task --wait --fresh --write --bypass-permissions "$(cat <<'CHUNK_PROMPT'
 <chunk prompt>
 CHUNK_PROMPT
 )"
 ```
 
-- **Always `--fresh --write` for implementation.** `--write` runs Claude
+- **Always `--fresh --write --bypass-permissions` for implementation.** `--write` runs Claude
   with permission checks bypassed (`--dangerously-skip-permissions`);
   without it the run stays in plan mode and produces no edits. The user
   must have run `claude --dangerously-skip-permissions` once interactively
@@ -181,7 +181,7 @@ chunk is committed or escalated.
    - **blocked** — still running but NO worktree change for **3 consecutive
      ticks** (~30 min). One or two quiet ticks are not blocked — it may be
      running tests or thinking without writing.
-4. Restart what needs it, always as a fresh `--wait --fresh --write` launch
+4. Restart what needs it, always as a fresh `--wait --fresh --write --bypass-permissions` launch
    whose prompt states the worktree may already contain partial edits from
    the prior attempt and exactly what remains:
    - A **blocked** chunk is still running: stop it first with
@@ -239,7 +239,7 @@ way.
 ### 5. Findings: re-feed, at most twice
 
 Every finding — however small — goes back to Claude with precise
-file-and-line feedback. Launch the re-feed as a **fresh `--wait --fresh --write`
+file-and-line feedback. Launch the re-feed as a **fresh `--wait --fresh --write --bypass-permissions`
 job** whose prompt states that the worktree already contains the prior
 attempt's edits and lists exactly what to change. (The companion can only
 resume the *latest* thread in a workspace, so with parallel chunks in

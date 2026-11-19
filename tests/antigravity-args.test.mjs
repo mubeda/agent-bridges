@@ -132,7 +132,7 @@ test("Windows prompts above 20,000 characters go on stdin only", () => {
 
 test("the companion spawns agy with the write and read-only vectors", { skip: POSIX_ONLY }, (t) => {
   const sandbox = makeSandbox(t);
-  assert.equal(run(sandbox, ["task", "--wait", "--write", "P"]).status, 0);
+  assert.equal(run(sandbox, ["task", "--wait", "--write", "--bypass-permissions", "P"]).status, 0);
   assert.equal(run(sandbox, ["task", "--wait", "P"]).status, 0);
   const [write, readOnly] = modelCalls(sandbox);
   assert.deepEqual(write.argv, ["--dangerously-skip-permissions", "--output-format", "json", "-p", "P"]);

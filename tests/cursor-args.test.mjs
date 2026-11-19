@@ -56,12 +56,12 @@ test("resolved installed agent path is directly spawnable", (t) => {
   assert.equal(result.error, undefined);
 });
 
-test("review wait uses plan, json, trust, and no force", () => {
-  const args = buildReviewArgs({ prompt: "review", invoke: "print" });
+test("review wait uses plan, json, no trust bypass, and no force", () => {
+  const args = buildReviewArgs({ prompt: "review", invoke: "print", env: {} });
   assert.ok(args.includes("-p"));
   assert.equal(args[args.indexOf("--mode") + 1], "plan");
   assert.equal(args[args.indexOf("--output-format") + 1], "json");
-  assert.ok(args.includes("--trust"));
+  assert.equal(args.includes("--trust"), false);
   assert.equal(args.includes("--force"), false);
   assert.equal(args.includes("--yolo"), false);
 });

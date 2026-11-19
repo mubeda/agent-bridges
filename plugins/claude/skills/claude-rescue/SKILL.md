@@ -20,9 +20,9 @@ Forwarding rules:
 - Invoke `task` exactly once.
 - Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, cancel jobs, summarize output, or do follow-up work.
 - Do not call `review`, `adversarial-review`, `status`, `result`, or `cancel`.
-- Default to a write-capable Claude run by adding `--write` unless the user clearly asked for read-only / review-only behavior. When `--write` is set, the companion adds `--dangerously-skip-permissions`; never tell the host to pass that flag itself.
+- Default to a read-only run. Add `--write --bypass-permissions` only when the user asked for changes to be made (a fix, an implementation, "apply it"): `--write` lets the backend change files and run commands without asking, and the companion refuses it without `--bypass-permissions` (or `AGENT_BRIDGES_ALLOW_BYPASS=1`). When `--write` is set, the companion adds `--dangerously-skip-permissions`; never tell the host to pass that flag itself.
 - Leave `--effort` and `--model` unset unless the user explicitly requests them. Forward an explicit model string verbatim.
-- Treat `--effort <value>`, `--model <value>`, and `--write` as runtime controls, not task text.
+- Treat `--effort <value>`, `--model <value>`, `--write`, `--bypass-permissions` and `--trust` as runtime controls, not task text.
 - Forward `--background` and `--wait` to `task`; they are companion runtime controls, not task text.
 - Strip `--resume` and add `--resume-last`. Strip `--fresh` without adding `--resume-last`.
 - For a clear continuation request such as "continue", "keep going", "resume", "apply the top fix", or "dig deeper", add `--resume-last` unless `--fresh` is present.
