@@ -1,0 +1,64 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+
+const PLUGINS = ["opencode", "gemini", "claude", "cursor", "antigravity"];
+
+for (const plugin of PLUGINS) {
+  test(`${plugin}: a command path with spaces survives a shell`, async (t) => {
+    const { runCommand, quoteForShell } = await import(`../plugins/${plugin}/scripts/lib/process.mjs`);
+    assert.equal(quoteForShell("C:\\Program Files\\tool\\agent.cmd"), '"C:\\Program Files\\tool\\agent.cmd"');
+    assert.equal(quoteForShell("agent"), "agent");
+    assert.equal(quoteForShell('"C:\\a b\\x.cmd"'), '"C:\\a b\\x.cmd"');
+    if (process.platform === "win32") return;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dir with space-"));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const tool = path.join(dir, "tool");
+    fs.writeFileSync(tool, "#!/bin/sh\necho ok\n", { mode: 0o755 });
+    const result = runCommand(tool, [], { shell: true });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), "ok");
+  });
+
+  test(`${plugin}: runCommand honours shell: false`, async () => {
+    const { runCommand } = await import(`../plugins/${plugin}/scripts/lib/process.mjs`);
+    // With a shell, `&&` would run the second command; without one it is a literal argument.
+    const result = runCommand(process.execPath, ["-e", "console.log(process.argv.slice(1).join('|'))", "a&&b"], { shell: false });
+    assert.equal(result.stdout.trim(), "a&&b");
+    const source = fs.readFileSync(new URL(`../plugins/${plugin}/scripts/lib/process.mjs`, import.meta.url), "utf8");
+    assert.match(source, /options\.shell \?\?/);
+  });
+}
+
+for (const [plugin, lib, envName] of [["antigravity", "agy", "ANTIGRAVITY_BIN"], ["cursor", "cursor", "CURSOR_BIN"]]) {
+  test(`${plugin}: a .cmd launcher with no .ps1 is reported as unusable on Windows`, async (t) => {
+    const { unsupportedLauncher } = await import(`../plugins/${plugin}/scripts/lib/${lib}.mjs`);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "launcher-"));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const cmd = path.join(dir, "tool.cmd");
+    fs.writeFileSync(cmd, "@echo off\n");
+    assert.match(unsupportedLauncher({ [envName]: cmd }, "win32"), /\.cmd/);
+    assert.match(unsupportedLauncher({ [envName]: cmd }, "win32"), new RegExp(envName));
+    fs.writeFileSync(path.join(dir, "tool.ps1"), "");
+    assert.equal(unsupportedLauncher({ [envName]: cmd }, "win32"), null);
+    assert.equal(unsupportedLauncher({ [envName]: path.join(dir, "tool.exe") }, "win32"), null);
+    assert.equal(unsupportedLauncher({ [envName]: cmd }, "linux"), null);
+  });
+}
+
+for (const plugin of ["opencode", "gemini", "claude", "cursor", "antigravity"]) {
+  test(`${plugin}: transfer never falls back to another workspace's Codex session`, async (t) => {
+    const { resolveTransferSource } = await import(`../plugins/${plugin}/scripts/lib/host-session.mjs`);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-fallback-"));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const home = path.join(dir, "home");
+    const repo = path.join(dir, "repo");
+    fs.mkdirSync(repo);
+    const rollout = path.join(home, ".codex", "sessions", "2026", "11", "20", "rollout-x.jsonl");
+    fs.mkdirSync(path.dirname(rollout), { recursive: true });
+    fs.writeFileSync(rollout, `${JSON.stringify({ type: "session_meta", payload: { cwd: path.join(dir, "elsewhere") } })}\n`);
+    assert.throws(() => resolveTransferSource(repo, { home, env: {} }));
+  });
+}

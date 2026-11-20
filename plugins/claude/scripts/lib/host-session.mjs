@@ -131,7 +131,8 @@ function findCodexFiles(cwd, home, env) {
     (name) => name.startsWith("rollout-") && name.endsWith(".jsonl")
   );
   const matching = files.filter((filePath) => codexSessionMatchesCwd(filePath, cwd));
-  return matching.length > 0 ? matching : files;
+  // Only the current workspace: another repository's session must never be handed off.
+  return matching;
 }
 
 function findCursorFiles(cwd, home) {

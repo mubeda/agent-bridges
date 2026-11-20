@@ -28,7 +28,7 @@ test("all 50 companion skills look up the companion in the documented order", ()
     const body = fs.readFileSync(file, "utf8");
     const start = body.indexOf("Resolve `<plugin-root>`");
     assert.ok(start >= 0, name);
-    const lines = body.slice(start).split("\n");
+    const lines = body.slice(start).split(/\r?\n/); // Git for Windows checks out CRLF
     const stopIndex = lines.findIndex((line) => line.startsWith("If none exist,"));
     assert.ok(stopIndex > 0, name);
     const entries = lines.slice(0, stopIndex).filter((line) => /^\d+\. /.test(line));
@@ -107,7 +107,7 @@ test("without the runtime skill the sibling is missing and the stop line names i
   fs.cpSync(path.join(SOURCE_SKILLS, "antigravity-setup"), path.join(skills, "antigravity-setup"), { recursive: true });
   assert.equal(fs.existsSync(siblingCompanion(path.join(skills, "antigravity-setup"))), false);
   const body = fs.readFileSync(path.join(skills, "antigravity-setup", "SKILL.md"), "utf8");
-  const stop = body.split("\n").find((line) => line.startsWith("If none exist,"));
+  const stop = body.split(/\r?\n/).find((line) => line.startsWith("If none exist,"));
   assert.match(stop, /antigravity-cli-runtime/);
 });
 

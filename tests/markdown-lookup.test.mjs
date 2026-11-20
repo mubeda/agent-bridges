@@ -285,7 +285,7 @@ test("antigravity skills resolve the companion in the documented order", () => {
     const body = fs.readFileSync(path.join(skillsDir, name, "SKILL.md"), "utf8");
     const start = body.indexOf("Resolve `<plugin-root>`");
     assert.ok(start >= 0, name);
-    const block = body.slice(start).split("\n");
+    const block = body.slice(start).split(/\r?\n/);
     const entries = block.filter((line) => /^\d+\. /.test(line)).slice(0, 6);
     assert.match(entries[0], /^1\. `\$CLAUDE_PLUGIN_ROOT`/, name);
     assert.match(entries[1], /^2\. `\$PLUGIN_ROOT`/, name);

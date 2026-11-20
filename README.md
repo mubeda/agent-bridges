@@ -111,7 +111,7 @@ Override with `GEMINI_BACKEND=agy` or `GEMINI_BACKEND=gemini`. Optional `GEMINI_
 
 ## Transfer
 
-All five companions support `transfer`: move the current host session (Claude, Codex, or Cursor — auto-detected, or `--source <path>`) into a resumable OpenCode or Gemini thread, or send a prompt handoff into Claude, Cursor Agent, or Antigravity. The Antigravity companion only picks a Codex session recorded for the current folder.
+All five companions support `transfer`: move the current host session (Claude, Codex, or Cursor — auto-detected, or `--source <path>`) into a resumable OpenCode or Gemini thread, or send a prompt handoff into Claude, Cursor Agent, or Antigravity. A Codex session is only picked when it was recorded for the current folder.
 
 - Claude / Cursor: `/opencode:transfer`, `/gemini:transfer`, or `/antigravity:transfer`
 - Codex / Cursor: skills `opencode-transfer`, `gemini-transfer`, `claude-transfer`, or `antigravity-transfer`

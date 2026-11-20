@@ -67,6 +67,15 @@ export function resolveAgySpawnCommand(env = process.env, platform = process.pla
   };
 }
 
+/** Node cannot start a .cmd or .bat without a shell, and the prompt must never go through one. */
+export function unsupportedLauncher(env = process.env, platform = process.platform) {
+  if (platform !== "win32") return null;
+  const { file } = resolveAgySpawnCommand(env, platform);
+  const extension = path.extname(file).toLowerCase();
+  if (extension !== ".cmd" && extension !== ".bat") return null;
+  return `${file} is a ${extension} launcher with no .ps1 next to it, so Antigravity jobs cannot start it. Set ANTIGRAVITY_BIN to the .exe, or to a launcher that ships a .ps1.`;
+}
+
 export const SIGN_IN_NOTE =
   "Sign-in cannot be checked without a run. Sign in once with an interactive `agy` session, or set GEMINI_API_KEY with modelProvider \"gemini\" in your Antigravity settings.";
 
@@ -102,13 +111,15 @@ export function getAgyAvailability(cwd, env = process.env, runCommandImpl = runC
   const bin = resolveAgyBin(env);
   const result = runCommandImpl(bin, ["--version"], { cwd, env });
   // runCommand maps a null exit status to 0, so a signal-killed probe must be checked explicitly.
-  const available = !result.error && !result.signal && result.status === 0;
-  const version = available ? (result.stdout || result.stderr || "").trim() : null;
+  const probed = !result.error && !result.signal && result.status === 0;
+  const launcherProblem = probed ? unsupportedLauncher(env) : null;
+  const available = probed && !launcherProblem;
+  const version = probed ? (result.stdout || result.stderr || "").trim() : null;
   return {
     available,
     bin,
     version,
-    detail: available ? `${bin} ${version}` : MISSING_BIN_DETAIL
+    detail: available ? `${bin} ${version}` : launcherProblem ?? MISSING_BIN_DETAIL
   };
 }
 

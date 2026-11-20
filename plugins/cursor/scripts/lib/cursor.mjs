@@ -62,14 +62,24 @@ export function resolveCursorSpawnCommand(env = process.env, platform = process.
   };
 }
 
+/** Node cannot start a .cmd or .bat without a shell, and the prompt must never go through one. */
+export function unsupportedLauncher(env = process.env, platform = process.platform) {
+  if (platform !== "win32") return null;
+  const { file } = resolveCursorSpawnCommand(env, platform);
+  const extension = path.extname(file).toLowerCase();
+  if (extension !== ".cmd" && extension !== ".bat") return null;
+  return `${file} is a ${extension} launcher with no .ps1 next to it, so Cursor Agent jobs cannot start it. Set CURSOR_BIN to the .exe, or to a launcher that ships a .ps1.`;
+}
+
 export function getCursorAvailability(cwd, env = process.env) {
   const bin = resolveCursorBin(env);
   const status = binaryAvailable(bin, ["--version"], { cwd });
+  const launcherProblem = status.available ? unsupportedLauncher(env) : null;
   return {
-    available: status.available,
+    available: status.available && !launcherProblem,
     loggedIn: false,
     bin,
-    detail: status.available ? status.detail || `${bin} is available.` : MISSING_BIN_DETAIL
+    detail: launcherProblem ?? (status.available ? status.detail || `${bin} is available.` : MISSING_BIN_DETAIL)
   };
 }
 

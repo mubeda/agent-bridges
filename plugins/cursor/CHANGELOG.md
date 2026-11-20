@@ -3,6 +3,9 @@
 ## 0.2.2 — 2026-11-19
 
 ### Security
+- **Windows: a CLI path with spaces now works.** A binary under `C:\\Program Files` was passed to `cmd.exe` unquoted and failed.
+- **Transfer never picks another repository's Codex session.** With no session for the current folder it now stops and asks for `--source`.
+- **Windows: a `.cmd` launcher with no `.ps1` is reported by setup** instead of failing later with `spawn EINVAL`.
 - **BREAKING: `--write` needs an explicit opt-in.** The companion refuses `--write` without `--bypass-permissions` or `AGENT_BRIDGES_ALLOW_BYPASS=1`. Rescue is read-only by default. The backend's folder-trust bypass is passed only with `--trust` or `AGENT_BRIDGES_TRUST=1`.
 - **Reviews no longer follow untracked symlinks.** A symlink to a file outside the repository is listed as skipped, not inlined into the review prompt.
 - **Git is run without a shell**, so a ref containing `&` reaches git intact on Windows.

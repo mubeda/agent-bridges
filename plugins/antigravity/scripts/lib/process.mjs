@@ -1,15 +1,21 @@
 import { spawnSync } from "node:child_process";
 import process from "node:process";
 
+/** cmd.exe splits an unquoted path at its first space, so quote a command that has one. */
+export function quoteForShell(command) {
+  return /\s/.test(command) && !command.startsWith('"') ? `"${command}"` : command;
+}
+
 export function runCommand(command, args = [], options = {}) {
-  const result = spawnSync(command, args, {
+  const shell = options.shell ?? (process.platform === "win32" ? (process.env.SHELL || true) : false);
+  const result = spawnSync(shell ? quoteForShell(command) : command, args, {
     cwd: options.cwd,
     env: options.env,
     encoding: "utf8",
     input: options.input,
     maxBuffer: options.maxBuffer,
     stdio: options.stdio ?? "pipe",
-    shell: options.shell ?? (process.platform === "win32" ? (process.env.SHELL || true) : false),
+    shell,
     windowsHide: true
   });
 
