@@ -108,3 +108,11 @@ process.exit(0);
   assert.equal(seen.external[path.join(path.dirname(seen.named), "*")], "allow");
   assert.equal(fs.existsSync(seen.named), false, "the diff file is removed after the review");
 });
+
+test("a read-only run drops a native OpenCode 2 permissions list, which would outrank the allowlist", () => {
+  const user = { model: "p/m", permissions: [{ action: "*", resource: "*", effect: "allow" }] };
+  const config = JSON.parse(buildRunEnv({}, { OPENCODE_CONFIG_CONTENT: JSON.stringify(user) }).OPENCODE_CONFIG_CONTENT);
+  assert.equal("permissions" in config, false);
+  assert.equal(config.model, "p/m");
+  assert.deepEqual(config.permission, READ_ONLY_PERMISSION);
+});

@@ -385,7 +385,9 @@ export function buildRunEnv(options = {}, env = process.env) {
   const permission = options.readableDir
     ? { ...READ_ONLY_PERMISSION, external_directory: { [path.join(options.readableDir, "*")]: "allow" } }
     : READ_ONLY_PERMISSION;
-  return { ...env, OPENCODE_CONFIG_CONTENT: JSON.stringify({ ...config, permission }) };
+  // OpenCode 2's native `permissions` list outranks `permission`, so a user's list would undo the allowlist.
+  const { permissions: _native, ...rest } = config;
+  return { ...env, OPENCODE_CONFIG_CONTENT: JSON.stringify({ ...rest, permission }) };
 }
 
 function spawnOpencodeRun(cwd, args, onProgress, env = process.env) {
