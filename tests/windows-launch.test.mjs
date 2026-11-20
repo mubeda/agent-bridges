@@ -87,3 +87,43 @@ for (const [plugin, bin, lib, spawnFn] of [["opencode", "opencode", "opencode", 
     assert.match(body.slice(0, 600), /resolveSpawnCommand\(/);
   });
 }
+
+for (const plugin of PLUGINS) {
+  test(`${plugin}: a bare command is never resolved from the working folder on Windows`, async (t) => {
+    const { resolveOnTrustedPath } = await import(`../plugins/${plugin}/scripts/lib/process.mjs`);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hijack-"));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const repo = path.join(dir, "repo");
+    const bin = path.join(dir, "bin");
+    fs.mkdirSync(repo);
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(repo, "agy.cmd"), "@echo pwned\n");
+    const env = { PATH: `.;relative;${bin}`, PATHEXT: ".COM;.EXE;.BAT;.CMD" }; // Windows PATH uses ;
+    // Only absolute PATH entries count, so the planted file in the checkout is never chosen.
+    assert.equal(resolveOnTrustedPath("agy", env, "win32", repo), null);
+    fs.writeFileSync(path.join(bin, "agy.cmd"), "@echo real\n");
+    assert.equal(resolveOnTrustedPath("agy", env, "win32", repo), path.join(bin, "agy.cmd"));
+    assert.equal(resolveOnTrustedPath("C:\\Tools\\agy.exe", env, "win32", repo), "C:\\Tools\\agy.exe");
+    assert.equal(resolveOnTrustedPath("agy", env, "linux", repo), "agy");
+    const source = fs.readFileSync(new URL(`../plugins/${plugin}/scripts/lib/process.mjs`, import.meta.url), "utf8");
+    assert.match(source.slice(source.indexOf("export function runCommand(")), /^[\s\S]{0,700}resolveOnTrustedPath\(/);
+  });
+}
+
+test("the Windows spawn resolvers skip relative PATH entries", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hijack-spawn-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const previous = process.cwd();
+  process.chdir(dir);
+  t.after(() => process.chdir(previous));
+  for (const name of ["agy", "agent", "opencode", "gemini"]) fs.writeFileSync(path.join(dir, `${name}.cmd`), "");
+  const env = { PATH: ".", PATHEXT: ".CMD" };
+  const { resolveAgySpawnBin } = await import("../plugins/antigravity/scripts/lib/agy.mjs");
+  const { resolveCursorSpawnBin } = await import("../plugins/cursor/scripts/lib/cursor.mjs");
+  assert.equal(resolveAgySpawnBin(env, "win32"), "agy");
+  assert.equal(resolveCursorSpawnBin(env, "win32"), "agent");
+  for (const plugin of ["opencode", "gemini"]) {
+    const { unsupportedLauncher } = await import(`../plugins/${plugin}/scripts/lib/process.mjs`);
+    assert.equal(unsupportedLauncher(plugin, env, "win32"), null, plugin);
+  }
+});

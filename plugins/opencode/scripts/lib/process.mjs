@@ -10,7 +10,12 @@ export function quoteForShell(command) {
 
 export function runCommand(command, args = [], options = {}) {
   const shell = options.shell ?? (process.platform === "win32" ? (process.env.SHELL || true) : false);
-  const result = spawnSync(shell ? quoteForShell(command) : command, args, {
+  const resolved = resolveOnTrustedPath(command, options.env ?? process.env, process.platform, options.cwd ?? process.cwd());
+  if (resolved === null) {
+    const error = Object.assign(new Error(`${command} was not found on PATH`), { code: "ENOENT" });
+    return { command, args, status: 1, signal: null, stdout: "", stderr: "", error };
+  }
+  const result = spawnSync(shell ? quoteForShell(resolved) : resolved, args, {
     cwd: options.cwd,
     env: options.env,
     encoding: "utf8",
@@ -150,7 +155,7 @@ function findWindowsCommand(bin, env) {
   if (path.isAbsolute(bin) || /[\\/]/.test(bin)) return bin;
   const extensions = String(env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").map((ext) => ext.trim().toLowerCase()).filter(Boolean);
   const ordered = [".cmd", ".exe", ...extensions.filter((ext) => ext !== ".cmd" && ext !== ".exe")];
-  for (const directory of String(env.PATH ?? env.Path ?? "").split(path.delimiter).filter(Boolean)) {
+  for (const directory of String(env.PATH ?? env.Path ?? "").split(path.delimiter).filter((entry) => path.win32.isAbsolute(entry))) {
     for (const extension of ordered) {
       const candidate = path.join(directory, `${bin}${extension}`);
       if (fs.existsSync(candidate)) return candidate;
@@ -183,4 +188,32 @@ export function resolveSpawnCommand(bin, env = process.env, platform = process.p
     file: path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
     args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script]
   };
+}
+
+/**
+ * On Windows, cmd.exe and CreateProcess look in the working folder before PATH, so a checkout could
+ * plant agy.cmd or git.exe and have it run. Resolve a bare name from absolute PATH entries only.
+ */
+export function resolveOnTrustedPath(command, env = process.env, platform = process.platform, cwd = process.cwd()) {
+  if (platform !== "win32") return command;
+  if (/[\\/]/.test(command) || /^[a-zA-Z]:/.test(command)) return command;
+  const hasExtension = /\.[^.\\/]+$/.test(command);
+  const extensions = hasExtension
+    ? [""]
+    : String(env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").map((ext) => ext.trim().toLowerCase()).filter(Boolean);
+  const entries = String(env.PATH ?? env.Path ?? "")
+    .split(";")
+    .map((entry) => entry.trim().replace(/^"|"$/g, ""))
+    .filter((entry) => /^[a-zA-Z]:[\\/]/.test(entry) || entry.startsWith("\\\\") || (path.isAbsolute(entry) && entry !== cwd));
+  for (const directory of entries) {
+    for (const extension of extensions) {
+      const candidate = path.join(directory, `${command}${extension}`);
+      try {
+        if (fs.statSync(candidate).isFile()) return candidate;
+      } catch {
+        // not here
+      }
+    }
+  }
+  return null;
 }

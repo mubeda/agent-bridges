@@ -3,6 +3,7 @@
 ## 0.3.2 — 2026-11-19
 
 ### Security
+- **Windows: a checkout can no longer plant the CLI or git.** `cmd.exe` and process spawning search the working folder before PATH, so a repository with `agy.cmd`, `agent.cmd` or `git.exe` would have run it. Bare names now resolve from absolute PATH entries only.
 - **Windows: an npm-installed CLI now starts.** npm installs a `.cmd` shim, which Node cannot start without a shell; jobs now run its `.ps1` through PowerShell, and setup reports a `.cmd` with no `.ps1`.
 - **Windows: a CLI path with spaces now works.** A binary under `C:\\Program Files` was passed to `cmd.exe` unquoted and failed.
 - **Transfer never picks another repository's Codex session.** With no session for the current folder it now stops and asks for `--source`.

@@ -34,7 +34,8 @@ export function resolveAgySpawnBin(env = process.env, platform = process.platfor
     return bin;
   }
 
-  const pathEntries = String(env.PATH ?? "").split(path.delimiter).filter(Boolean);
+  // Absolute entries only: the working folder must never supply the CLI (Windows searches it first).
+  const pathEntries = String(env.PATH ?? "").split(path.delimiter).filter((entry) => path.win32.isAbsolute(entry));
   const extensions = String(env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD")
     .split(";")
     .map((extension) => extension.trim().toLowerCase())
