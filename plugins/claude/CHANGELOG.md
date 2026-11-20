@@ -4,7 +4,8 @@
 
 ### Fixed
 - **Windows: an npm-installed Claude Code starts.** Its `.cmd` shim is started by running the `.exe` or script it names; any other `.cmd` makes setup report not ready, instead of saying ready and failing every job with `spawn EINVAL`.
-- **A failed background launch removes its prompt file**, which held the prompt text.
+- **A failed background launch removes its prompt file**, which held the prompt text, also when the CLI exits 0 without a session id.
+- **Windows: status, result and cancel of a background job work with an npm-installed Claude Code.** `claude agents`, `logs` and `stop` now start the same way a launch does, without a shell; `agents --json` failed with `spawn EINVAL`.
 
 ## 0.2.2 — 2026-11-19
 

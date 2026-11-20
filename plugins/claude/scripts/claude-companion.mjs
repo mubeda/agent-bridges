@@ -16,7 +16,6 @@ import {
   parseBgShortId,
   parsePrintResult,
   refreshJobFromAgentsJson,
-  resolveClaudeBin,
   shouldPassPromptViaStdin,
   resolveClaudeSpawnCommand
 } from "./lib/claude.mjs";
@@ -235,6 +234,12 @@ function createCompanionJob({ prefix, kind, title, workspaceRoot, jobClass, summ
   });
 }
 
+/** Runs a Claude CLI subcommand without a shell, the way a launch does: Node cannot spawn an npm .cmd shim without one. */
+function runClaude(args, cwd) {
+  const command = resolveClaudeSpawnCommand();
+  return runCommand(command.file, [...command.args, ...args], { cwd, shell: false });
+}
+
 function spawnClaude(cwd, args, promptViaStdin = null) {
   return new Promise((resolve, reject) => {
     const command = resolveClaudeSpawnCommand();
@@ -309,6 +314,8 @@ async function launchBackground(job, { cwd, prompt, write, review, model, effort
     throw new Error(command.stderr.trim() || command.stdout.trim() || `claude --bg exited ${command.status}`);
   }
   const shortId = parseBgShortId(command.stdout);
+  // Without a session id the job is never tracked, so nothing will read or clean up the prompt file.
+  if (!shortId) fs.rmSync(promptFile, { force: true });
   if (!shortId) throw new Error("Claude background launch did not return a session short id.");
   const record = {
     ...job,
@@ -476,11 +483,7 @@ async function handleTask(argv) {
 
 function refreshBgJob(workspaceRoot, job) {
   if (job.invoke !== "bg" || !job.shortId) return job;
-  const result = runCommand(
-    resolveClaudeBin(),
-    ["agents", "--json", "--cwd", workspaceRoot, "--all"],
-    buildClaudeSpawnOptions(workspaceRoot)
-  );
+  const result = runClaude(["agents", "--json", "--cwd", workspaceRoot, "--all"], workspaceRoot);
   if (result.error || result.status !== 0) {
     return { ...job, summary: result.stderr.trim() || result.error?.message || job.summary };
   }
@@ -556,7 +559,7 @@ async function handleResult(argv) {
   const job = refreshBgJob(selected.workspaceRoot, selected.job);
   const storedJob = readStoredJob(selected.workspaceRoot, job.id);
   if (job.invoke === "bg") {
-    const result = runCommand(resolveClaudeBin(), ["logs", job.shortId], { cwd: selected.workspaceRoot });
+    const result = runClaude(["logs", job.shortId], selected.workspaceRoot);
     if (result.error || result.status !== 0) throw new Error(result.stderr.trim() || result.error?.message || "Unable to read Claude logs.");
     const prefix =
       job.status === "blocked"
@@ -580,7 +583,7 @@ async function handleCancel(argv) {
   if (!selected.job) throw new Error("No active Claude job found.");
   const existing = readStoredJob(selected.workspaceRoot, selected.job.id) ?? selected.job;
   if (selected.job.invoke === "bg") {
-    const result = runCommand(resolveClaudeBin(), ["stop", selected.job.shortId], { cwd: selected.workspaceRoot });
+    const result = runClaude(["stop", selected.job.shortId], selected.workspaceRoot);
     if (result.error || result.status !== 0) throw new Error(result.stderr.trim() || result.error?.message || "Unable to stop Claude session.");
   } else {
     terminateProcessTree(selected.job.pid ?? Number.NaN, { cwd: selected.workspaceRoot });
