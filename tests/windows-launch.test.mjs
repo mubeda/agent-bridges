@@ -154,3 +154,30 @@ for (const plugin of PLUGINS) {
     assert.equal(resolveTransferSource(repo, { home, env: {} }).path, path.join(claudeDir, "mine.jsonl"));
   });
 }
+
+test("every Windows launch path refuses a CLI that is not on a trusted PATH entry", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "launch-trust-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const bin = path.join(dir, "bin");
+  fs.mkdirSync(bin);
+  const untrusted = { PATH: ".", PATHEXT: ".EXE;.CMD", SystemRoot: "C:\\Windows" };
+  const trusted = { ...untrusted, PATH: bin };
+  const { resolveAgySpawnCommand } = await import("../plugins/antigravity/scripts/lib/agy.mjs");
+  const { resolveCursorSpawnCommand } = await import("../plugins/cursor/scripts/lib/cursor.mjs");
+  const { resolveClaudeSpawnFile } = await import("../plugins/claude/scripts/lib/claude.mjs");
+  const cases = [
+    ["agy", (env) => resolveAgySpawnCommand(env, "win32").file],
+    ["agent", (env) => resolveCursorSpawnCommand(env, "win32").file],
+    ["claude", (env) => resolveClaudeSpawnFile(env, "win32")]
+  ];
+  for (const plugin of ["opencode", "gemini"]) {
+    const { resolveSpawnCommand } = await import(`../plugins/${plugin}/scripts/lib/process.mjs`);
+    cases.push([plugin, (env) => resolveSpawnCommand(plugin, env, "win32").file]);
+  }
+  for (const [name, resolve] of cases) {
+    // Never fall back to the bare name: Windows would search the checkout first.
+    assert.throws(() => resolve(untrusted), /not found on PATH/, name);
+    fs.writeFileSync(path.join(bin, `${name}.exe`), "");
+    assert.equal(resolve(trusted), path.join(bin, `${name}.exe`), name);
+  }
+});

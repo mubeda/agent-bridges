@@ -17,7 +17,8 @@ import {
   parsePrintResult,
   refreshJobFromAgentsJson,
   resolveClaudeBin,
-  shouldPassPromptViaStdin
+  shouldPassPromptViaStdin,
+  resolveClaudeSpawnFile
 } from "./lib/claude.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
@@ -236,7 +237,7 @@ function createCompanionJob({ prefix, kind, title, workspaceRoot, jobClass, summ
 
 function spawnClaude(cwd, args, promptViaStdin = null) {
   return new Promise((resolve, reject) => {
-    const child = spawn(resolveClaudeBin(), args, buildClaudeSpawnOptions(cwd));
+    const child = spawn(resolveClaudeSpawnFile(), args, buildClaudeSpawnOptions(cwd));
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8");

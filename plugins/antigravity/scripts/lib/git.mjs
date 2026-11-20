@@ -280,8 +280,8 @@ function collectWorkingTreeContext(cwd, state, options = {}) {
       formatSection("Git Status", status),
       formatSection("Staged Diff Stat", stagedStat),
       formatSection("Unstaged Diff Stat", unstagedStat),
-      formatSection("Changed Files", changedFiles.join("\n")),
-      formatSection("Untracked Files", untrackedListing)
+      formatSection("Changed Files", readableFiles(cwd, changedFiles)),
+      formatSection("Untracked Files", readableFiles(cwd, untrackedListing.split("\n")))
     ];
   }
 
@@ -316,11 +316,24 @@ function collectBranchContext(cwd, baseRef, options = {}) {
       : [
           formatSection("Commit Log", logOutput),
           formatSection("Diff Stat", diffStat),
-          formatSection("Changed Files", changedFiles.join("\n"))
+          formatSection("Changed Files", readableFiles(cwd, changedFiles))
         ].join("\n"),
     changedFiles,
     comparison
   };
+}
+
+/** Self-collected reviews tell the model to read changed files, so never list a symlink: it may point outside the repository. */
+function readableFiles(repoRoot, files) {
+  const listed = files.filter((file) => {
+    try {
+      return !fs.lstatSync(path.join(repoRoot, file)).isSymbolicLink();
+    } catch {
+      return true;
+    }
+  });
+  const skipped = files.length - listed.length;
+  return skipped ? [...listed, `(${skipped} symlink(s) not listed)`].join("\n") : listed.join("\n");
 }
 
 function buildAdversarialCollectionGuidance(options = {}) {
@@ -328,7 +341,7 @@ function buildAdversarialCollectionGuidance(options = {}) {
     return "Use the repository context below as primary evidence.";
   }
 
-  return "The repository context below is a lightweight summary. Shell commands are denied in this review. Read the changed files directly, and say in the summary which changes you could not inspect.";
+  return "The repository context below is a lightweight summary. Shell commands are denied in this review. Read the changed files directly, and say in the summary which changes you could not inspect. Never open a symlink.";
 }
 
 export function collectReviewContext(cwd, target, options = {}) {

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { binaryAvailable, runCommand } from "./process.mjs";
+import { binaryAvailable, resolveOnTrustedPath, runCommand } from "./process.mjs";
 
 export const WIN32_ARGV_PROMPT_LIMIT = 20_000;
 
@@ -13,6 +13,15 @@ export function shouldPassPromptViaStdin(prompt, platform = process.platform) {
 export function resolveClaudeBin(env = process.env) {
   const override = typeof env.CLAUDE_BIN === "string" ? env.CLAUDE_BIN.trim() : "";
   return override || "claude";
+}
+
+/** Windows searches the working folder before PATH, so launch an absolute path resolved from trusted PATH entries. */
+export function resolveClaudeSpawnFile(env = process.env, platform = process.platform) {
+  const bin = resolveClaudeBin(env);
+  if (platform !== "win32") return bin;
+  const resolved = resolveOnTrustedPath(bin, env, platform);
+  if (!resolved) throw new Error(`${bin} was not found on PATH`);
+  return resolved;
 }
 
 export function buildClaudeSpawnOptions(cwd, env = process.env) {

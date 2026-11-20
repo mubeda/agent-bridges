@@ -181,6 +181,8 @@ export function resolveSpawnCommand(bin, env = process.env, platform = process.p
   const problem = unsupportedLauncher(bin, env, platform);
   if (problem) throw new Error(problem);
   const file = findWindowsCommand(bin, env);
+  // Windows searches the working folder before PATH, so never launch a bare name there.
+  if (platform === "win32" && !path.win32.isAbsolute(file)) throw new Error(`${file} was not found on PATH`);
   if (path.extname(file).toLowerCase() !== ".cmd") return { file, args: [] };
   const script = path.join(path.dirname(file), `${path.basename(file, ".cmd")}.ps1`);
   const systemRoot = env.SystemRoot || env.SYSTEMROOT || "C:\\Windows";

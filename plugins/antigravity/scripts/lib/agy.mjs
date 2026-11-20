@@ -52,6 +52,8 @@ export function resolveAgySpawnBin(env = process.env, platform = process.platfor
 
 export function resolveAgySpawnCommand(env = process.env, platform = process.platform) {
   const bin = resolveAgySpawnBin(env, platform);
+  // Windows searches the working folder before PATH, so never launch a bare name there.
+  if (platform === "win32" && !path.win32.isAbsolute(bin)) throw new Error(`${bin} was not found on PATH`);
   if (platform !== "win32" || path.extname(bin).toLowerCase() !== ".cmd") {
     return { file: bin, args: [] };
   }

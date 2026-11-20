@@ -196,3 +196,20 @@ test("a prompt too large for one argument goes on stdin on every platform", () =
   assert.equal(invocation.stdin, big);
   assert.equal(shouldPassPromptViaStdin("z".repeat(1000), "linux"), false);
 });
+
+test("a self-collected review never lists a symlink for the model to read", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t, 2);
+  const secret = path.join(sandbox.dir, "secret.txt");
+  fs.writeFileSync(secret, "TOP-SECRET-TOKEN\n");
+  fs.writeFileSync(path.join(sandbox.dir, "harmless.txt"), "fine\n");
+  fs.symlinkSync(path.join(sandbox.dir, "harmless.txt"), path.join(sandbox.repo, "link.txt"));
+  spawnSync("git", ["add", "link.txt"], { cwd: sandbox.repo });
+  spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "link"], { cwd: sandbox.repo });
+  fs.rmSync(path.join(sandbox.repo, "link.txt"));
+  fs.symlinkSync(secret, path.join(sandbox.repo, "link.txt"));
+  assert.equal(run(sandbox, ["review", "--wait"]).status, 0);
+  const prompt = modelCalls(sandbox)[0].argv.at(-1);
+  assert.match(prompt, /Never open a symlink/);
+  assert.doesNotMatch(prompt, /^link\.txt$/m);
+  assert.match(prompt, /1 symlink\(s\) not listed/);
+});
