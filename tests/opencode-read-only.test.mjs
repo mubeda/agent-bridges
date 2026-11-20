@@ -61,3 +61,50 @@ process.exit(0);
   assert.equal(runs[1].auto, true);
   assert.equal(runs[1].config, null);
 });
+
+test("a read-only run may read one private folder outside the workspace, and nothing else there", () => {
+  const dir = path.join(os.tmpdir(), "opencode-review-x");
+  const config = JSON.parse(buildRunEnv({ readableDir: dir }, {}).OPENCODE_CONFIG_CONTENT);
+  assert.equal(config.permission.external_directory[path.join(dir, "*")], "allow");
+  assert.equal(config.permission["*"], "deny");
+  assert.equal(JSON.parse(buildRunEnv({}, {}).OPENCODE_CONFIG_CONTENT).permission.external_directory, undefined);
+});
+
+test("a self-collected review gets the target diff in a private file, since shell is denied", { skip: process.platform === "win32" ? "fake opencode needs a POSIX shebang" : false }, (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "oc-selfcollect-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const bin = path.join(dir, "bin");
+  fs.mkdirSync(bin);
+  const log = path.join(dir, "seen.json");
+  // The fake reads its attached prompt, finds the diff file it names, and records what it could see.
+  fs.writeFileSync(path.join(bin, "opencode"), `#!/usr/bin/env node
+const fs = require("node:fs");
+const argv = process.argv.slice(2);
+if (argv.includes("--version")) { process.stdout.write("1.19.5\\n"); process.exit(0); }
+if (argv[0] === "run") {
+  const prompt = fs.readFileSync(argv[argv.indexOf("-f") + 1], "utf8");
+  const named = (prompt.match(/full target diff is in (\\S+?\\.diff)/) ?? [])[1] ?? null;
+  const config = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT ?? "{}");
+  fs.writeFileSync(${JSON.stringify(log)}, JSON.stringify({ named, diff: named && fs.existsSync(named) ? fs.readFileSync(named, "utf8") : null, external: config.permission?.external_directory ?? null }));
+}
+process.exit(0);
+`, { mode: 0o755 });
+  const repo = path.join(dir, "repo");
+  fs.mkdirSync(repo);
+  const git = (...args) => spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd: repo });
+  git("init", "-q");
+  for (const name of ["a.txt", "b.txt", "c.txt"]) fs.writeFileSync(path.join(repo, name), "old\n");
+  git("add", ".");
+  git("commit", "-qm", "init");
+  // Three changed files is over the inline limit, so the review self-collects.
+  for (const name of ["a.txt", "b.txt", "c.txt"]) fs.writeFileSync(path.join(repo, name), `CHANGE-MARKER-${name}\n`);
+  const env = { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, PLUGIN_DATA: path.join(dir, "data") };
+  delete env.CLAUDE_PLUGIN_DATA;
+  delete env.OPENCODE_CONFIG_CONTENT;
+  spawnSync(process.execPath, [COMPANION, "review", "--wait"], { cwd: repo, env, encoding: "utf8" });
+  const seen = JSON.parse(fs.readFileSync(log, "utf8"));
+  assert.ok(seen.named, "the prompt names a diff file");
+  for (const name of ["a.txt", "b.txt", "c.txt"]) assert.match(seen.diff, new RegExp(`CHANGE-MARKER-${name.replace(".", "\\.")}`));
+  assert.equal(seen.external[path.join(path.dirname(seen.named), "*")], "allow");
+  assert.equal(fs.existsSync(seen.named), false, "the diff file is removed after the review");
+});

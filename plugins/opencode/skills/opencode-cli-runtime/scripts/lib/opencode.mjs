@@ -381,7 +381,11 @@ export function buildRunEnv(options = {}, env = process.env) {
   } catch {
     // not set, or not JSON: start from an empty config
   }
-  return { ...env, OPENCODE_CONFIG_CONTENT: JSON.stringify({ ...config, permission: READ_ONLY_PERMISSION }) };
+  // A self-collected review may read its private diff folder, and no other place outside the workspace.
+  const permission = options.readableDir
+    ? { ...READ_ONLY_PERMISSION, external_directory: { [path.join(options.readableDir, "*")]: "allow" } }
+    : READ_ONLY_PERMISSION;
+  return { ...env, OPENCODE_CONFIG_CONTENT: JSON.stringify({ ...config, permission }) };
 }
 
 function spawnOpencodeRun(cwd, args, onProgress, env = process.env) {
@@ -503,6 +507,14 @@ function ensureOpencodeAvailable(cwd) {
  * attached file (0600 in a 0700 temp folder); argv only carries the file path and a fixed instruction.
  * `-f` exists in OpenCode 1.x and 2.x.
  */
+/** A private copy of a review's full target diff, for reviews too large to inline (shell is denied there). */
+export function writeReviewDiff(diff) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-review-"));
+  const file = path.join(dir, "target.diff");
+  fs.writeFileSync(file, diff, { encoding: "utf8", mode: 0o600 });
+  return { dir, file, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
+}
+
 export function writePromptAttachment(prompt) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-prompt-"));
   const file = path.join(dir, "prompt.md");
@@ -561,6 +573,7 @@ export async function runAppServerReview(cwd, options = {}) {
     model: options.model ?? null,
     effort: options.effort ?? null,
     write: false,
+    readableDir: options.readableDir ?? null,
     onProgress: options.onProgress
   });
 

@@ -19,6 +19,7 @@ import {
     parseStructuredOutput,
     readOutputSchema,
     runAppServerReview,
+    writeReviewDiff,
     runAppServerTurn
   } from "./lib/opencode.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
@@ -384,14 +385,27 @@ async function executeReviewRun(request) {
   validateReviewRequest(target, focusText, { reviewName });
 
   const context = collectReviewContext(request.cwd, target);
-  const result = await runAppServerReview(context.repoRoot, {
-    target,
-    focusText: reviewName === "Adversarial Review" ? focusText : null,
-    contextSummary: context.content,
-    model: request.model,
-    effort: request.effort,
-    onProgress: request.onProgress
-  });
+  // Read-only runs deny shell and git, so a review too large to inline gets its full diff in a private file.
+  const diffFile = context.inputMode === "self-collect"
+    ? writeReviewDiff(collectReviewContext(request.cwd, target, { includeDiff: true }).content)
+    : null;
+  const contextSummary = diffFile
+    ? `${context.content}\n\nShell commands are denied in this review. The full target diff is in ${diffFile.file} (outside the repository). Read it with your read tool, in parts with offset and limit when it is large.`
+    : context.content;
+  let result;
+  try {
+    result = await runAppServerReview(context.repoRoot, {
+      target,
+      focusText: reviewName === "Adversarial Review" ? focusText : null,
+      contextSummary,
+      readableDir: diffFile?.dir ?? null,
+      model: request.model,
+      effort: request.effort,
+      onProgress: request.onProgress
+    });
+  } finally {
+    diffFile?.cleanup();
+  }
 
   const reviewText = typeof result.reviewText === "string" ? result.reviewText : "";
   const payload = {
