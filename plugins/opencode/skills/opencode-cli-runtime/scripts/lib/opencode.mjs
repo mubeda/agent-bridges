@@ -484,7 +484,8 @@ export function writePromptAttachment(prompt) {
   const file = path.join(dir, "prompt.md");
   fs.writeFileSync(file, prompt, { encoding: "utf8", mode: 0o600 });
   return {
-    args: ["-f", file, "Follow the instructions in the attached file."],
+    // The message goes first: -f takes every value up to the next flag, so OpenCode 1.x reads a trailing message as a file.
+    args: ["Follow the instructions in the attached file.", "-f", file],
     cleanup: () => fs.rmSync(dir, { recursive: true, force: true })
   };
 }

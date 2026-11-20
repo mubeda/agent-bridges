@@ -18,7 +18,7 @@ import {
   refreshJobFromAgentsJson,
   resolveClaudeBin,
   shouldPassPromptViaStdin,
-  resolveClaudeSpawnFile
+  resolveClaudeSpawnCommand
 } from "./lib/claude.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
@@ -237,7 +237,8 @@ function createCompanionJob({ prefix, kind, title, workspaceRoot, jobClass, summ
 
 function spawnClaude(cwd, args, promptViaStdin = null) {
   return new Promise((resolve, reject) => {
-    const child = spawn(resolveClaudeSpawnFile(), args, buildClaudeSpawnOptions(cwd));
+    const command = resolveClaudeSpawnCommand();
+    const child = spawn(command.file, [...command.args, ...args], buildClaudeSpawnOptions(cwd));
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8");
@@ -278,11 +279,12 @@ async function executePrintRun({ cwd, prompt, write, review, model, effort, resu
 
 async function launchBackground(job, { cwd, prompt, write, review, model, effort, resumeSessionId, resumeLatest }) {
   ensureClaudeAvailable(cwd);
+  const promptFile = path.join(resolveJobsDir(job.workspaceRoot), `${job.id}.prompt.md`);
   const args = buildRunArgs({
     invoke: "bg",
     name: job.id,
     prompt,
-    promptFile: path.join(resolveJobsDir(job.workspaceRoot), `${job.id}.prompt.md`),
+    promptFile,
     write,
     review,
     model,
@@ -290,7 +292,15 @@ async function launchBackground(job, { cwd, prompt, write, review, model, effort
     resumeSessionId,
     resumeLatest
   });
-  const command = await spawnClaude(cwd, args);
+  let command;
+  try {
+    command = await spawnClaude(cwd, args);
+  } catch (error) {
+    fs.rmSync(promptFile, { force: true });
+    throw error;
+  }
+  // A launch that failed never reads the prompt file, so it must not stay behind with the prompt in it.
+  if (command.status !== 0) fs.rmSync(promptFile, { force: true });
   const combined = `${command.stdout}\n${command.stderr}`;
   if (/bypass disclaimer|dangerously-skip-permissions/i.test(combined) && command.status !== 0) {
     throw new Error(getBypassDisclaimerStatus().detail);

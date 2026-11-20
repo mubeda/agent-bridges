@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.3 — 2026-11-20
+
+### Fixed
+- **Windows: npm-installed CLIs get the prompt byte for byte.** A `.cmd` shim is now started by running the script or `.exe` it names, with the running Node, instead of its `.ps1` through Windows PowerShell 5.1, which turned non-ASCII into `?` and LF into CRLF.
+- **OpenCode 1.x runs work again.** The prompt-file message now goes before `-f`; `-f` takes every value up to the next flag, so OpenCode 1.x read the message as a second file (`File not found`).
+- **Docs: runs without `--write` are not read-only.** The companion leaves out `--auto`, but OpenCode's default permissions still allow edits and shell commands; the README and the runtime skill now say so.
+
 ## 0.3.2 — 2026-11-19
 
 ### Security

@@ -178,3 +178,24 @@ export function resolveOnTrustedPath(command, env = process.env, platform = proc
   }
   return null;
 }
+
+/**
+ * npm's .cmd shim names the Node script or .exe it starts. Launching that target directly skips cmd.exe
+ * and PowerShell: the npm .ps1 pipes stdin through Windows PowerShell 5.1, which turns non-ASCII into ?.
+ */
+export function npmShimTarget(cmdFile) {
+  let text;
+  try {
+    text = fs.readFileSync(cmdFile, "utf8");
+  } catch {
+    return null;
+  }
+  const viaNode = /SET "_prog=node"/i.test(text) ? text.match(/"%_prog%"\s+"%dp0%\\([^"]+)"\s+%\*/) : null;
+  const direct = viaNode ? null : text.match(/^"%dp0%\\([^"]+\.(?:exe|com))"\s+%\*\s*$/im);
+  const relative = (viaNode ?? direct)?.[1];
+  if (!relative) return null;
+  const target = path.resolve(path.dirname(cmdFile), relative.replace(/\\/g, path.sep));
+  if (!fs.existsSync(target)) return null;
+  // The running Node, never a bare node, which Windows would look up in the working folder first.
+  return viaNode ? { file: process.execPath, args: [target] } : { file: target, args: [] };
+}

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.3 — 2026-11-20
+
+### Fixed
+- **Windows: an npm-installed Claude Code starts.** Its `.cmd` shim is started by running the `.exe` or script it names; any other `.cmd` makes setup report not ready, instead of saying ready and failing every job with `spawn EINVAL`.
+- **A failed background launch removes its prompt file**, which held the prompt text.
+
 ## 0.2.2 — 2026-11-19
 
 ### Security

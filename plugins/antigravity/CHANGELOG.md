@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1 — 2026-11-20
+
+### Fixed
+- **Windows: npm-installed CLIs get the prompt byte for byte.** A `.cmd` shim is now started by running the script or `.exe` it names, with the running Node, instead of its `.ps1` through Windows PowerShell 5.1, which turned non-ASCII into `?` and LF into CRLF.
+- **Ctrl-C on a foreground task escalates like cancel.** The companion waits up to two seconds for the agy process group to exit and then SIGKILLs it, so a command that ignores SIGTERM cannot keep changing files after the companion exits.
+- **Windows setup shows the launcher it found** (`agy.cmd`), not the extensionless POSIX shim beside it.
+
 ## 0.1.0
 
 ### Security
