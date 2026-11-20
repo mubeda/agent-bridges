@@ -144,14 +144,31 @@ function normalizeArgv(argv) {
   return argv;
 }
 
+/**
+ * Permission opt-ins. --write makes the backend CLI auto-approve its tools, so it needs
+ * --bypass-permissions or AGENT_BRIDGES_ALLOW_BYPASS=1. --trust (or AGENT_BRIDGES_TRUST=1)
+ * lets a backend skip its folder-trust check; the env var reaches background workers too.
+ */
+function applyPermissionOptIns(options) {
+  if (options.trust) process.env.AGENT_BRIDGES_TRUST = "1";
+  if (options.write && !options["bypass-permissions"] && process.env.AGENT_BRIDGES_ALLOW_BYPASS !== "1") {
+    throw new Error(
+      "--write lets the backend CLI change files and run commands without asking. Add --bypass-permissions to this command, or set AGENT_BRIDGES_ALLOW_BYPASS=1, to allow it."
+    );
+  }
+}
+
 function parseCommandInput(argv, config = {}) {
-  return parseArgs(normalizeArgv(argv), {
+  const parsed = parseArgs(normalizeArgv(argv), {
     ...config,
+    booleanOptions: [...(config.booleanOptions ?? []), "bypass-permissions", "trust"],
     aliasMap: {
       C: "cwd",
       ...(config.aliasMap ?? {})
     }
   });
+  applyPermissionOptIns(parsed.options);
+  return parsed;
 }
 
 function resolveCommandCwd(options = {}) {
@@ -680,7 +697,7 @@ function enqueueBackgroundTask(cwd, job, request, workerCommand = "task-worker")
 async function handleReviewCommand(argv, config) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["base", "scope", "model", "cwd"],
-    booleanOptions: ["json", "background", "wait"],
+    booleanOptions: ["json", "background", "wait", "focus-stdin"],
     aliasMap: {
       m: "model"
     }
@@ -688,7 +705,8 @@ async function handleReviewCommand(argv, config) {
 
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
-  const focusText = positionals.join(" ").trim();
+  // --focus-stdin: the focus arrives on stdin, so it never sits in this process's argv.
+  const focusText = (options["focus-stdin"] ? readStdinIfPiped() : positionals.join(" ")).trim();
   const target = resolveReviewTarget(cwd, {
     base: options.base,
     scope: options.scope

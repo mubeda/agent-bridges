@@ -15,7 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
-import { binaryAvailable, formatCommandFailure, runCommand } from "./process.mjs";
+import { binaryAvailable, formatCommandFailure, runCommand, resolveSpawnCommand, unsupportedLauncher } from "./process.mjs";
 
 const TASK_THREAD_PREFIX = "Gemini Companion Task";
 const DEFAULT_CONTINUE_PROMPT =
@@ -35,12 +35,9 @@ const REVIEW_INSTRUCTIONS = [
  * headless treats a non-TTY stdin pipe as the query (same as `-p` without
  * putting the huge string on argv). Do not pass `-p` with an empty value.
  */
-export function shouldPassPromptViaStdin(prompt, platform = process.platform) {
-  return (
-    platform === "win32" &&
-    typeof prompt === "string" &&
-    prompt.length > WIN32_ARGV_PROMPT_LIMIT
-  );
+// Always stdin: argv is readable by other local users (/proc/<pid>/cmdline), and it also has size limits.
+export function shouldPassPromptViaStdin(prompt, _platform = process.platform) {
+  return typeof prompt === "string" && prompt.length > 0;
 }
 
 // Tools that mutate files. tool_use events with these names are tracked in
@@ -307,9 +304,10 @@ export function getGeminiAvailability(cwd, options = {}) {
   }
 
   const status = binaryAvailable(resolved.bin, ["--version"], { cwd });
+  const problem = status.available ? unsupportedLauncher(resolved.bin) : null;
   return {
-    available: status.available,
-    detail: status.available ? status.detail || resolved.detail : status.detail,
+    available: status.available && !problem,
+    detail: problem ?? (status.available ? status.detail || resolved.detail : status.detail),
     backend: resolved.backend,
     bin: resolved.bin
   };
@@ -469,6 +467,9 @@ export function getSessionRuntimeStatus(_env = process.env, _cwd = process.cwd()
  *   write → `--dangerously-skip-permissions`; resume via `--conversation` /
  *   `--continue`; model via `--model`; effort via `--effort`.
  */
+/** Read-only agy runs deny every file write and shell command for the session (agy --mode plan does not). */
+export const AGY_READ_ONLY_SETTINGS = '{"permissions":{"deny":["write_file(*)","command(*)"]}}';
+
 export function buildRunArgs(_cwd, options = {}) {
   const prompt = options.prompt;
   if (typeof prompt !== "string" || !prompt) {
@@ -483,6 +484,8 @@ export function buildRunArgs(_cwd, options = {}) {
     args.push("--output-format=stream-json", "--print-timeout", "15m");
     if (write) {
       args.push("--dangerously-skip-permissions");
+    } else {
+      args.push("--settings", AGY_READ_ONLY_SETTINGS);
     }
     if (options.model) {
       args.push("--model", String(options.model));
@@ -499,11 +502,9 @@ export function buildRunArgs(_cwd, options = {}) {
     // Approval mode is derived solely from write — ignore options.approvalMode
     // so reviews cannot be overridden to yolo.
     const approvalMode = write ? "yolo" : "plan";
-    args.push(
-      "--skip-trust",
-      `--approval-mode=${approvalMode}`,
-      "--output-format=stream-json"
-    );
+    // Folder trust is opt-in: --trust on the companion, or AGENT_BRIDGES_TRUST=1.
+    if ((options.env ?? process.env).AGENT_BRIDGES_TRUST === "1") args.push("--skip-trust");
+    args.push(`--approval-mode=${approvalMode}`, "--output-format=stream-json");
 
     if (options.model) {
       args.push("-m", String(options.model));
@@ -818,7 +819,14 @@ function spawnGeminiRun(
   { backend = "gemini", bin = "gemini", stdin = null } = {}
 ) {
   return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, {
+    let command;
+    try {
+      command = resolveSpawnCommand(bin);
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    const child = spawn(command.file, [...command.args, ...args], {
       cwd,
       env: process.env,
       stdio: [stdin != null ? "pipe" : "ignore", "pipe", "pipe"],

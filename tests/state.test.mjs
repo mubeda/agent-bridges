@@ -7,6 +7,14 @@ import { resolveStateRoot as resolveOpencodeStateRoot } from "../plugins/opencod
 import { resolveStateRoot as resolveGeminiStateRoot } from "../plugins/gemini/scripts/lib/state.mjs";
 import { resolveStateRoot as resolveClaudeStateRoot } from "../plugins/claude/scripts/lib/state.mjs";
 import { resolveStateRoot as resolveCursorStateRoot } from "../plugins/cursor/scripts/lib/state.mjs";
+import { resolveStateRoot as resolveAntigravityStateRoot } from "../plugins/antigravity/scripts/lib/state.mjs";
+
+test("antigravity default state root is its own companion dir", () => {
+  const env = { ...process.env };
+  delete env.PLUGIN_DATA;
+  delete env.CLAUDE_PLUGIN_DATA;
+  assert.equal(resolveAntigravityStateRoot(env), path.join(os.homedir(), ".antigravity-companion", "state"));
+});
 
 test("default state roots are companion dirs", () => {
   const env = { ...process.env };

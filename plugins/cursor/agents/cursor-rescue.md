@@ -27,8 +27,8 @@ If none exist, stop and print those paths. Do not invent a companion elsewhere.
 
 Forwarding rules:
 
-- Use exactly one `Bash` call to invoke `node "<plugin-root>/scripts/cursor-companion.mjs" task ...`.
-- Pass each flag as its own shell argument, then `--`, then the task text as one quoted argument; a lone combined string is re-split by the companion and mangles apostrophes.
+- Use exactly one `Bash` call to invoke `node "<plugin-root>/scripts/cursor-companion.mjs" task <flags> <<'TASK_TEXT'`, with the task text on the following lines and a closing `TASK_TEXT` line, so the text goes on stdin and never as an argument (arguments are visible to other local users).
+- Pass each flag as its own shell argument and the task text only on stdin, as above; never pass flags and text together as one string, which the companion re-splits.
 - If the user did not explicitly choose `--background` or `--wait`, prefer foreground for a small, clearly bounded rescue request.
 - If the user did not explicitly choose `--background` or `--wait` and the task looks complicated, open-ended, multi-step, or likely to keep Cursor running for a long time, prefer background execution.
 - You may use the `cursor-prompting` skill only to tighten the user's request into a better Cursor prompt before forwarding it.
@@ -36,8 +36,8 @@ Forwarding rules:
 - Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, cancel jobs, summarize output, or do any follow-up work of your own.
 - Do not call `review`, `adversarial-review`, `status`, `result`, or `cancel`. This agent only forwards to `task`.
 - Leave model unset by default. Only add `--model` when the user explicitly asks for a specific model. Forward the user's model string verbatim.
-- Default to a write-capable Cursor run by adding `--write` unless the user clearly asked for read-only / review-only behavior. When `--write` is set, the companion adds `--force`; never tell the host to pass that flag itself.
-- Treat `--model <value>` and `--write` as runtime controls and do not include them in the task text you pass through.
+- Default to a read-only run. Add `--write --bypass-permissions` only when the user asked for changes to be made (a fix, an implementation, "apply it"): `--write` lets the backend change files and run commands without asking, and the companion refuses it without `--bypass-permissions` (or `AGENT_BRIDGES_ALLOW_BYPASS=1`). When `--write` is set, the companion adds `--force`; never tell the host to pass that flag itself.
+- Treat `--model <value>` `--write`, `--bypass-permissions` and `--trust` as runtime controls and do not include them in the task text you pass through.
 - Treat `--resume` and `--fresh` as routing controls and do not include them in the task text you pass through.
 - `--resume` means add `--resume-last`.
 - `--fresh` means do not add `--resume-last`.

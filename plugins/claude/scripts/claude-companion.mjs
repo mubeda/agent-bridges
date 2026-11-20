@@ -17,7 +17,8 @@ import {
   parsePrintResult,
   refreshJobFromAgentsJson,
   resolveClaudeBin,
-  shouldPassPromptViaStdin
+  shouldPassPromptViaStdin,
+  resolveClaudeSpawnFile
 } from "./lib/claude.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
@@ -81,11 +82,28 @@ function normalizeArgv(argv) {
   return argv;
 }
 
+/**
+ * Permission opt-ins. --write makes the backend CLI auto-approve its tools, so it needs
+ * --bypass-permissions or AGENT_BRIDGES_ALLOW_BYPASS=1. --trust (or AGENT_BRIDGES_TRUST=1)
+ * lets a backend skip its folder-trust check; the env var reaches background workers too.
+ */
+function applyPermissionOptIns(options) {
+  if (options.trust) process.env.AGENT_BRIDGES_TRUST = "1";
+  if (options.write && !options["bypass-permissions"] && process.env.AGENT_BRIDGES_ALLOW_BYPASS !== "1") {
+    throw new Error(
+      "--write lets the backend CLI change files and run commands without asking. Add --bypass-permissions to this command, or set AGENT_BRIDGES_ALLOW_BYPASS=1, to allow it."
+    );
+  }
+}
+
 function parseCommandInput(argv, config = {}) {
-  return parseArgs(normalizeArgv(argv), {
+  const parsed = parseArgs(normalizeArgv(argv), {
     ...config,
+    booleanOptions: [...(config.booleanOptions ?? []), "bypass-permissions", "trust"],
     aliasMap: { C: "cwd", ...(config.aliasMap ?? {}) }
   });
+  applyPermissionOptIns(parsed.options);
+  return parsed;
 }
 
 function resolveCommandCwd(options = {}) {
@@ -219,7 +237,7 @@ function createCompanionJob({ prefix, kind, title, workspaceRoot, jobClass, summ
 
 function spawnClaude(cwd, args, promptViaStdin = null) {
   return new Promise((resolve, reject) => {
-    const child = spawn(resolveClaudeBin(), args, buildClaudeSpawnOptions(cwd));
+    const child = spawn(resolveClaudeSpawnFile(), args, buildClaudeSpawnOptions(cwd));
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8");
@@ -356,13 +374,14 @@ async function runPrintJob(job, request) {
 async function handleReviewCommand(argv, { reviewName }) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["base", "scope", "model", "effort", "cwd"],
-    booleanOptions: ["json", "background", "wait"],
+    booleanOptions: ["json", "background", "wait", "focus-stdin"],
     aliasMap: { m: "model" }
   });
   const cwd = resolveCommandCwd(options);
   ensureGitRepository(cwd);
   const target = resolveReviewTarget(cwd, { base: options.base, scope: options.scope });
-  const focusText = positionals.join(" ").trim();
+  // --focus-stdin: the focus arrives on stdin, so it never sits in this process's argv.
+  const focusText = (options["focus-stdin"] ? readStdinIfPiped() : positionals.join(" ")).trim();
   if (reviewName === "Review" && focusText) {
     throw new Error("`review` does not accept focus text. Use `adversarial-review`.");
   }

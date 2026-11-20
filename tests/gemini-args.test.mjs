@@ -9,8 +9,8 @@ import {
 } from "../plugins/gemini/scripts/lib/gemini.mjs";
 
 test("gemini review uses plan", () => {
-  const args = buildReviewArgs("/repo", { backend: "gemini", prompt: "review" });
-  assert.ok(args.includes("--skip-trust"));
+  const args = buildReviewArgs("/repo", { backend: "gemini", prompt: "review", env: {} });
+  assert.equal(args.includes("--skip-trust"), false);
   assert.ok(args.includes("--approval-mode=plan"));
   assert.ok(args.includes("--output-format=stream-json"));
   assert.equal(args.includes("--dangerously-skip-permissions"), false);
@@ -65,7 +65,7 @@ test("win32 long prompt is omitted from argv (delivered via stdin)", () => {
   const prompt = "X".repeat(40_000);
   assert.ok(prompt.length > WIN32_ARGV_PROMPT_LIMIT);
   assert.equal(shouldPassPromptViaStdin(prompt, "win32"), true);
-  assert.equal(shouldPassPromptViaStdin(prompt, "linux"), false);
+  assert.equal(shouldPassPromptViaStdin(prompt, "linux"), true);
 
   const args = buildRunArgs("/repo", {
     backend: "gemini",
@@ -83,7 +83,30 @@ test("win32 long prompt is omitted from argv (delivered via stdin)", () => {
     prompt: "short",
     platform: "win32"
   });
-  const pIndex = shortArgs.indexOf("-p");
-  assert.ok(pIndex >= 0);
-  assert.equal(shortArgs[pIndex + 1], "short");
+  // Every prompt goes on stdin, even a short one: argv is readable by other local users.
+  assert.equal(shortArgs.includes("short"), false);
+});
+
+// Task 2.1: the agy backend's read-only runs deny writes and shell (spec R19). Literal on purpose.
+const AGY_DENY = '{"permissions":{"deny":["write_file(*)","command(*)"]}}';
+
+test("agy read-only review denies writes and shell, with no mode flag", async () => {
+  const { AGY_READ_ONLY_SETTINGS } = await import("../plugins/gemini/scripts/lib/gemini.mjs");
+  assert.equal(AGY_READ_ONLY_SETTINGS, AGY_DENY);
+  assert.deepEqual(JSON.parse(AGY_DENY), { permissions: { deny: ["write_file(*)", "command(*)"] } });
+  assert.deepEqual(buildReviewArgs("/repo", { backend: "agy", prompt: "review" }), [
+    "--output-format=stream-json", "--print-timeout", "15m", "--settings", AGY_DENY
+  ]);
+});
+
+test("agy write run auto-approves and carries no deny settings", () => {
+  assert.deepEqual(buildRunArgs("/repo", { backend: "agy", write: true, prompt: "fix it" }), [
+    "--output-format=stream-json", "--print-timeout", "15m", "--dangerously-skip-permissions"
+  ]);
+});
+
+test("gemini CLI read-only review argv has plan mode and no trust bypass", () => {
+  assert.deepEqual(buildReviewArgs("/repo", { backend: "gemini", prompt: "review", env: {} }), [
+    "--approval-mode=plan", "--output-format=stream-json"
+  ]);
 });

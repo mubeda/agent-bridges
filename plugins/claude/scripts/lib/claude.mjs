@@ -2,17 +2,27 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { binaryAvailable, runCommand } from "./process.mjs";
+import { binaryAvailable, resolveOnTrustedPath, runCommand } from "./process.mjs";
 
 export const WIN32_ARGV_PROMPT_LIMIT = 20_000;
 
-export function shouldPassPromptViaStdin(prompt, platform = process.platform) {
-  return platform === "win32" && typeof prompt === "string" && prompt.length > WIN32_ARGV_PROMPT_LIMIT;
+// Always stdin: argv is readable by other local users (/proc/<pid>/cmdline), and it also has size limits.
+export function shouldPassPromptViaStdin(prompt, _platform = process.platform) {
+  return typeof prompt === "string" && prompt.length > 0;
 }
 
 export function resolveClaudeBin(env = process.env) {
   const override = typeof env.CLAUDE_BIN === "string" ? env.CLAUDE_BIN.trim() : "";
   return override || "claude";
+}
+
+/** Windows searches the working folder before PATH, so launch an absolute path resolved from trusted PATH entries. */
+export function resolveClaudeSpawnFile(env = process.env, platform = process.platform) {
+  const bin = resolveClaudeBin(env);
+  if (platform !== "win32") return bin;
+  const resolved = resolveOnTrustedPath(bin, env, platform);
+  if (!resolved) throw new Error(`${bin} was not found on PATH`);
+  return resolved;
 }
 
 export function buildClaudeSpawnOptions(cwd, env = process.env) {
@@ -74,11 +84,11 @@ export function buildRunArgs(options = {}) {
   const platform = options.platform ?? process.platform;
   if (shouldPassPromptViaStdin(prompt, platform)) {
     if (!options.promptFile) {
-      throw new Error("buildRunArgs: promptFile is required for an oversized Windows background prompt.");
+      throw new Error("buildRunArgs: promptFile is required for a background prompt.");
     }
     const promptFile = path.resolve(String(options.promptFile));
-    fs.mkdirSync(path.dirname(promptFile), { recursive: true });
-    fs.writeFileSync(promptFile, prompt, "utf8");
+    fs.mkdirSync(path.dirname(promptFile), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(promptFile, prompt, { encoding: "utf8", mode: 0o600 });
     args.push(`Read and follow the complete prompt in this UTF-8 file: ${promptFile}`);
   } else {
     args.push(prompt);

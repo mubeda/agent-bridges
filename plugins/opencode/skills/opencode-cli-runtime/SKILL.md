@@ -11,14 +11,15 @@ Use this skill only inside the `opencode:opencode-rescue` subagent.
 Resolve `<plugin-root>` as the first directory that contains `scripts/opencode-companion.mjs`:
 1. `$CLAUDE_PLUGIN_ROOT`
 2. `$PLUGIN_ROOT`
-3. `~/.cursor/plugins/local/opencode`
-4. `~/.config/opencode/plugins/opencode`
-5. otherwise search the host plugin cache (for example `~/.codex/plugins/cache` or `~/.claude/plugins/cache`) for this plugin's `scripts/opencode-companion.mjs`
+3. the `opencode-cli-runtime` folder next to the folder that holds this SKILL.md (`<this skill's folder>/../opencode-cli-runtime`, installed with `npx skills`)
+4. `~/.cursor/plugins/local/opencode`
+5. `~/.config/opencode/plugins/opencode`
+6. otherwise search the host plugin cache (for example `~/.codex/plugins/cache` or `~/.claude/plugins/cache`) for this plugin's `scripts/opencode-companion.mjs`
 
-If none exist, stop and print those paths. Do not invent a companion elsewhere.
+If none exist, stop and print those paths, and say that an `npx skills` install also needs `opencode-cli-runtime`. Do not invent a companion elsewhere.
 
 Primary helper:
-- `node "<plugin-root>/scripts/opencode-companion.mjs" task <flags> -- "<task text>"`
+- `node "<plugin-root>/scripts/opencode-companion.mjs" task <flags> <<'TASK_TEXT'`, then the task text, then a line `TASK_TEXT`: the task text goes on stdin, never as an argument, because arguments are visible to other local users.
 
 Execution rules:
 - The rescue subagent is a forwarder, not an orchestrator. Its only job is to invoke `task` once and return that stdout unchanged.
@@ -29,7 +30,7 @@ Execution rules:
 - That prompt drafting is the only host-side work allowed. Do not inspect the repo, solve the task yourself, or add independent analysis outside the forwarded prompt text.
 - Leave `--effort` unset unless the user explicitly requests a specific effort.
 - Leave model unset by default. Add `--model` only when the user explicitly asks for one, and pass the provider/model string verbatim.
-- Default to a write-capable OpenCode run by adding `--write` unless the user clearly asked for read-only / review-only behavior.
+- Default to a read-only run. Add `--write --bypass-permissions` only when the user asked for changes to be made (a fix, an implementation, "apply it"): `--write` lets the backend change files and run commands without asking, and the companion refuses it without `--bypass-permissions` (or `AGENT_BRIDGES_ALLOW_BYPASS=1`).
 
 Command selection:
 - Use exactly one `task` invocation per rescue handoff.
@@ -42,7 +43,7 @@ Command selection:
 - `task --resume-last`: internal helper for "keep going", "resume", "apply the top fix", or "dig deeper" after a previous rescue run.
 
 Safety rules:
-- Reviews and other read-only runs omit `--auto`. Rescue/`task` jobs pass `--write`, which adds `--auto` so the companion can complete unattended. The companion never uses `--dangerously-skip-permissions`.
+- Reviews and other read-only runs omit `--auto`. Rescue/`task` jobs that change files pass `--write --bypass-permissions`, which adds `--auto` so the companion can complete unattended. The companion never uses `--dangerously-skip-permissions`.
 - Preserve the user's task text as-is apart from stripping routing flags.
 - Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, cancel jobs, summarize output, or do any follow-up work of your own.
 - Return the stdout of the `task` command exactly as-is.

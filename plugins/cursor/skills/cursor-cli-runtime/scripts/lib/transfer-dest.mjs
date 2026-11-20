@@ -1,0 +1,9 @@
+export function buildHandoffPrompt(packed) {
+  const body = String(packed ?? "").trimEnd();
+  const instruction =
+    "Continue this work in this repository. Do not re-ask for the earlier context.";
+  if (!body) {
+    return instruction;
+  }
+  return `${body}\n\n${instruction}`;
+}

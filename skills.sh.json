@@ -1,0 +1,9 @@
+{
+  "paths": [
+    "./plugins/opencode/skills",
+    "./plugins/gemini/skills",
+    "./plugins/claude/skills",
+    "./plugins/cursor/skills",
+    "./plugins/antigravity/skills"
+  ]
+}

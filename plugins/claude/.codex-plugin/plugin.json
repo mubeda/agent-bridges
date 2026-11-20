@@ -1,6 +1,6 @@
 {
   "name": "claude",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Use the local Claude Code CLI to review code or delegate tasks.",
   "author": { "name": "mubeda" },
   "license": "Apache-2.0",

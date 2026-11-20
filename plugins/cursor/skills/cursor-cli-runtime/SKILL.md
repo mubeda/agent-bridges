@@ -11,14 +11,15 @@ Use this skill only inside the `cursor-rescue` agent.
 Resolve `<plugin-root>` as the first directory that contains `scripts/cursor-companion.mjs`:
 1. `$CLAUDE_PLUGIN_ROOT`
 2. `$PLUGIN_ROOT`
-3. `~/.cursor/plugins/local/cursor`
-4. `~/.config/opencode/plugins/cursor`
-5. otherwise search the host plugin cache (for example `~/.codex/plugins/cache` or `~/.claude/plugins/cache`) for this plugin's `scripts/cursor-companion.mjs`
+3. the `cursor-cli-runtime` folder next to the folder that holds this SKILL.md (`<this skill's folder>/../cursor-cli-runtime`, installed with `npx skills`)
+4. `~/.cursor/plugins/local/cursor`
+5. `~/.config/opencode/plugins/cursor`
+6. otherwise search the host plugin cache (for example `~/.codex/plugins/cache` or `~/.claude/plugins/cache`) for this plugin's `scripts/cursor-companion.mjs`
 
-If none exist, stop and print those paths. Do not invent a companion elsewhere.
+If none exist, stop and print those paths, and say that an `npx skills` install also needs `cursor-cli-runtime`. Do not invent a companion elsewhere.
 
 Primary helper:
-- `node "<plugin-root>/scripts/cursor-companion.mjs" task <flags> -- "<task text>"`
+- `node "<plugin-root>/scripts/cursor-companion.mjs" task <flags> <<'TASK_TEXT'`, then the task text, then a line `TASK_TEXT`: the task text goes on stdin, never as an argument, because arguments are visible to other local users.
 
 Execution rules:
 - The rescue agent is a forwarder, not an orchestrator. Its only job is to invoke `task` once and return that stdout unchanged.
@@ -28,7 +29,7 @@ Execution rules:
 - You may use the `cursor-prompting` skill to rewrite the user's request into a tighter Cursor prompt before the single `task` call.
 - That prompt drafting is the only host-side work allowed. Do not inspect the repo, solve the task yourself, or add independent analysis outside the forwarded prompt text.
 - Leave model unset by default. Add `--model` only when the user explicitly asks for one, and pass the model string verbatim.
-- Default to a write-capable Cursor run by adding `--write` unless the user clearly asked for read-only / review-only behavior. When `--write` is set, the companion adds `--force`; never tell the host to pass that flag itself.
+- Default to a read-only run. Add `--write --bypass-permissions` only when the user asked for changes to be made (a fix, an implementation, "apply it"): `--write` lets the backend change files and run commands without asking, and the companion refuses it without `--bypass-permissions` (or `AGENT_BRIDGES_ALLOW_BYPASS=1`). When `--write` is set, the companion adds `--force`; never tell the host to pass that flag itself.
 
 Command selection:
 - Use exactly one `task` invocation per rescue handoff.
@@ -40,7 +41,7 @@ Command selection:
 - `task --resume-last`: internal helper for "keep going", "resume", "apply the top fix", or "dig deeper" after a previous rescue run.
 
 Safety rules:
-- Reviews are read-only and omit `--write`. Rescue/`task` jobs pass `--write` so the companion adds `--force`; never ask the host to supply it directly.
+- Reviews are read-only and omit `--write`. Rescue/`task` jobs that change files pass `--write --bypass-permissions` so the companion adds `--force`; never ask the host to supply it directly.
 - Preserve the user's task text as-is apart from stripping routing flags.
 - Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, cancel jobs, summarize output, or do any follow-up work of your own.
 - Return the stdout of the `task` command exactly as-is.

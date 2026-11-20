@@ -31,6 +31,25 @@ test("cursor plugin tree is present", () => {
   assert.equal(fs.existsSync(path.join(root, "plugins/cursor/skills/cursor-review/SKILL.md")), true);
 });
 
+test("antigravity plugin tree is present with every command, skill and agent", () => {
+  const base = path.join(root, "plugins/antigravity");
+  assert.equal(fs.existsSync(path.join(base, "scripts/antigravity-companion.mjs")), true);
+  assert.equal(fs.existsSync(path.join(base, "agents/antigravity-rescue.md")), true);
+  const commands = fs.readdirSync(path.join(base, "commands")).map((f) => f.replace(/\.md$/, "")).sort();
+  assert.deepEqual(commands, ["adversarial-review", "cancel", "delegate", "rescue", "result", "review", "setup", "status", "transfer"]);
+  const skills = fs.readdirSync(path.join(base, "skills")).sort();
+  assert.deepEqual(
+    skills,
+    ["adversarial-review", "cancel", "cli-runtime", "delegate", "prompting", "rescue", "result", "review", "setup", "status", "transfer"].map(
+      (s) => `antigravity-${s}`
+    )
+  );
+  for (const skill of skills) {
+    const body = fs.readFileSync(path.join(base, "skills", skill, "SKILL.md"), "utf8");
+    assert.match(body, new RegExp(`^name:\\s*${skill}\\s*$`, "m"), skill);
+  }
+});
+
 test("claude plugin tree is present without Claude-host commands or hooks", () => {
   const rootClaude = path.join(root, "plugins/claude");
   assert.equal(fs.existsSync(path.join(rootClaude, "scripts/claude-companion.mjs")), true);

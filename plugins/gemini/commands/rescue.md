@@ -1,7 +1,7 @@
 ---
 name: rescue
 description: Delegate investigation, an explicit fix request, or follow-up rescue work to the Gemini rescue subagent
-argument-hint: "[--background|--wait] [--write] [--resume|--fresh] [--model <alias|id>] [--effort <low|medium|high>] [what Gemini should investigate, solve, or continue]"
+argument-hint: "[--background|--wait] [--write --bypass-permissions] [--trust] [--resume|--fresh] [--model <alias|id>] [--effort <low|medium|high>] [what Gemini should investigate, solve, or continue]"
 allowed-tools: Bash(node:*), AskUserQuestion, Agent
 ---
 
@@ -27,7 +27,7 @@ Execution mode:
 - If the request includes `--wait`, forward it to the companion `task` call so the task runs in the foreground.
 - If neither flag is present, omit both and let `task` default to foreground.
 - `--background` and `--wait` are companion runtime controls. Preserve them for the forwarded `task` call, but do not treat them as part of the natural-language task text.
-- `--model`, `--effort`, and `--write` are runtime-selection flags. Preserve them for the forwarded `task` call, but do not treat them as part of the natural-language task text. `--effort` (`low|medium|high`) is forwarded for `agy`; on Gemini CLI the companion ignores it and prints the existing deprecation note.
+- `--model`, `--effort`, `--write`, `--bypass-permissions` and `--trust` are runtime-selection flags. Preserve them for the forwarded `task` call, but do not treat them as part of the natural-language task text. `--effort` (`low|medium|high`) is forwarded for `agy`; on Gemini CLI the companion ignores it and prints the existing deprecation note.
 - If the request includes `--resume`, do not ask whether to continue. The user already chose.
 - If the request includes `--fresh`, do not ask whether to continue. The user already chose.
 - Otherwise, before starting Gemini, check for a resumable rescue thread from this Claude session by running:
@@ -48,11 +48,11 @@ node "<plugin-root>/scripts/gemini-companion.mjs" task-resume-candidate --json
 
 Operating rules:
 
-- The subagent is a thin forwarder only. It should use one `Bash` call to invoke `node "<plugin-root>/scripts/gemini-companion.mjs" task ...` and return that command's stdout as-is.
+- The subagent is a thin forwarder only. It should use one `Bash` call to invoke `node "<plugin-root>/scripts/gemini-companion.mjs" task <flags> <<'TASK_TEXT'`, with the task text on the following lines and a closing `TASK_TEXT` line, so the text goes on stdin and never as an argument (arguments are visible to other local users) and return that command's stdout as-is.
 - Return the Gemini companion stdout verbatim to the user.
 - Do not paraphrase, summarize, rewrite, or add commentary before or after it.
 - Do not ask the subagent to inspect files, monitor progress, poll `/gemini:status`, fetch `/gemini:result`, call `/gemini:cancel`, summarize output, or do follow-up work of its own.
-- Default to a write-capable Gemini run by adding `--write` to the companion `task` invocation unless the user clearly asked for read-only / review-only behavior.
+- Default to a read-only run. Add `--write --bypass-permissions` only when the user asked for changes to be made (a fix, an implementation, "apply it"): `--write` lets the backend change files and run commands without asking, and the companion refuses it without `--bypass-permissions` (or `AGENT_BRIDGES_ALLOW_BYPASS=1`).
 - Leave `--effort` unset unless the user explicitly asks for a specific reasoning effort (`low|medium|high`). Forward it for `agy`; Gemini CLI ignores it with the companion's existing note.
 - Leave the model unset unless the user explicitly asks for one. Forward whatever model alias or id they pass verbatim (for example `pro`, `flash`, or `gemini-3-pro-preview`).
 - Leave `--resume` and `--fresh` in the forwarded request. The subagent handles that routing when it builds the `task` command.

@@ -9,8 +9,9 @@ export const WIN32_ARGV_PROMPT_LIMIT = 20_000;
 const MISSING_BIN_DETAIL =
   "`agent` was not found on PATH. Install Cursor CLI from https://cursor.com/docs/cli/installation then rerun setup. Optional: set CURSOR_BIN.";
 
-export function shouldPassPromptViaStdin(prompt, platform = process.platform) {
-  return platform === "win32" && typeof prompt === "string" && prompt.length > WIN32_ARGV_PROMPT_LIMIT;
+// Always stdin: argv is readable by other local users (/proc/<pid>/cmdline), and it also has size limits.
+export function shouldPassPromptViaStdin(prompt, _platform = process.platform) {
+  return typeof prompt === "string" && prompt.length > 0;
 }
 
 export function resolveCursorBin(env = process.env) {
@@ -29,7 +30,8 @@ export function resolveCursorSpawnBin(env = process.env, platform = process.plat
     return bin;
   }
 
-  const pathEntries = String(env.PATH ?? "").split(path.delimiter).filter(Boolean);
+  // Absolute entries only: the working folder must never supply the CLI (Windows searches it first).
+  const pathEntries = String(env.PATH ?? "").split(path.delimiter).filter((entry) => path.win32.isAbsolute(entry));
   const extensions = String(env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD")
     .split(";")
     .map((extension) => extension.trim().toLowerCase())
@@ -46,6 +48,8 @@ export function resolveCursorSpawnBin(env = process.env, platform = process.plat
 
 export function resolveCursorSpawnCommand(env = process.env, platform = process.platform) {
   const bin = resolveCursorSpawnBin(env, platform);
+  // Windows searches the working folder before PATH, so never launch a bare name there.
+  if (platform === "win32" && !path.win32.isAbsolute(bin)) throw new Error(`${bin} was not found on PATH`);
   if (platform !== "win32" || path.extname(bin).toLowerCase() !== ".cmd") {
     return { file: bin, args: [] };
   }
@@ -62,14 +66,24 @@ export function resolveCursorSpawnCommand(env = process.env, platform = process.
   };
 }
 
+/** Node cannot start a .cmd or .bat without a shell, and the prompt must never go through one. */
+export function unsupportedLauncher(env = process.env, platform = process.platform) {
+  if (platform !== "win32") return null;
+  const { file } = resolveCursorSpawnCommand(env, platform);
+  const extension = path.extname(file).toLowerCase();
+  if (extension !== ".cmd" && extension !== ".bat") return null;
+  return `${file} is a ${extension} launcher with no .ps1 next to it, so Cursor Agent jobs cannot start it. Set CURSOR_BIN to the .exe, or to a launcher that ships a .ps1.`;
+}
+
 export function getCursorAvailability(cwd, env = process.env) {
   const bin = resolveCursorBin(env);
   const status = binaryAvailable(bin, ["--version"], { cwd });
+  const launcherProblem = status.available ? unsupportedLauncher(env) : null;
   return {
-    available: status.available,
+    available: status.available && !launcherProblem,
     loggedIn: false,
     bin,
-    detail: status.available ? status.detail || `${bin} is available.` : MISSING_BIN_DETAIL
+    detail: launcherProblem ?? (status.available ? status.detail || `${bin} is available.` : MISSING_BIN_DETAIL)
   };
 }
 
@@ -115,7 +129,8 @@ export function buildRunArgs(options = {}) {
   } else {
     args.push("--force");
   }
-  args.push("--trust");
+  // Folder trust is opt-in: --trust on the companion, or AGENT_BRIDGES_TRUST=1.
+  if ((options.env ?? process.env).AGENT_BRIDGES_TRUST === "1") args.push("--trust");
   if (options.model) args.push("--model", String(options.model));
   if (options.resumeSessionId) args.push("--resume", String(options.resumeSessionId));
   args.push("--output-format", "json");

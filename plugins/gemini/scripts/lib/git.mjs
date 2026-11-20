@@ -9,12 +9,13 @@ const DEFAULT_INLINE_DIFF_MAX_FILES = 2;
 const DEFAULT_INLINE_DIFF_MAX_BYTES = 256 * 1024;
 const LIGHTWEIGHT_UNTRACKED_LIST_LIMIT = 200;
 
+// shell: false, so a ref such as `topic&docs` reaches git intact on Windows, where runCommand defaults to a shell.
 function git(cwd, args, options = {}) {
-  return runCommand("git", args, { cwd, ...options });
+  return runCommand("git", args, { cwd, shell: false, ...options });
 }
 
 function gitChecked(cwd, args, options = {}) {
-  return runCommandChecked("git", args, { cwd, ...options });
+  return runCommandChecked("git", args, { cwd, shell: false, ...options });
 }
 
 function listUniqueFiles(...groups) {

@@ -16,11 +16,12 @@ an independent adversarial review before it lands.
 Resolve `<plugin-root>` as the first directory that contains `scripts/cursor-companion.mjs`:
 1. `$CLAUDE_PLUGIN_ROOT`
 2. `$PLUGIN_ROOT`
-3. `~/.cursor/plugins/local/cursor`
-4. `~/.config/opencode/plugins/cursor`
-5. otherwise search the host plugin cache (for example `~/.codex/plugins/cache` or `~/.claude/plugins/cache`) for this plugin's `scripts/cursor-companion.mjs`
+3. the `cursor-cli-runtime` folder next to the folder that holds this SKILL.md (`<this skill's folder>/../cursor-cli-runtime`, installed with `npx skills`)
+4. `~/.cursor/plugins/local/cursor`
+5. `~/.config/opencode/plugins/cursor`
+6. otherwise search the host plugin cache (for example `~/.codex/plugins/cache` or `~/.claude/plugins/cache`) for this plugin's `scripts/cursor-companion.mjs`
 
-If none exist, stop and print those paths. Do not invent a companion elsewhere.
+If none exist, stop and print those paths, and say that an `npx skills` install also needs `cursor-cli-runtime`. Do not invent a companion elsewhere.
 
 Every Cursor Agent run goes through the companion's `task`, `status`, and `result`
 subcommands; never invoke the backend CLI directly.
@@ -83,13 +84,12 @@ Protected paths (beyond defaults): <list>
 ### 2. Launch each chunk as a fresh background job
 
 ```bash
-cd <repo> && node "<plugin-root>/scripts/cursor-companion.mjs" task --background --fresh --write "$(cat <<'CHUNK_PROMPT'
+cd <repo> && node "<plugin-root>/scripts/cursor-companion.mjs" task --background --fresh --write --bypass-permissions <<'CHUNK_PROMPT'
 <chunk prompt>
 CHUNK_PROMPT
-)"
 ```
 
-- **Always `--fresh --write` for implementation.** `--write` runs the
+- **Always `--fresh --write --bypass-permissions` for implementation.** `--write` runs the
   agent with write access; without it the run stays in plan mode and
   produces no edits. `--fresh` keeps every chunk on its own thread: the companion can
   only resume the latest thread in a workspace, so with parallel chunks in
@@ -169,7 +169,7 @@ running; the loop ends when every chunk is committed or escalated.
      for **2 consecutive ticks** (~20 min), or the output shows the
      implementer waiting for approval/input. One quiet tick is not
      blocked — it may be running tests or thinking without writing.
-4. Restart what needs it, always as a fresh `--background --fresh --write`
+4. Restart what needs it, always as a fresh `--background --fresh --write --bypass-permissions`
    job whose prompt states the worktree may already contain partial edits
    from the prior attempt and exactly what remains:
    - A **blocked** chunk is still running: stop it first with
@@ -231,7 +231,7 @@ way.
 ### 5. Findings: re-feed, at most twice
 
 Every finding — however small — goes back to Cursor Agent with precise
-file-and-line feedback. Launch the re-feed as a **fresh `--fresh --write`
+file-and-line feedback. Launch the re-feed as a **fresh `--fresh --write --bypass-permissions`
 job** whose prompt states that the worktree already contains the prior
 attempt's edits and lists exactly what to change. (The companion can only
 resume the *latest* thread in a workspace, so with parallel chunks in

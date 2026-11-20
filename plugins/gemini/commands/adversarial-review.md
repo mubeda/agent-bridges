@@ -54,10 +54,14 @@ Resolve `<plugin-root>` as the first directory that contains `scripts/gemini-com
 
 If none exist, stop and print those paths. Do not invent a companion elsewhere.
 
+Pass each flag from the arguments as its own shell argument (`<flags>`), and send any free-form focus text on stdin as shown, never as an argument. Without focus text, drop `--focus-stdin` and the heredoc.
+
 Foreground flow:
 - Run:
 ```bash
-node "<plugin-root>/scripts/gemini-companion.mjs" adversarial-review "$ARGUMENTS"
+node "<plugin-root>/scripts/gemini-companion.mjs" adversarial-review <flags> --focus-stdin <<'FOCUS_TEXT'
+<focus text>
+FOCUS_TEXT
 ```
 - Return the command stdout verbatim, exactly as-is.
 - Do not paraphrase, summarize, or add commentary before or after it.
@@ -66,7 +70,9 @@ node "<plugin-root>/scripts/gemini-companion.mjs" adversarial-review "$ARGUMENTS
 Background flow:
 - If `--background` is present, run the companion normally and include all of the user's flags:
 ```bash
-node "<plugin-root>/scripts/gemini-companion.mjs" adversarial-review "$ARGUMENTS"
+node "<plugin-root>/scripts/gemini-companion.mjs" adversarial-review <flags> --focus-stdin <<'FOCUS_TEXT'
+<focus text>
+FOCUS_TEXT
 ```
 - The companion detaches the review itself. Do not wait for completion in this turn.
 - After launching the command, tell the user: "Gemini adversarial review started in the background. Check `/gemini:status` for progress."

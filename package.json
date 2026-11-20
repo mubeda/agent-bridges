@@ -2,13 +2,14 @@
   "name": "agent-bridges",
   "private": true,
   "type": "module",
-  "description": "Multi-host marketplace for the OpenCode, Gemini, and Claude companion plugins.",
+  "description": "Multi-host marketplace for the OpenCode, Gemini, Claude, Cursor, and Antigravity companion plugins.",
   "license": "Apache-2.0",
   "engines": {
     "node": ">=18.18.0"
   },
   "scripts": {
     "test": "node scripts/run-tests.mjs",
-    "validate": "node scripts/validate-catalogs.mjs"
+    "validate": "node scripts/validate-catalogs.mjs",
+    "sync:skills": "node scripts/sync-skills.mjs"
   }
 }

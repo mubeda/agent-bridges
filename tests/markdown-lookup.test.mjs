@@ -32,7 +32,7 @@ test("plugin markdown has no MAU_PLUGIN_ROOT", () => {
   }
 });
 
-for (const companion of ["opencode", "gemini", "cursor"]) {
+for (const companion of ["opencode", "gemini", "cursor", "antigravity"]) {
   for (const command of ["review", "adversarial-review"]) {
     test(`${companion} ${command} command delegates background execution to the companion`, () => {
       const body = fs.readFileSync(
@@ -54,7 +54,7 @@ test("codex review skill exists", () => {
 });
 
 test("transfer command exists for companion plugins", () => {
-  for (const name of ["opencode", "gemini", "cursor"]) {
+  for (const name of ["opencode", "gemini", "cursor", "antigravity"]) {
     const body = fs.readFileSync(path.join(root, `plugins/${name}/commands/transfer.md`), "utf8");
     assert.match(body, /PLUGIN_ROOT/);
     assert.match(body, /transfer/);
@@ -140,8 +140,8 @@ test("Cursor documentation contains no obsolete permission or OpenCode commands"
   }
 });
 
-test("delegate skills exist for all four companions", () => {
-  for (const name of ["opencode", "gemini", "claude", "cursor"]) {
+test("delegate skills exist for all five companions", () => {
+  for (const name of ["opencode", "gemini", "claude", "cursor", "antigravity"]) {
     const body = fs.readFileSync(
       path.join(root, `plugins/${name}/skills/${name}-delegate/SKILL.md`),
       "utf8"
@@ -158,7 +158,7 @@ test("delegate skills exist for all four companions", () => {
 });
 
 test("delegate command exists for Claude and Cursor host plugins", () => {
-  for (const name of ["opencode", "gemini", "cursor"]) {
+  for (const name of ["opencode", "gemini", "cursor", "antigravity"]) {
     const body = fs.readFileSync(path.join(root, `plugins/${name}/commands/delegate.md`), "utf8");
     assert.match(body, /^name:\s*delegate/m);
     assert.match(body, new RegExp(`${name}-delegate`));
@@ -187,7 +187,7 @@ test("Cursor documentation only invokes implemented companion subcommands", () =
   }
 });
 
-const COMPANIONS = ["opencode", "gemini", "claude", "cursor"];
+const COMPANIONS = ["opencode", "gemini", "claude", "cursor", "antigravity"];
 const THIN_SKILLS = ["adversarial-review", "cancel", "result", "review", "setup", "status", "transfer"];
 
 function readSkill(name, skill) {
@@ -203,7 +203,7 @@ test("delegate skills require a clean worktree and cancel blocked jobs before re
 });
 
 test("delegate polling uses the companion wait instead of non-portable shell utilities", () => {
-  for (const name of ["opencode", "gemini", "cursor"]) {
+  for (const name of ["opencode", "gemini", "cursor", "antigravity"]) {
     const body = readSkill(name, "delegate");
     assert.doesNotMatch(body, /timeout 600/, name);
     assert.match(body, /status <job-id> --wait --timeout-ms 600000 --json/, name);
@@ -217,12 +217,15 @@ test("claude delegate does not treat output as a liveness signal or call launche
   assert.match(body, /3 consecutive ticks/);
 });
 
-test("rescue surfaces pass task text as one argument after -- and report failures", () => {
+test("rescue surfaces pipe task text on stdin and report failures", () => {
   for (const name of COMPANIONS) {
-    for (const skill of ["cli-runtime", "rescue"]) {
+    for (const skill of ["cli-runtime", "rescue", "delegate"]) {
       const body = readSkill(name, skill);
       assert.doesNotMatch(body, /task "<raw arguments>"/, `${name}-${skill}`);
-      assert.match(body, new RegExp(`${name}-companion\\.mjs" task <flags> -- "<task text>"`), `${name}-${skill}`);
+      // argv is readable by other local users, so task text never goes in it.
+      assert.doesNotMatch(body, /-- "<task text>"/, `${name}-${skill}`);
+      assert.doesNotMatch(body, /"\$\(cat <</, `${name}-${skill}`);
+      assert.match(body, new RegExp(`${name}-companion\\.mjs" task [^\\n]*<<\x27(TASK_TEXT|CHUNK_PROMPT)\x27`), `${name}-${skill}`);
     }
     assert.doesNotMatch(readSkill(name, "rescue"), /return nothing/, name);
     assert.match(readSkill(name, "rescue"), new RegExp(`${name}-setup`), name);
@@ -235,7 +238,8 @@ test("thin skills do not paste raw user arguments into the shell command", () =>
       const body = readSkill(name, skill);
       assert.doesNotMatch(body, /\.mjs" [a-z-]+ \$ARGUMENTS/, `${name}-${skill}`);
       assert.match(body, /`\$ARGUMENTS`/, `${name}-${skill}`);
-      assert.match(body, /\.mjs" [a-z-]+ <arguments>/, `${name}-${skill}`);
+      // adversarial-review splits flags from focus text, which goes on stdin
+      assert.match(body, skill === "adversarial-review" ? /\.mjs" adversarial-review <flags>/ : /\.mjs" [a-z-]+ <arguments>/, `${name}-${skill}`);
     }
   }
 });
@@ -262,8 +266,97 @@ test("skills carry no host-specific or contradictory backend wording", () => {
   assert.match(readSkill("gemini", "cli-runtime"), /agy --continue/);
 });
 
+test("antigravity commands use the antigravity namespace and forward effort", () => {
+  const base = path.join(root, "plugins/antigravity");
+  const rescue = fs.readFileSync(path.join(base, "commands/rescue.md"), "utf8");
+  assert.match(rescue, /antigravity:antigravity-rescue/);
+  assert.match(rescue, /Skill\(antigravity:rescue\)/);
+  const delegate = fs.readFileSync(path.join(base, "commands/delegate.md"), "utf8");
+  assert.match(delegate, /antigravity:antigravity-delegate/);
+  for (const file of ["commands/rescue.md", "agents/antigravity-rescue.md", "skills/antigravity-rescue/SKILL.md"]) {
+    const body = fs.readFileSync(path.join(base, file), "utf8");
+    assert.match(body, /--effort/, file);
+    assert.match(body, /--model/, file);
+    assert.match(body, /--write/, file);
+  }
+});
+
+test("antigravity skills resolve the companion in the documented order", () => {
+  const skillsDir = path.join(root, "plugins/antigravity/skills");
+  const names = fs.readdirSync(skillsDir).filter((name) => name !== "antigravity-prompting");
+  assert.equal(names.length, 10);
+  for (const name of names) {
+    const body = fs.readFileSync(path.join(skillsDir, name, "SKILL.md"), "utf8");
+    const start = body.indexOf("Resolve `<plugin-root>`");
+    assert.ok(start >= 0, name);
+    const block = body.slice(start).split(/\r?\n/);
+    const entries = block.filter((line) => /^\d+\. /.test(line)).slice(0, 6);
+    assert.match(entries[0], /^1\. `\$CLAUDE_PLUGIN_ROOT`/, name);
+    assert.match(entries[1], /^2\. `\$PLUGIN_ROOT`/, name);
+    assert.match(entries[2], /the folder that holds this SKILL\.md/, name);
+    assert.match(entries[2], /<this skill's folder>\/\.\.\/antigravity-cli-runtime/, name);
+    assert.match(entries[3], /~\/\.cursor\/plugins\/local\/antigravity/, name);
+    assert.match(entries[4], /~\/\.config\/opencode\/plugins\/antigravity/, name);
+    assert.match(entries[5], /plugin cache/, name);
+    const stop = block.find((line) => line.startsWith("If none exist,"));
+    assert.ok(stop, name);
+    assert.match(stop, /antigravity-cli-runtime/, name);
+  }
+});
+
 test("plugin-root lookup names the Codex and Claude plugin caches", () => {
   for (const name of COMPANIONS) {
     assert.match(readSkill(name, "review"), /~\/\.codex\/plugins\/cache/, name);
+  }
+});
+
+test("antigravity markdown never names the Cursor binary", () => {
+  const files = [];
+  (function walk(dir) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith(".md")) files.push(full);
+    }
+  })(path.join(root, "plugins/antigravity"));
+  for (const file of files) {
+    const body = fs.readFileSync(file, "utf8");
+    assert.doesNotMatch(body, /`agent` CLI|agent login|agent status/, file);
+  }
+});
+
+test("rescue agents and commands pipe task text on stdin", () => {
+  for (const name of COMPANIONS) {
+    for (const rel of [`agents/${name}-rescue.md`, "commands/rescue.md"]) {
+      const file = path.join(root, `plugins/${name}`, rel);
+      if (!fs.existsSync(file)) continue;
+      const body = fs.readFileSync(file, "utf8");
+      if (!/companion\.mjs" task\b/.test(body)) continue;
+      assert.match(body, /<<'TASK_TEXT'/, `${name} ${rel}`);
+      assert.match(body, /never as an argument/, `${name} ${rel}`);
+    }
+  }
+});
+
+test("adversarial-review focus text and rescue agents never go in argv", () => {
+  for (const name of COMPANIONS) {
+    const docs = [readSkill(name, "adversarial-review")];
+    const command = path.join(root, `plugins/${name}/commands/adversarial-review.md`);
+    if (fs.existsSync(command)) docs.push(fs.readFileSync(command, "utf8"));
+    for (const body of docs) {
+      assert.doesNotMatch(body, /adversarial-review "\$ARGUMENTS"/, name);
+      assert.doesNotMatch(body, /focus text last, as one quoted argument/, name);
+      assert.match(body, /adversarial-review <flags> --focus-stdin <<'FOCUS_TEXT'/, name);
+    }
+    const agent = fs.readFileSync(path.join(root, `plugins/${name}/agents/${name}-rescue.md`), "utf8");
+    assert.doesNotMatch(agent, /then `--`, then the task text/, name);
+  }
+});
+
+test("every companion reads adversarial focus from stdin only with --focus-stdin", () => {
+  for (const name of COMPANIONS) {
+    const source = fs.readFileSync(path.join(root, `plugins/${name}/scripts/${name}-companion.mjs`), "utf8");
+    assert.match(source, /"focus-stdin"/, name);
+    assert.match(source, /options\["focus-stdin"\]/, name);
   }
 });

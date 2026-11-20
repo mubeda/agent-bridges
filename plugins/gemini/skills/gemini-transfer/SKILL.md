@@ -7,11 +7,12 @@ user-invocable: true
 Resolve `<plugin-root>` as the first directory that contains `scripts/gemini-companion.mjs`:
 1. `$CLAUDE_PLUGIN_ROOT`
 2. `$PLUGIN_ROOT`
-3. `~/.cursor/plugins/local/gemini`
-4. `~/.config/opencode/plugins/gemini`
-5. otherwise search the host plugin cache (for example `~/.codex/plugins/cache` or `~/.claude/plugins/cache`) for this plugin's `scripts/gemini-companion.mjs`
+3. the `gemini-cli-runtime` folder next to the folder that holds this SKILL.md (`<this skill's folder>/../gemini-cli-runtime`, installed with `npx skills`)
+4. `~/.cursor/plugins/local/gemini`
+5. `~/.config/opencode/plugins/gemini`
+6. otherwise search the host plugin cache (for example `~/.codex/plugins/cache` or `~/.claude/plugins/cache`) for this plugin's `scripts/gemini-companion.mjs`
 
-If none exist, stop and print those paths. Do not invent a companion elsewhere.
+If none exist, stop and print those paths, and say that an `npx skills` install also needs `gemini-cli-runtime`. Do not invent a companion elsewhere.
 
 Transfer source rules:
 - By default the companion auto-detects the newest workspace transcript from Claude, Codex, or Cursor Agent JSONL.
