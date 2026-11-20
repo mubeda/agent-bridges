@@ -17,7 +17,8 @@ function cursorProjectDirName(workspaceRoot) {
     .resolve(workspaceRoot)
     .replace(/\\/g, "/")
     .replace(/:/g, "")
-    .replace(/\//g, "-");
+    .replace(/\//g, "-")
+    .replace(/^-+/, ""); // Cursor names /home/me as home-me
 }
 
 function resolveUserPath(cwd, value, home) {
@@ -118,9 +119,40 @@ function codexSessionMatchesCwd(filePath, cwd) {
   }
 }
 
+function isInsideWorkspace(candidate, cwd) {
+  const root = normalizePathForCompare(cwd);
+  const value = normalizePathForCompare(candidate);
+  return value === root || value.startsWith(`${root}/`);
+}
+
+/** The project folder name is a lossy encoding (/a-b and /a/b collide), so check the cwd the transcript recorded. */
+function claudeTranscriptBelongs(filePath, cwd) {
+  let text = "";
+  try {
+    const fd = fs.openSync(filePath, "r");
+    try {
+      const buffer = Buffer.alloc(65536);
+      text = buffer.subarray(0, fs.readSync(fd, buffer, 0, buffer.length, 0)).toString("utf8");
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return false;
+  }
+  for (const line of text.split(/\r?\n/)) {
+    try {
+      const recorded = JSON.parse(line)?.cwd;
+      if (typeof recorded === "string" && recorded) return isInsideWorkspace(recorded, cwd);
+    } catch {
+      // partial or non-JSON line
+    }
+  }
+  return false;
+}
+
 function findClaudeFiles(cwd, home) {
   const dir = path.join(home, ".claude", "projects", claudeProjectDirName(cwd));
-  return listTopLevelJsonl(dir);
+  return listTopLevelJsonl(dir).filter((file) => claudeTranscriptBelongs(file, cwd));
 }
 
 function findCodexFiles(cwd, home, env) {
@@ -136,14 +168,16 @@ function findCodexFiles(cwd, home, env) {
 }
 
 function findCursorFiles(cwd, home) {
-  const dir = path.join(
-    home,
-    ".cursor",
-    "projects",
-    cursorProjectDirName(cwd),
-    "agent-transcripts"
-  );
-  return listFilesRecursive(dir, (name) => name.endsWith(".jsonl"));
+  const project = path.join(home, ".cursor", "projects", cursorProjectDirName(cwd));
+  // Cursor transcripts carry no cwd; the project folder's trust marker names its workspace. Without it, fail closed.
+  let workspacePath = null;
+  try {
+    workspacePath = JSON.parse(fs.readFileSync(path.join(project, ".workspace-trusted"), "utf8"))?.workspacePath ?? null;
+  } catch {
+    return [];
+  }
+  if (typeof workspacePath !== "string" || normalizePathForCompare(workspacePath) !== normalizePathForCompare(cwd)) return [];
+  return listFilesRecursive(path.join(project, "agent-transcripts"), (name) => name.endsWith(".jsonl"));
 }
 
 function requireJsonlPath(sourcePath) {

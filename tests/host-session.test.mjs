@@ -37,7 +37,7 @@ function setMtime(filePath, epochSeconds) {
 }
 
 function cursorProjectDirName(cwd) {
-  return path.resolve(cwd).replace(/\\/g, "/").replace(/:/g, "").replace(/\//g, "-");
+  return path.resolve(cwd).replace(/\\/g, "/").replace(/:/g, "").replace(/\//g, "-").replace(/^-+/, "");
 }
 
 function resetFixtures() {
@@ -66,6 +66,7 @@ function resetFixtures() {
     claudeFile,
     `${JSON.stringify({
       type: "user",
+      cwd: workspaceRoot,
       message: { role: "user", content: "claude hello" }
     })}\n${JSON.stringify({
       type: "assistant",
@@ -76,6 +77,7 @@ function resetFixtures() {
     claudeOlder,
     `${JSON.stringify({
       type: "user",
+      cwd: workspaceRoot,
       message: { role: "user", content: "older claude" }
     })}\n`
   );
@@ -94,6 +96,10 @@ function resetFixtures() {
         content: [{ type: "input_text", text: "codex hello" }]
       }
     })}\n`
+  );
+  writeFile(
+    path.join(cursorDir, "..", "..", ".workspace-trusted"),
+    JSON.stringify({ workspacePath: workspaceRoot })
   );
   writeFile(
     cursorFile,
@@ -325,7 +331,7 @@ test("antigravity transfer prefers a local Claude transcript over an unrelated C
   codexRollout(sandbox.home, path.join(sandbox.dir, "elsewhere"), "unrelated codex text");
   writeFile(
     path.join(sandbox.home, ".claude", "projects", claudeProjectDirName(sandbox.repo), "s.jsonl"),
-    `${JSON.stringify({ type: "user", message: { role: "user", content: "local claude text" } })}\n`
+    `${JSON.stringify({ type: "user", cwd: sandbox.repo, message: { role: "user", content: "local claude text" } })}\n`
   );
   const result = runAgy(sandbox, ["transfer", "--wait"]);
   assert.equal(result.status, 0, result.stderr);

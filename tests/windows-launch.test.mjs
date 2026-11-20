@@ -127,3 +127,30 @@ test("the Windows spawn resolvers skip relative PATH entries", async (t) => {
     assert.equal(unsupportedLauncher(plugin, env, "win32"), null, plugin);
   }
 });
+
+for (const plugin of PLUGINS) {
+  test(`${plugin}: transfer only auto-picks transcripts proven to belong to this workspace`, async (t) => {
+    const { resolveTransferSource } = await import(`../plugins/${plugin}/scripts/lib/host-session.mjs`);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "collide-"));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const home = path.join(dir, "home");
+    const repo = path.join(dir, "acme-prod");
+    const other = path.join(dir, "acme", "prod");
+    fs.mkdirSync(repo, { recursive: true });
+    const encoded = (p) => path.resolve(p).replace(/[^a-zA-Z0-9]/g, "-");
+    const claudeDir = path.join(home, ".claude", "projects", encoded(repo));
+    const cursorProject = path.join(home, ".cursor", "projects", path.resolve(repo).replace(/\\/g, "/").replace(/:/g, "").replace(/\//g, "-").replace(/^-/, ""));
+    const write = (file, text) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text); };
+    // Both transcripts sit in the folder the lossy encoding maps acme-prod to, but they belong to acme/prod.
+    write(path.join(claudeDir, "s.jsonl"), `${JSON.stringify({ type: "user", cwd: other, message: { role: "user", content: "SECRET" } })}\n`);
+    write(path.join(cursorProject, "agent-transcripts", "a", "a.jsonl"), `${JSON.stringify({ role: "user", message: { content: [{ type: "text", text: "SECRET" }] } })}\n`);
+    write(path.join(cursorProject, ".workspace-trusted"), JSON.stringify({ workspacePath: other }));
+    assert.throws(() => resolveTransferSource(repo, { home, env: {} }), /--source/);
+    // A Cursor folder with no workspace marker cannot be proven either.
+    fs.rmSync(path.join(cursorProject, ".workspace-trusted"));
+    assert.throws(() => resolveTransferSource(repo, { home, env: {} }), /--source/);
+    // The real owner is still found: the Claude transcript recorded this workspace (or a folder inside it).
+    write(path.join(claudeDir, "mine.jsonl"), `${JSON.stringify({ type: "user", cwd: path.join(repo, "src"), message: { role: "user", content: "mine" } })}\n`);
+    assert.equal(resolveTransferSource(repo, { home, env: {} }).path, path.join(claudeDir, "mine.jsonl"));
+  });
+}
