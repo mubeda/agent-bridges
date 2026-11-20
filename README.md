@@ -132,7 +132,14 @@ No companion bypasses a backend CLI's safety checks unless you say so.
 
 - **Write runs.** `--write` makes the backend auto-approve its tools (`--dangerously-skip-permissions` for Claude and Antigravity, `--force` for Cursor, `--approval-mode=yolo` for Gemini, `--auto` for OpenCode). The companion refuses `--write` unless the same command has `--bypass-permissions`, or `AGENT_BRIDGES_ALLOW_BYPASS=1` is set in the environment.
 - **Folder trust.** Cursor's `--trust` and Gemini's `--skip-trust` are passed only with `--trust` on the companion command, or with `AGENT_BRIDGES_TRUST=1`. Without it, the backend applies its own folder-trust check, and a headless run in a folder you have not trusted can stop with the backend's error.
-- Rescue is read-only by default. Delegate passes `--write --bypass-permissions` itself, because invoking it is an explicit request for the backend to make the changes.
+- Rescue is read-only by default.
+- **OpenCode read-only runs** (reviews, and tasks without `--write`) pass a per-run configuration in `OPENCODE_CONFIG_CONTENT` that denies every tool except `read`, `glob` and `list`, MCP tools included. `grep` is denied too, because it searches file contents, so it could print secrets from files that `read` refuses. Reading `*.env` and `*.env.*` is denied, and `*.env.example` is allowed. The rest of your `OPENCODE_CONFIG_CONTENT` is kept, except its `permission` block and OpenCode 2's native `permissions` list, which would outrank the allowlist. Without this, OpenCode's defaults allow edits and shell commands even without `--auto`.
+- Delegate passes `--write --bypass-permissions` itself, because invoking it is an explicit request for the backend to make the changes.
+
+## Windows
+
+- Companions start an npm-installed CLI (a `.cmd` shim) by running the script or `.exe` that the shim names, never through `cmd.exe` or PowerShell, so a prompt on stdin arrives byte for byte. Any other `.cmd` is refused, except that the OpenCode, Gemini, Cursor and Antigravity companions fall back to the `.ps1` next to it when there is one. When a launcher is refused, set the backend's `*_BIN` variable to its `.exe`.
+- Windows PowerShell 5.1 re-encodes text piped into a native command with `$OutputEncoding`, which defaults to ASCII, so `"é" | node …` arrives as `?`. Run `$OutputEncoding = [Console]::InputEncoding = [System.Text.UTF8Encoding]::new()` first, or use PowerShell 7 or Git Bash.
 
 ## Review gate (Claude only)
 

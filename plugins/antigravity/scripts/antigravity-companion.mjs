@@ -226,8 +226,12 @@ function spawnAgy(cwd, args, promptViaStdin = null, onSpawn = null, onSignal = n
     const detached = process.platform !== "win32";
     const child = spawn(command.file, [...command.args, ...args], { cwd, windowsHide: true, detached, stdio: ["pipe", "pipe", "pipe"] });
     // A detached agy no longer gets the terminal's signals, so forward them to its group.
-    const forward = (signal) => {
-      if (child.pid) terminateProcessTree(child.pid, { cwd });
+    let stopping = false;
+    const forward = async (signal) => {
+      if (stopping) return;
+      stopping = true;
+      // Same as cancel: a write run must not leave a SIGTERM-resistant command editing files after we exit.
+      if (child.pid) await endAgyTree(child.pid, cwd);
       if (onSignal) onSignal(signal);
       process.exit(signal === "SIGINT" ? 130 : 143);
     };

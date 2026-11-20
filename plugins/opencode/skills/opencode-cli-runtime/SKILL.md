@@ -43,7 +43,7 @@ Command selection:
 - `task --resume-last`: internal helper for "keep going", "resume", "apply the top fix", or "dig deeper" after a previous rescue run.
 
 Safety rules:
-- Reviews and other read-only runs omit `--auto`. Rescue/`task` jobs that change files pass `--write --bypass-permissions`, which adds `--auto` so the companion can complete unattended. The companion never uses `--dangerously-skip-permissions`.
+- Reviews and other read-only runs omit `--auto`, and the companion gives OpenCode a per-run configuration that allows only `read`, `glob` and `list`, and denies reading `.env` files. Rescue/`task` jobs that change files pass `--write --bypass-permissions`, which adds `--auto` so the companion can complete unattended. The companion never uses `--dangerously-skip-permissions`.
 - Preserve the user's task text as-is apart from stripping routing flags.
 - Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, cancel jobs, summarize output, or do any follow-up work of your own.
 - Return the stdout of the `task` command exactly as-is.

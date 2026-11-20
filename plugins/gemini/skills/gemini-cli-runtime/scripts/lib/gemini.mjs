@@ -321,7 +321,8 @@ export function getGeminiAvailability(cwd, options = {}) {
  *   1. `GEMINI_API_KEY` env (AI Studio).
  *   2. Vertex AI env triple: `GOOGLE_API_KEY` + `GOOGLE_GENAI_USE_VERTEXAI=true`
  *      + `GOOGLE_CLOUD_PROJECT`.
- *   3. Cached browser-OAuth credentials at `~/.gemini/oauth_creds.json`
+ *   3. Cached browser-OAuth credentials at `~/.gemini/oauth_creds.json`, with an
+ *      auth method selected in settings.json or GOOGLE_GENAI_USE_GCA=true
  *      (also recognised: `~/.gemini/google_accounts.json` from older CLI
  *      versions, or a `~/.gemini/.env` file with one of the env keys above).
  *
@@ -362,31 +363,35 @@ export function getGeminiAuthStatus(
     };
   }
 
-  // Look for a cached browser-OAuth login. The CLI writes oauth_creds.json
-  // after `gemini` completes the OAuth dance. If we can see a non-empty
-  // creds file plus a google_accounts.json companion, headless `gemini -p`
-  // will work without any env vars.
+  // A cached browser-OAuth login. Headless gemini also needs an auth method selected in settings (or
+  // GOOGLE_GENAI_USE_GCA), otherwise it exits 41 with "Please set an Auth method" despite the cached login.
   const oauthCredsPath = path.join(home, ".gemini", "oauth_creds.json");
-  if (existsSync(oauthCredsPath)) {
-    let account = null;
-    const accountsPath = path.join(home, ".gemini", "google_accounts.json");
-    if (existsSync(accountsPath)) {
+  const oauthCached = existsSync(oauthCredsPath);
+  if (oauthCached) {
+    const selectedAuthType = (file) => {
       try {
-        const parsed = JSON.parse(readFileSync(accountsPath, "utf8"));
-        account = parsed?.active ?? parsed?.email ?? null;
+        const parsed = JSON.parse(readFileSync(file, "utf8"));
+        return parsed?.security?.auth?.selectedType ?? parsed?.selectedAuthType ?? null;
       } catch {
-        account = null;
+        return null;
       }
-    }
-    return {
-      available: availability.available,
-      loggedIn: true,
-      source: "oauth",
-      provider: "google-oauth",
-      detail: account
-        ? `OAuth credentials cached for ${account} at ~/.gemini/oauth_creds.json.`
-        : "OAuth credentials cached at ~/.gemini/oauth_creds.json."
     };
+    const selected =
+      String(env.GOOGLE_GENAI_USE_GCA ?? "").toLowerCase() === "true" ||
+      [path.join(cwd, ".gemini", "settings.json"), path.join(home, ".gemini", "settings.json")].some(
+        (file) => existsSync(file) && selectedAuthType(file)
+      );
+    // The account name is left out on purpose: setup output often lands in a shared transcript.
+    if (selected) {
+      return {
+        available: availability.available,
+        loggedIn: true,
+        source: "oauth",
+        provider: "google-oauth",
+        detail: "OAuth credentials cached at ~/.gemini/oauth_creds.json."
+      };
+    }
+    // Not selected: an API key in ~/.gemini/.env (checked below) can still sign in.
   }
 
   // Last resort: gemini also reads a project/user .env file. If one exists
@@ -415,8 +420,9 @@ export function getGeminiAuthStatus(
     loggedIn: false,
     source: "none",
     provider: null,
-    detail:
-      "No Gemini auth detected. Run `gemini` once to OAuth, export `GEMINI_API_KEY` (from AI Studio), or set the Vertex triple `GOOGLE_API_KEY` + `GOOGLE_GENAI_USE_VERTEXAI=true` + `GOOGLE_CLOUD_PROJECT`."
+    detail: oauthCached
+      ? "OAuth credentials are cached, but no auth method is selected, so headless gemini refuses to run. Run `gemini` once and pick Login with Google, or set GOOGLE_GENAI_USE_GCA=true."
+      : "No Gemini auth detected. Run `gemini` once to OAuth, export `GEMINI_API_KEY` (from AI Studio), or set the Vertex triple `GOOGLE_API_KEY` + `GOOGLE_GENAI_USE_VERTEXAI=true` + `GOOGLE_CLOUD_PROJECT`."
   };
 }
 

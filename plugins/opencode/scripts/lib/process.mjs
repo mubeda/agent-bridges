@@ -170,12 +170,13 @@ export function unsupportedLauncher(bin, env = process.env, platform = process.p
   const file = findWindowsCommand(bin, env);
   const extension = path.extname(file).toLowerCase();
   if (extension !== ".cmd" && extension !== ".bat") return null;
+  if (npmShimTarget(file)) return null;
   const script = path.join(path.dirname(file), `${path.basename(file, extension)}.ps1`);
   if (fs.existsSync(script)) return null;
   return `${file} is a ${extension} launcher with no .ps1 next to it, so jobs cannot start it. Install the CLI so it ships a .ps1 or an .exe.`;
 }
 
-/** Windows npm installs a .cmd shim; Node cannot spawn it without a shell, so run its .ps1 through PowerShell instead. */
+/** Windows npm installs a .cmd shim; Node cannot spawn it without a shell, so start its target, or else run its .ps1 through PowerShell. */
 export function resolveSpawnCommand(bin, env = process.env, platform = process.platform) {
   if (platform !== "win32") return { file: bin, args: [] };
   const problem = unsupportedLauncher(bin, env, platform);
@@ -184,6 +185,8 @@ export function resolveSpawnCommand(bin, env = process.env, platform = process.p
   // Windows searches the working folder before PATH, so never launch a bare name there.
   if (platform === "win32" && !path.win32.isAbsolute(file)) throw new Error(`${file} was not found on PATH`);
   if (path.extname(file).toLowerCase() !== ".cmd") return { file, args: [] };
+  const shim = npmShimTarget(file);
+  if (shim) return shim;
   const script = path.join(path.dirname(file), `${path.basename(file, ".cmd")}.ps1`);
   const systemRoot = env.SystemRoot || env.SYSTEMROOT || "C:\\Windows";
   return {
@@ -218,4 +221,27 @@ export function resolveOnTrustedPath(command, env = process.env, platform = proc
     }
   }
   return null;
+}
+
+/**
+ * npm's .cmd shim names the Node script or .exe it starts. Launching that target directly skips cmd.exe
+ * and PowerShell: the npm .ps1 pipes stdin through Windows PowerShell 5.1, which turns non-ASCII into ?.
+ */
+export function npmShimTarget(cmdFile) {
+  // Only a .cmd can be a shim; never read a native .exe, which can be tens of megabytes.
+  if (path.extname(String(cmdFile ?? "")).toLowerCase() !== ".cmd") return null;
+  let text;
+  try {
+    text = fs.readFileSync(cmdFile, "utf8");
+  } catch {
+    return null;
+  }
+  const viaNode = /SET "_prog=node"/i.test(text) ? text.match(/"%_prog%"\s+"%dp0%\\([^"]+)"\s+%\*/) : null;
+  const direct = viaNode ? null : text.match(/^"%dp0%\\([^"]+\.(?:exe|com))"\s+%\*\s*$/im);
+  const relative = (viaNode ?? direct)?.[1];
+  if (!relative) return null;
+  const target = path.resolve(path.dirname(cmdFile), relative.replace(/\\/g, path.sep));
+  if (!fs.existsSync(target)) return null;
+  // The running Node, never a bare node, which Windows would look up in the working folder first.
+  return viaNode ? { file: process.execPath, args: [target] } : { file: target, args: [] };
 }

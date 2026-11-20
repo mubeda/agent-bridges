@@ -375,3 +375,18 @@ test("background write runs keep the write permission through the worker", { ski
   assert.equal(calls[1].argv[0], "--dangerously-skip-permissions");
   assert.equal(calls[2].argv[0], "--settings");
 });
+
+test("Ctrl-C on a foreground task escalates to SIGKILL for a child that ignores SIGTERM", { skip: POSIX_ONLY }, async (t) => {
+  const sandbox = makeSandbox(t);
+  const companion = startCompanion(sandbox, ["task", "--wait", "hi"], { FAKE_AGY_SLEEP_MS: "30000", FAKE_AGY_CHILD_IGNORES_TERM: "1" });
+  t.after(() => companion.kill("SIGKILL"));
+  assert.ok(await waitFor(() => readPids(sandbox)));
+  const { childPid } = readPids(sandbox);
+  t.after(() => { try { process.kill(childPid, "SIGKILL"); } catch {} });
+  const exited = new Promise((resolve) => companion.once("exit", (code, signal) => resolve({ code, signal })));
+  companion.kill("SIGINT");
+  const { code } = await exited;
+  assert.equal(code, 130);
+  // Once the companion is gone, nothing it started may keep changing the workspace.
+  assert.equal(pidAlive(childPid), false, "a SIGTERM-resistant child outlived the interrupted companion");
+});

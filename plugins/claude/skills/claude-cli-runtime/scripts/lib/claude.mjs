@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { binaryAvailable, resolveOnTrustedPath, runCommand } from "./process.mjs";
+import { binaryAvailable, npmShimTarget, resolveOnTrustedPath, runCommand } from "./process.mjs";
 
 export const WIN32_ARGV_PROMPT_LIMIT = 20_000;
 
@@ -16,13 +16,24 @@ export function resolveClaudeBin(env = process.env) {
   return override || "claude";
 }
 
+/** Node cannot start a .cmd or .bat without a shell, and the prompt must never go through one; an npm shim names its target. */
+export function unsupportedLauncher(env = process.env, platform = process.platform) {
+  if (platform !== "win32") return null;
+  const resolved = resolveOnTrustedPath(resolveClaudeBin(env), env, platform);
+  const extension = path.extname(resolved ?? "").toLowerCase();
+  if ((extension !== ".cmd" && extension !== ".bat") || npmShimTarget(resolved)) return null;
+  return `${resolved} is a ${extension} launcher that is not an npm shim, so Claude jobs cannot start it. Set CLAUDE_BIN to claude.exe.`;
+}
+
 /** Windows searches the working folder before PATH, so launch an absolute path resolved from trusted PATH entries. */
-export function resolveClaudeSpawnFile(env = process.env, platform = process.platform) {
+export function resolveClaudeSpawnCommand(env = process.env, platform = process.platform) {
   const bin = resolveClaudeBin(env);
-  if (platform !== "win32") return bin;
+  if (platform !== "win32") return { file: bin, args: [] };
   const resolved = resolveOnTrustedPath(bin, env, platform);
   if (!resolved) throw new Error(`${bin} was not found on PATH`);
-  return resolved;
+  const problem = unsupportedLauncher(env, platform);
+  if (problem) throw new Error(problem);
+  return npmShimTarget(resolved) ?? { file: resolved, args: [] };
 }
 
 export function buildClaudeSpawnOptions(cwd, env = process.env) {
@@ -106,10 +117,11 @@ const MISSING_BIN_DETAIL =
 export function getClaudeAvailability(cwd, env = process.env) {
   const bin = resolveClaudeBin(env);
   const status = binaryAvailable(bin, ["--version"], { cwd });
+  const launcherProblem = status.available ? unsupportedLauncher(env) : null;
   return {
-    available: status.available,
+    available: status.available && !launcherProblem,
     bin,
-    detail: status.available ? status.detail || `${bin} is available.` : MISSING_BIN_DETAIL
+    detail: launcherProblem ?? (status.available ? status.detail || `${bin} is available.` : MISSING_BIN_DETAIL)
   };
 }
 

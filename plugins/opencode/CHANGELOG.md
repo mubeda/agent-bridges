@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.3 — 2026-11-20
+
+### Fixed
+- **Windows: npm-installed CLIs get the prompt byte for byte.** A `.cmd` shim is now started by running the script or `.exe` it names, with the running Node, instead of its `.ps1` through Windows PowerShell 5.1, which turned non-ASCII into `?` and LF into CRLF.
+- **OpenCode 1.x runs work again.** The prompt-file message now goes before `-f`; `-f` takes every value up to the next flag, so OpenCode 1.x read the message as a second file (`File not found`).
+
+### Security
+- **Read-only runs are now read-only.** Without `--write`, the companion only left out `--auto`, and OpenCode's defaults still allowed edits and shell commands. Reviews and tasks without `--write` now get a per-run configuration (`OPENCODE_CONFIG_CONTENT`) that allows only `read`, `glob` and `list`, MCP tools included. `grep` is denied because it would print `.env` contents, and reading `*.env` and `*.env.*` is denied (`*.env.example` is allowed). The rest of a user's `OPENCODE_CONFIG_CONTENT` is kept, except `permission` and OpenCode 2's native `permissions` list, which would outrank the allowlist.
+- **Large reviews still see the diff.** A review too big to inline (more than two files or 256 KiB) used to tell OpenCode to run `git diff` itself, which shell is now denied. The companion writes the full target diff to a private file and lets OpenCode read only that folder outside the workspace, in parts; the file is deleted after the review.
+
 ## 0.3.2 — 2026-11-19
 
 ### Security

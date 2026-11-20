@@ -112,10 +112,13 @@ for (const plugin of PLUGINS) {
 
 test("the Windows spawn resolvers skip relative PATH entries", async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hijack-spawn-"));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const previous = process.cwd();
   process.chdir(dir);
-  t.after(() => process.chdir(previous));
+  // Leave the folder before deleting it: Windows cannot delete a process's working folder.
+  t.after(() => {
+    process.chdir(previous);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
   for (const name of ["agy", "agent", "opencode", "gemini"]) fs.writeFileSync(path.join(dir, `${name}.cmd`), "");
   const env = { PATH: ".", PATHEXT: ".CMD" };
   const { resolveAgySpawnBin } = await import("../plugins/antigravity/scripts/lib/agy.mjs");
@@ -164,11 +167,11 @@ test("every Windows launch path refuses a CLI that is not on a trusted PATH entr
   const trusted = { ...untrusted, PATH: bin };
   const { resolveAgySpawnCommand } = await import("../plugins/antigravity/scripts/lib/agy.mjs");
   const { resolveCursorSpawnCommand } = await import("../plugins/cursor/scripts/lib/cursor.mjs");
-  const { resolveClaudeSpawnFile } = await import("../plugins/claude/scripts/lib/claude.mjs");
+  const { resolveClaudeSpawnCommand } = await import("../plugins/claude/scripts/lib/claude.mjs");
   const cases = [
     ["agy", (env) => resolveAgySpawnCommand(env, "win32").file],
     ["agent", (env) => resolveCursorSpawnCommand(env, "win32").file],
-    ["claude", (env) => resolveClaudeSpawnFile(env, "win32")]
+    ["claude", (env) => resolveClaudeSpawnCommand(env, "win32").file]
   ];
   for (const plugin of ["opencode", "gemini"]) {
     const { resolveSpawnCommand } = await import(`../plugins/${plugin}/scripts/lib/process.mjs`);
@@ -225,12 +228,15 @@ test("opencode passes the prompt in a private attached file, never in argv", asy
   const attachment = writePromptAttachment(secret);
   t.after(() => attachment.cleanup());
   assert.equal(attachment.args.includes(secret), false);
-  assert.equal(attachment.args[0], "-f");
-  assert.equal(fs.readFileSync(attachment.args[1], "utf8"), secret);
-  assert.match(attachment.args[2], /attached file/);
+  // OpenCode's -f takes every value up to the next flag, so anything after the file is read as a second file.
+  const flag = attachment.args.indexOf("-f");
+  assert.deepEqual(attachment.args.slice(flag + 1).filter((arg) => !arg.startsWith("-")).length, 1);
+  const file = attachment.args[flag + 1];
+  assert.equal(fs.readFileSync(file, "utf8"), secret);
+  assert.match(attachment.args.slice(0, flag).join(" "), /attached file/);
   if (process.platform !== "win32") {
-    assert.equal(fs.statSync(attachment.args[1]).mode & 0o777, 0o600);
-    assert.equal(fs.statSync(path.dirname(attachment.args[1])).mode & 0o777, 0o700);
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+    assert.equal(fs.statSync(path.dirname(file)).mode & 0o777, 0o700);
   }
   attachment.cleanup();
   assert.equal(fs.existsSync(attachment.args[1]), false);
@@ -245,3 +251,98 @@ for (const plugin of PLUGINS) {
     assert.match(body.slice(0, 700), /EAGAIN/);
   });
 }
+
+// Real cmd-shim 9 output (npm's own shim writer), for a Node script and for an .exe.
+const NODE_SHIM = [
+  "@ECHO off", "GOTO start", ":find_dp0", "SET dp0=%~dp0", "EXIT /b", ":start", "SETLOCAL", "CALL :find_dp0", "",
+  "IF EXIST \"%dp0%\\node.exe\" (", "  SET \"_prog=%dp0%\\node.exe\"", ") ELSE (", "  SET \"_prog=node\"", ")", "",
+  "endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & set PATHEXT=%PATHEXT:;.JS;=;% & \"%_prog%\"  \"%dp0%\\node_modules\\pkg\\cli.js\" %*", ""
+].join("\r\n");
+const exeShim = (name) => ["@ECHO off", "GOTO start", ":find_dp0", "SET dp0=%~dp0", "EXIT /b", ":start", "SETLOCAL", "CALL :find_dp0", `"%dp0%\\node_modules\\pkg\\${name}.exe"   %*`, ""].join("\r\n");
+
+async function spawnResolvers() {
+  const { resolveAgySpawnCommand } = await import("../plugins/antigravity/scripts/lib/agy.mjs");
+  const { resolveCursorSpawnCommand } = await import("../plugins/cursor/scripts/lib/cursor.mjs");
+  const { resolveClaudeSpawnCommand } = await import("../plugins/claude/scripts/lib/claude.mjs");
+  const cases = [
+    ["antigravity", "agy", (env) => resolveAgySpawnCommand(env, "win32")],
+    ["cursor", "agent", (env) => resolveCursorSpawnCommand(env, "win32")],
+    ["claude", "claude", (env) => resolveClaudeSpawnCommand(env, "win32")]
+  ];
+  for (const plugin of ["opencode", "gemini"]) {
+    const { resolveSpawnCommand } = await import(`../plugins/${plugin}/scripts/lib/process.mjs`);
+    cases.push([plugin, plugin, (env) => resolveSpawnCommand(plugin, env, "win32")]);
+  }
+  return cases;
+}
+
+test("an npm .cmd shim starts its target directly, never through PowerShell or cmd.exe", async (t) => {
+  // The npm .ps1 pipes stdin through Windows PowerShell 5.1, which turns non-ASCII into ? and LF into CRLF.
+  for (const [plugin, name, resolve] of await spawnResolvers()) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "npm-shim-"));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const env = { PATH: dir, PATHEXT: ".COM;.EXE;.BAT;.CMD", SystemRoot: "C:\\Windows" };
+    const pkg = path.join(dir, "node_modules", "pkg");
+    fs.mkdirSync(pkg, { recursive: true });
+    fs.writeFileSync(path.join(pkg, "cli.js"), "");
+    fs.writeFileSync(path.join(dir, `${name}.cmd`), NODE_SHIM);
+    fs.writeFileSync(path.join(dir, `${name}.ps1`), "");
+    // The running Node, never a bare node, which Windows would look up in the working folder first.
+    assert.deepEqual(resolve(env), { file: process.execPath, args: [path.join(pkg, "cli.js")] }, plugin);
+    fs.writeFileSync(path.join(dir, `${name}.cmd`), exeShim(name));
+    fs.writeFileSync(path.join(pkg, `${name}.exe`), "");
+    assert.deepEqual(resolve(env), { file: path.join(pkg, `${name}.exe`), args: [] }, plugin);
+    // A shim whose target is missing is not trusted as one.
+    fs.rmSync(path.join(pkg, `${name}.exe`));
+    let fallback = null;
+    try {
+      fallback = resolve(env).file;
+    } catch (error) {
+      assert.match(error.message, /launcher/, plugin); // claude has no .ps1 route, so it refuses
+    }
+    assert.notEqual(fallback, path.join(pkg, `${name}.exe`), plugin);
+  }
+});
+
+test("claude refuses a .cmd launcher that is not an npm shim, in setup and at launch", async (t) => {
+  const { resolveClaudeSpawnCommand, unsupportedLauncher } = await import("../plugins/claude/scripts/lib/claude.mjs");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-cmd-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const env = { PATH: dir, PATHEXT: ".COM;.EXE;.BAT;.CMD" };
+  fs.writeFileSync(path.join(dir, "claude.cmd"), "@echo off\r\n");
+  assert.match(unsupportedLauncher(env, "win32"), /claude\.cmd/);
+  assert.throws(() => resolveClaudeSpawnCommand(env, "win32"), /claude\.cmd/);
+  assert.equal(unsupportedLauncher(env, "linux"), null);
+  // Setup reports it, so it never says ready and then fails every job with spawn EINVAL.
+  const source = fs.readFileSync(new URL("../plugins/claude/scripts/lib/claude.mjs", import.meta.url), "utf8");
+  assert.match(source.slice(source.indexOf("export function getClaudeAvailability(")).slice(0, 600), /unsupportedLauncher\(/);
+});
+
+test("antigravity setup shows the Windows launcher, not the extensionless POSIX shim", async (t) => {
+  const { findOnPath } = await import("../plugins/antigravity/scripts/lib/agy.mjs");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-find-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, "agy"), "#!/bin/sh\n");
+  fs.writeFileSync(path.join(dir, "agy.cmd"), "");
+  const env = { PATH: dir, PATHEXT: ".COM;.EXE;.BAT;.CMD" };
+  assert.equal(findOnPath("agy", env, "win32"), path.join(dir, "agy.cmd"));
+  // A name that already has an extension is looked up as given.
+  assert.equal(findOnPath("agy.cmd", env, "win32"), path.join(dir, "agy.cmd"));
+});
+
+test("only a .cmd is read as an npm shim, never a native .exe", async (t) => {
+  // Reading a large claude.exe as text before every launch and job refresh costs seconds and memory.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "native-exe-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const pkg = path.join(dir, "node_modules", "pkg");
+  fs.mkdirSync(pkg, { recursive: true });
+  fs.writeFileSync(path.join(pkg, "cli.js"), "");
+  // An .exe whose bytes happen to look like a shim must still run as itself.
+  fs.writeFileSync(path.join(dir, "claude.exe"), NODE_SHIM);
+  const { resolveClaudeSpawnCommand } = await import("../plugins/claude/scripts/lib/claude.mjs");
+  assert.deepEqual(resolveClaudeSpawnCommand({ PATH: dir, PATHEXT: ".EXE" }, "win32"), { file: path.join(dir, "claude.exe"), args: [] });
+  for (const plugin of PLUGINS) {
+    const { npmShimTarget } = await import(`../plugins/${plugin}/scripts/lib/process.mjs`);
+    assert.equal(npmShimTarget(path.join(dir, "claude.exe")), null, plugin);
+  }
+});

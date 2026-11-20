@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.3 — 2026-11-20
+
+### Fixed
+- **Windows: npm-installed CLIs get the prompt byte for byte.** A `.cmd` shim is now started by running the script or `.exe` it names, with the running Node, instead of its `.ps1` through Windows PowerShell 5.1, which turned non-ASCII into `?` and LF into CRLF.
+
 ## 0.2.2 — 2026-11-19
 
 ### Security

@@ -360,7 +360,37 @@ function buildReviewPrompt(target, focusText, contextSummary) {
   return segments.filter(Boolean).join("\n\n");
 }
 
-function spawnOpencodeRun(cwd, args, onProgress) {
+/**
+ * Read-only runs deny every tool but reading and listing files, MCP tools included. grep is denied too:
+ * it searches file contents, so it would print the .env secrets that the read rule blocks.
+ */
+export const READ_ONLY_PERMISSION = {
+  "*": "deny",
+  read: { "*": "allow", "*.env": "deny", "*.env.*": "deny", "*.env.example": "allow" },
+  glob: "allow",
+  list: "allow"
+};
+
+/** OpenCode reads a per-run config from OPENCODE_CONFIG_CONTENT; a read-only run replaces its `permission` block. */
+export function buildRunEnv(options = {}, env = process.env) {
+  if (options.write) return env;
+  let config = {};
+  try {
+    const parsed = JSON.parse(env.OPENCODE_CONFIG_CONTENT ?? "");
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) config = parsed;
+  } catch {
+    // not set, or not JSON: start from an empty config
+  }
+  // A self-collected review may read its private diff folder, and no other place outside the workspace.
+  const permission = options.readableDir
+    ? { ...READ_ONLY_PERMISSION, external_directory: { [path.join(options.readableDir, "*")]: "allow" } }
+    : READ_ONLY_PERMISSION;
+  // OpenCode 2's native `permissions` list outranks `permission`, so a user's list would undo the allowlist.
+  const { permissions: _native, ...rest } = config;
+  return { ...env, OPENCODE_CONFIG_CONTENT: JSON.stringify({ ...rest, permission }) };
+}
+
+function spawnOpencodeRun(cwd, args, onProgress, env = process.env) {
   return new Promise((resolve, reject) => {
     let command;
     try {
@@ -371,7 +401,7 @@ function spawnOpencodeRun(cwd, args, onProgress) {
     }
     const child = spawn(command.file, [...command.args, ...args], {
       cwd,
-      env: process.env,
+      env,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true
     });
@@ -479,12 +509,21 @@ function ensureOpencodeAvailable(cwd) {
  * attached file (0600 in a 0700 temp folder); argv only carries the file path and a fixed instruction.
  * `-f` exists in OpenCode 1.x and 2.x.
  */
+/** A private copy of a review's full target diff, for reviews too large to inline (shell is denied there). */
+export function writeReviewDiff(diff) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-review-"));
+  const file = path.join(dir, "target.diff");
+  fs.writeFileSync(file, diff, { encoding: "utf8", mode: 0o600 });
+  return { dir, file, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
+}
+
 export function writePromptAttachment(prompt) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-prompt-"));
   const file = path.join(dir, "prompt.md");
   fs.writeFileSync(file, prompt, { encoding: "utf8", mode: 0o600 });
   return {
-    args: ["-f", file, "Follow the instructions in the attached file."],
+    // The message goes first: -f takes every value up to the next flag, so OpenCode 1.x reads a trailing message as a file.
+    args: ["Follow the instructions in the attached file.", "-f", file],
     cleanup: () => fs.rmSync(dir, { recursive: true, force: true })
   };
 }
@@ -510,7 +549,7 @@ export async function runAppServerTurn(cwd, options = {}) {
 
   let result;
   try {
-    result = await spawnOpencodeRun(cwd, args, options.onProgress);
+    result = await spawnOpencodeRun(cwd, args, options.onProgress, buildRunEnv(options));
   } finally {
     attachment.cleanup();
   }
@@ -536,6 +575,7 @@ export async function runAppServerReview(cwd, options = {}) {
     model: options.model ?? null,
     effort: options.effort ?? null,
     write: false,
+    readableDir: options.readableDir ?? null,
     onProgress: options.onProgress
   });
 

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
-import { binaryAvailable, runCommand } from "./process.mjs";
+import { binaryAvailable, npmShimTarget, runCommand } from "./process.mjs";
 
 export const WIN32_ARGV_PROMPT_LIMIT = 20_000;
 
@@ -54,6 +54,8 @@ export function resolveCursorSpawnCommand(env = process.env, platform = process.
     return { file: bin, args: [] };
   }
 
+  const shim = npmShimTarget(bin);
+  if (shim) return shim;
   const script = path.join(path.dirname(bin), `${path.basename(bin, ".cmd")}.ps1`);
   if (!fs.existsSync(script)) {
     return { file: bin, args: [] };

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
-import { runCommand } from "./process.mjs";
+import { npmShimTarget, runCommand } from "./process.mjs";
 
 export const WIN32_ARGV_PROMPT_LIMIT = 20_000;
 
@@ -55,6 +55,8 @@ export function resolveAgySpawnCommand(env = process.env, platform = process.pla
     return { file: bin, args: [] };
   }
 
+  const shim = npmShimTarget(bin);
+  if (shim) return shim;
   const script = path.join(path.dirname(bin), `${path.basename(bin, ".cmd")}.ps1`);
   if (!fs.existsSync(script)) {
     return { file: bin, args: [] };
@@ -91,8 +93,9 @@ function isExecutable(file) {
 
 export function findOnPath(bin, env = process.env, platform = process.platform) {
   if (path.isAbsolute(bin) || /[\\/]/.test(bin)) return bin;
-  const extensions = platform === "win32"
-    ? ["", ...String(env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").map((ext) => ext.trim().toLowerCase()).filter(Boolean)]
+  // Windows runs only a name with an extension, so try the bare name only when it already has one.
+  const extensions = platform === "win32" && !path.extname(bin)
+    ? [...String(env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").map((ext) => ext.trim().toLowerCase()).filter(Boolean)]
     : [""];
   for (const directory of String(env.PATH ?? "").split(path.delimiter).filter(Boolean)) {
     for (const extension of extensions) {
