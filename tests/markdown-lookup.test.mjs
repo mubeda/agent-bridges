@@ -323,3 +323,16 @@ test("antigravity markdown never names the Cursor binary", () => {
     assert.doesNotMatch(body, /`agent` CLI|agent login|agent status/, file);
   }
 });
+
+test("rescue agents and commands pipe task text on stdin", () => {
+  for (const name of COMPANIONS) {
+    for (const rel of [`agents/${name}-rescue.md`, "commands/rescue.md"]) {
+      const file = path.join(root, `plugins/${name}`, rel);
+      if (!fs.existsSync(file)) continue;
+      const body = fs.readFileSync(file, "utf8");
+      if (!/companion\.mjs" task\b/.test(body)) continue;
+      assert.match(body, /<<'TASK_TEXT'/, `${name} ${rel}`);
+      assert.match(body, /never as an argument/, `${name} ${rel}`);
+    }
+  }
+});
