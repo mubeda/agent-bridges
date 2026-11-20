@@ -100,6 +100,7 @@ This installer does not add entries to `opencode.json` `"plugin": []`.
 - Sign in once with an interactive `agy` session; headless runs reuse those credentials. For an API key, set `GEMINI_API_KEY` and `modelProvider: "gemini"` in your own Antigravity settings (`~/.gemini/antigravity-cli/settings.json`). Setup cannot check sign-in without a model run, so it reports the binary, its version, and whether `GEMINI_API_KEY` is set.
 - Read-only runs (reviews, and rescue without `--write`) pass `--settings` with deny rules for `write_file(*)` and `command(*)`, so `agy` itself blocks file writes and shell commands. `agy --mode plan` is not used: it does not block writes. A future `agy` tool that writes files under another rule name would not be covered, and MCP tools are not denied.
 - Write runs (`--write`) use `--dangerously-skip-permissions`.
+- Prompts always go to `agy` on stdin, so they never show up in process lists.
 - Resume continues the stored conversation with `--conversation <id>`. If Antigravity no longer has it, it starts a new one; the result says so and the new id is stored.
 - Antigravity job state lives under `~/.antigravity-companion/state`.
 

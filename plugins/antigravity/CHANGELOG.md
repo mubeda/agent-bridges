@@ -3,6 +3,8 @@
 ## 0.1.0
 
 ### Security
+- **Job state is private to your user.** State folders are created as 0700 and job files as 0600, and folders made by older versions are tightened; job files hold prompts and packed transcripts.
+- **Prompts always go to `agy` on stdin**, never in argv, where other local users can read them (`/proc/<pid>/cmdline`).
 - **Windows: the CLI launch never uses a bare name.** The run itself, not just the version check, now starts an absolute path from trusted PATH entries, so a CLI planted in the checkout is never started.
 - **Self-collected reviews never list a symlink.** Changed files that are symlinks are left out, and the model is told never to open one, since a link can point outside the repository.
 - **Transfer only auto-picks a transcript proven to belong to this workspace.** Claude and Cursor project folder names are a lossy encoding (`/a-b` and `/a/b` collide), so a Claude transcript must record a `cwd` inside this workspace and a Cursor project must carry a `.workspace-trusted` marker for it; otherwise transfer asks for `--source`. Cursor folder names also no longer get a leading dash, which never matched real Cursor folders.

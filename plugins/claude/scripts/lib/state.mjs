@@ -68,7 +68,16 @@ export function resolveJobsDir(cwd) {
 }
 
 export function ensureStateDir(cwd) {
-  fs.mkdirSync(resolveJobsDir(cwd), { recursive: true });
+  const jobsDir = resolveJobsDir(cwd);
+  fs.mkdirSync(jobsDir, { recursive: true, mode: 0o700 });
+  // Job files hold prompts and packed transcripts: keep them private, folders made by older versions too.
+  for (const dir of [resolveStateDir(cwd), jobsDir]) {
+    try {
+      fs.chmodSync(dir, 0o700);
+    } catch {
+      // best effort, for example on Windows
+    }
+  }
 }
 
 export function loadState(cwd) {
@@ -127,7 +136,7 @@ export function saveState(cwd, state) {
     removeFileIfExists(job.logFile);
   }
 
-  fs.writeFileSync(resolveStateFile(cwd), `${JSON.stringify(nextState, null, 2)}\n`, "utf8");
+  fs.writeFileSync(resolveStateFile(cwd), `${JSON.stringify(nextState, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
   return nextState;
 }
 
@@ -182,7 +191,7 @@ export function getConfig(cwd) {
 export function writeJobFile(cwd, jobId, payload) {
   ensureStateDir(cwd);
   const jobFile = resolveJobFile(cwd, jobId);
-  fs.writeFileSync(jobFile, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  fs.writeFileSync(jobFile, `${JSON.stringify(payload, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
   return jobFile;
 }
 

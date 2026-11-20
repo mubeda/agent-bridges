@@ -25,7 +25,7 @@ const FAKE_AGY = `#!/usr/bin/env node
 const fs = require("node:fs");
 const argv = process.argv.slice(2);
 let stdin = "";
-try { if (!process.stdin.isTTY) stdin = fs.readFileSync(0, "utf8"); } catch {}
+if (!process.stdin.isTTY) { const chunks = []; const buf = Buffer.alloc(65536); for (;;) { let n; try { n = fs.readSync(0, buf, 0, buf.length, null); } catch (e) { if (e.code === "EAGAIN") continue; break; } if (!n) break; chunks.push(Buffer.from(buf.subarray(0, n))); } stdin = Buffer.concat(chunks).toString("utf8"); }
 if (process.env.FAKE_AGY_LOG) fs.appendFileSync(process.env.FAKE_AGY_LOG, JSON.stringify({ argv, stdin, pid: process.pid }) + "\\n");
 if (argv.includes("--version")) { process.stdout.write("1.5.12\\n"); process.exit(0); }
 process.stdout.write(process.env.FAKE_AGY_ENVELOPE ?? '{"conversation_id":"C1","status":"SUCCESS","response":"ok","num_turns":1}');
@@ -85,17 +85,17 @@ test("the read-only settings constant matches the literal deny rules", () => {
 
 test("review argv denies writes and shell and passes the schema", () => {
   assert.deepEqual(buildReviewArgs({ prompt: "P", schemaPath: "/s.json", platform: "linux" }), [
-    "--settings", S, "--output-format", "json", "--json-schema", "/s.json", "-p", "P"
+    "--settings", S, "--output-format", "json", "--json-schema", "/s.json"
   ]);
 });
 
 test("read-only task argv denies writes and shell", () => {
-  assert.deepEqual(buildRunArgs({ prompt: "P", write: false, platform: "linux" }), ["--settings", S, "--output-format", "json", "-p", "P"]);
+  assert.deepEqual(buildRunArgs({ prompt: "P", write: false, platform: "linux" }), ["--settings", S, "--output-format", "json"]);
 });
 
 test("write task argv auto-approves and carries no deny settings", () => {
   assert.deepEqual(buildRunArgs({ prompt: "P", write: true, platform: "linux" }), [
-    "--dangerously-skip-permissions", "--output-format", "json", "-p", "P"
+    "--dangerously-skip-permissions", "--output-format", "json"
   ]);
 });
 
@@ -108,7 +108,7 @@ test("a review never reaches the bypass, even with write requested", () => {
 
 test("model, effort and resume pass through in order", () => {
   assert.deepEqual(buildRunArgs({ prompt: "P", model: "m1", effort: "high", resumeSessionId: "C1", platform: "linux" }), [
-    "--settings", S, "--model", "m1", "--effort", "high", "--conversation", "C1", "--output-format", "json", "-p", "P"
+    "--settings", S, "--model", "m1", "--effort", "high", "--conversation", "C1", "--output-format", "json"
   ]);
 });
 
@@ -117,13 +117,16 @@ test("an unknown effort is rejected with the five levels", () => {
   assert.throws(() => buildRunArgs({ prompt: "P", effort: "" }), /low, medium, high, xhigh, max/);
 });
 
-test("Windows prompts above 20,000 characters go on stdin only", () => {
-  assert.equal(shouldPassPromptViaStdin("x".repeat(20000), "win32"), false);
-  assert.equal(shouldPassPromptViaStdin("x".repeat(20001), "win32"), true);
-  assert.equal(shouldPassPromptViaStdin("x".repeat(30000), "linux"), false);
-  const small = buildPrintInvocation({ prompt: "x".repeat(20000), platform: "win32" });
-  assert.deepEqual(small.args.slice(-2), ["-p", "x".repeat(20000)]);
-  assert.equal(small.stdin, null);
+test("every prompt goes on stdin, never in argv where other local users can read it", () => {
+  for (const platform of ["win32", "linux"]) {
+    for (const prompt of ["short secret", "x".repeat(20000)]) {
+      assert.equal(shouldPassPromptViaStdin(prompt, platform), true);
+      const invocation = buildPrintInvocation({ prompt, platform });
+      assert.equal(invocation.args.includes("-p"), false);
+      assert.equal(invocation.args.includes(prompt), false);
+      assert.equal(invocation.stdin, prompt);
+    }
+  }
   const large = buildPrintInvocation({ prompt: "y".repeat(20001), platform: "win32" });
   assert.equal(large.args.includes("-p"), false);
   assert.equal(large.args.includes("y".repeat(20001)), false);
@@ -135,8 +138,8 @@ test("the companion spawns agy with the write and read-only vectors", { skip: PO
   assert.equal(run(sandbox, ["task", "--wait", "--write", "--bypass-permissions", "P"]).status, 0);
   assert.equal(run(sandbox, ["task", "--wait", "P"]).status, 0);
   const [write, readOnly] = modelCalls(sandbox);
-  assert.deepEqual(write.argv, ["--dangerously-skip-permissions", "--output-format", "json", "-p", "P"]);
-  assert.deepEqual(readOnly.argv, ["--settings", S, "--output-format", "json", "-p", "P"]);
+  assert.deepEqual(write.argv, ["--dangerously-skip-permissions", "--output-format", "json"]);
+  assert.deepEqual(readOnly.argv, ["--settings", S, "--output-format", "json"]);
 });
 
 test("a review with effort uses the fixed read-only prefix and the schema prompt", { skip: POSIX_ONLY }, (t) => {
@@ -147,9 +150,8 @@ test("a review with effort uses the fixed read-only prefix and the schema prompt
   assert.deepEqual(call.argv.slice(0, 6), ["--settings", S, "--effort", "high", "--output-format", "json"]);
   assert.equal(call.argv[6], "--json-schema");
   assert.match(call.argv[7], /schemas[\\/]review-output\.schema\.json$/);
-  assert.equal(call.argv[8], "-p");
-  assert.equal(call.argv.length, 10);
-  assert.match(call.argv[9], /Return only JSON matching this schema/);
+  assert.equal(call.argv.length, 8);
+  assert.match(call.stdin, /Return only JSON matching this schema/);
 });
 
 test("an invalid effort starts nothing and writes no job", { skip: POSIX_ONLY }, (t) => {
@@ -171,7 +173,7 @@ test("over the inline limit the review prompt says shell is denied", { skip: POS
   const sandbox = makeSandbox(t, 3);
   assert.equal(run(sandbox, ["review", "--wait"]).status, 0);
   const [call] = modelCalls(sandbox);
-  const prompt = call.argv[call.argv.length - 1];
+  const prompt = call.stdin;
   assert.match(prompt, /Shell commands are denied in this review/);
   assert.doesNotMatch(prompt, /read-only git commands/);
 });
@@ -183,7 +185,7 @@ test("a review never follows an untracked symlink out of the repository", { skip
   fs.symlinkSync(secret, path.join(sandbox.repo, "leak.txt"));
   assert.equal(run(sandbox, ["review", "--wait"]).status, 0);
   const [call] = modelCalls(sandbox);
-  const prompt = call.argv[call.argv.length - 1];
+  const prompt = call.stdin;
   assert.doesNotMatch(prompt, /TOP-SECRET-TOKEN/);
   assert.match(prompt, /symlink targets are never followed/);
 });
@@ -194,7 +196,7 @@ test("a prompt too large for one argument goes on stdin on every platform", () =
   const invocation = buildPrintInvocation({ prompt: big, platform: "linux" });
   assert.equal(invocation.args.includes("-p"), false);
   assert.equal(invocation.stdin, big);
-  assert.equal(shouldPassPromptViaStdin("z".repeat(1000), "linux"), false);
+  assert.equal(shouldPassPromptViaStdin("z".repeat(1000), "linux"), true);
 });
 
 test("a self-collected review never lists a symlink for the model to read", { skip: POSIX_ONLY }, (t) => {
@@ -208,7 +210,7 @@ test("a self-collected review never lists a symlink for the model to read", { sk
   fs.rmSync(path.join(sandbox.repo, "link.txt"));
   fs.symlinkSync(secret, path.join(sandbox.repo, "link.txt"));
   assert.equal(run(sandbox, ["review", "--wait"]).status, 0);
-  const prompt = modelCalls(sandbox)[0].argv.at(-1);
+  const prompt = modelCalls(sandbox)[0].stdin;
   assert.match(prompt, /Never open a symlink/);
   assert.doesNotMatch(prompt, /^link\.txt$/m);
   assert.match(prompt, /1 symlink\(s\) not listed/);

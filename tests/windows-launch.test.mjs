@@ -181,3 +181,27 @@ test("every Windows launch path refuses a CLI that is not on a trusted PATH entr
     assert.equal(resolve(trusted), path.join(bin, `${name}.exe`), name);
   }
 });
+
+for (const plugin of PLUGINS) {
+  test(`${plugin}: job state is private to the user`, { skip: process.platform === "win32" ? "POSIX modes" : false }, async (t) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "state-mode-"));
+    const previous = process.env.PLUGIN_DATA;
+    process.env.PLUGIN_DATA = path.join(dir, "data");
+    t.after(() => {
+      if (previous === undefined) delete process.env.PLUGIN_DATA;
+      else process.env.PLUGIN_DATA = previous;
+      fs.rmSync(dir, { recursive: true, force: true });
+    });
+    const state = await import(`../plugins/${plugin}/scripts/lib/state.mjs`);
+    const workspace = path.join(dir, "repo");
+    fs.mkdirSync(workspace);
+    // An existing folder created by an older version must be tightened too.
+    fs.mkdirSync(state.resolveJobsDir(workspace), { recursive: true, mode: 0o755 });
+    fs.chmodSync(state.resolveStateDir(workspace), 0o755);
+    state.writeJobFile(workspace, "job-1", { prompt: "TRANSCRIPT" });
+    const mode = (p) => fs.statSync(p).mode & 0o777;
+    assert.equal(mode(state.resolveStateDir(workspace)), 0o700);
+    assert.equal(mode(state.resolveJobsDir(workspace)), 0o700);
+    assert.equal(mode(path.join(state.resolveJobsDir(workspace), "job-1.json")), 0o600);
+  });
+}

@@ -9,13 +9,10 @@ export const WIN32_ARGV_PROMPT_LIMIT = 20_000;
 const MISSING_BIN_DETAIL =
   "`agy` was not found on PATH. Install Antigravity CLI from https://antigravity.google/docs/cli/headless.md then rerun setup. Optional: set ANTIGRAVITY_BIN.";
 
-/** Linux caps one argv string at 128 KiB (MAX_ARG_STRLEN), so larger prompts go on stdin everywhere. */
-export const ARGV_PROMPT_BYTE_LIMIT = 100_000;
 
-export function shouldPassPromptViaStdin(prompt, platform = process.platform) {
-  if (typeof prompt !== "string") return false;
-  if (platform === "win32" && prompt.length > WIN32_ARGV_PROMPT_LIMIT) return true;
-  return Buffer.byteLength(prompt, "utf8") > ARGV_PROMPT_BYTE_LIMIT;
+// Always stdin: argv is readable by other local users (/proc/<pid>/cmdline), and it also has size limits.
+export function shouldPassPromptViaStdin(prompt, _platform = process.platform) {
+  return typeof prompt === "string" && prompt.length > 0;
 }
 
 export function resolveAgyBin(env = process.env) {

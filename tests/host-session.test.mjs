@@ -267,7 +267,7 @@ const AGY_FAKE = `#!/usr/bin/env node
 const fs = require("node:fs");
 const argv = process.argv.slice(2);
 let stdin = "";
-try { if (!process.stdin.isTTY) stdin = fs.readFileSync(0, "utf8"); } catch {}
+if (!process.stdin.isTTY) { const chunks = []; const buf = Buffer.alloc(65536); for (;;) { let n; try { n = fs.readSync(0, buf, 0, buf.length, null); } catch (e) { if (e.code === "EAGAIN") continue; break; } if (!n) break; chunks.push(Buffer.from(buf.subarray(0, n))); } stdin = Buffer.concat(chunks).toString("utf8"); }
 fs.appendFileSync(process.env.FAKE_AGY_LOG, JSON.stringify({ argv, stdin }) + "\\n");
 if (argv.includes("--version")) { process.stdout.write("1.5.12\\n"); process.exit(0); }
 process.stdout.write('{"conversation_id":"C1","status":"SUCCESS","response":"ok","num_turns":1}');
@@ -313,7 +313,7 @@ test("antigravity transfer packs the matching Codex rollout and stores the conve
   assert.equal(result.status, 0, result.stderr);
   const calls = agyModelCalls(sandbox);
   assert.equal(calls.length, 1);
-  assert.match(calls[0].argv[calls[0].argv.length - 1], /matching codex text/);
+  assert.match(calls[0].stdin, /matching codex text/);
   assert.equal(JSON.parse(result.stdout).job.agySessionId, "C1");
 });
 
@@ -335,7 +335,7 @@ test("antigravity transfer prefers a local Claude transcript over an unrelated C
   );
   const result = runAgy(sandbox, ["transfer", "--wait"]);
   assert.equal(result.status, 0, result.stderr);
-  const prompt = agyModelCalls(sandbox)[0].argv.at(-1);
+  const prompt = agyModelCalls(sandbox)[0].stdin;
   assert.match(prompt, /local claude text/);
   assert.doesNotMatch(prompt, /unrelated codex text/);
 });

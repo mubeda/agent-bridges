@@ -18,7 +18,7 @@ const fs = require("node:fs");
 const { spawn } = require("node:child_process");
 const argv = process.argv.slice(2);
 let stdin = "";
-try { if (!process.stdin.isTTY) stdin = fs.readFileSync(0, "utf8"); } catch {}
+if (!process.stdin.isTTY) { const chunks = []; const buf = Buffer.alloc(65536); for (;;) { let n; try { n = fs.readSync(0, buf, 0, buf.length, null); } catch (e) { if (e.code === "EAGAIN") continue; break; } if (!n) break; chunks.push(Buffer.from(buf.subarray(0, n))); } stdin = Buffer.concat(chunks).toString("utf8"); }
 const log = process.env.FAKE_AGY_LOG;
 if (log) fs.appendFileSync(log, JSON.stringify({ argv, stdin, pid: process.pid }) + "\\n");
 if (argv.includes("--version")) { process.stdout.write("1.5.12\\n"); process.exit(0); }
