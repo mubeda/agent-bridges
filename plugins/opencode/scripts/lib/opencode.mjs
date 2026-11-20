@@ -8,6 +8,9 @@
  */
 
 import { spawn } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import process from "node:process";
 
 import { readJsonFile } from "./fs.mjs";
@@ -471,6 +474,21 @@ function ensureOpencodeAvailable(cwd) {
   }
 }
 
+/**
+ * argv is readable by other local users (/proc/<pid>/cmdline), so the prompt goes in a private
+ * attached file (0600 in a 0700 temp folder); argv only carries the file path and a fixed instruction.
+ * `-f` exists in OpenCode 1.x and 2.x.
+ */
+export function writePromptAttachment(prompt) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-prompt-"));
+  const file = path.join(dir, "prompt.md");
+  fs.writeFileSync(file, prompt, { encoding: "utf8", mode: 0o600 });
+  return {
+    args: ["-f", file, "Follow the instructions in the attached file."],
+    cleanup: () => fs.rmSync(dir, { recursive: true, force: true })
+  };
+}
+
 export async function runAppServerTurn(cwd, options = {}) {
   ensureOpencodeAvailable(cwd);
 
@@ -479,8 +497,8 @@ export async function runAppServerTurn(cwd, options = {}) {
     throw new Error("A prompt is required for this OpenCode run.");
   }
 
-  const args = buildRunArgs(cwd, options);
-  args.push(prompt);
+  const attachment = writePromptAttachment(prompt);
+  const args = [...buildRunArgs(cwd, options), ...attachment.args];
 
   emitProgress(
     options.onProgress,
@@ -490,7 +508,12 @@ export async function runAppServerTurn(cwd, options = {}) {
     "starting"
   );
 
-  const result = await spawnOpencodeRun(cwd, args, options.onProgress);
+  let result;
+  try {
+    result = await spawnOpencodeRun(cwd, args, options.onProgress);
+  } finally {
+    attachment.cleanup();
+  }
   if (result.threadId) {
     emitProgress(options.onProgress, `Session ready (${result.threadId}).`, "running", {
       threadId: result.threadId

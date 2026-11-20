@@ -218,3 +218,22 @@ test("claude, cursor and gemini never put a prompt in argv", async () => {
     assert.equal(geminiArgs("/repo", { backend, prompt: secret, platform: "linux", env: {} }).includes(secret), false, backend);
   }
 });
+
+test("opencode passes the prompt in a private attached file, never in argv", async (t) => {
+  const { writePromptAttachment } = await import("../plugins/opencode/scripts/lib/opencode.mjs");
+  const secret = "short secret transcript";
+  const attachment = writePromptAttachment(secret);
+  t.after(() => attachment.cleanup());
+  assert.equal(attachment.args.includes(secret), false);
+  assert.equal(attachment.args[0], "-f");
+  assert.equal(fs.readFileSync(attachment.args[1], "utf8"), secret);
+  assert.match(attachment.args[2], /attached file/);
+  if (process.platform !== "win32") {
+    assert.equal(fs.statSync(attachment.args[1]).mode & 0o777, 0o600);
+    assert.equal(fs.statSync(path.dirname(attachment.args[1])).mode & 0o777, 0o700);
+  }
+  attachment.cleanup();
+  assert.equal(fs.existsSync(attachment.args[1]), false);
+  const source = fs.readFileSync(new URL("../plugins/opencode/scripts/lib/opencode.mjs", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /args\.push\(prompt\)/);
+});
