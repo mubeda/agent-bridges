@@ -228,6 +228,8 @@ export function resolveOnTrustedPath(command, env = process.env, platform = proc
  * and PowerShell: the npm .ps1 pipes stdin through Windows PowerShell 5.1, which turns non-ASCII into ?.
  */
 export function npmShimTarget(cmdFile) {
+  // Only a .cmd can be a shim; never read a native .exe, which can be tens of megabytes.
+  if (path.extname(String(cmdFile ?? "")).toLowerCase() !== ".cmd") return null;
   let text;
   try {
     text = fs.readFileSync(cmdFile, "utf8");

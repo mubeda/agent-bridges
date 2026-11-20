@@ -329,3 +329,20 @@ test("antigravity setup shows the Windows launcher, not the extensionless POSIX 
   // A name that already has an extension is looked up as given.
   assert.equal(findOnPath("agy.cmd", env, "win32"), path.join(dir, "agy.cmd"));
 });
+
+test("only a .cmd is read as an npm shim, never a native .exe", async (t) => {
+  // Reading a large claude.exe as text before every launch and job refresh costs seconds and memory.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "native-exe-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const pkg = path.join(dir, "node_modules", "pkg");
+  fs.mkdirSync(pkg, { recursive: true });
+  fs.writeFileSync(path.join(pkg, "cli.js"), "");
+  // An .exe whose bytes happen to look like a shim must still run as itself.
+  fs.writeFileSync(path.join(dir, "claude.exe"), NODE_SHIM);
+  const { resolveClaudeSpawnCommand } = await import("../plugins/claude/scripts/lib/claude.mjs");
+  assert.deepEqual(resolveClaudeSpawnCommand({ PATH: dir, PATHEXT: ".EXE" }, "win32"), { file: path.join(dir, "claude.exe"), args: [] });
+  for (const plugin of PLUGINS) {
+    const { npmShimTarget } = await import(`../plugins/${plugin}/scripts/lib/process.mjs`);
+    assert.equal(npmShimTarget(path.join(dir, "claude.exe")), null, plugin);
+  }
+});
