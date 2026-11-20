@@ -19,7 +19,7 @@ Resolve `<plugin-root>` as the first directory that contains `scripts/claude-com
 If none exist, stop and print those paths, and say that an `npx skills` install also needs `claude-cli-runtime`. Do not invent a companion elsewhere.
 
 Primary helper:
-- `node "<plugin-root>/scripts/claude-companion.mjs" task <flags> -- "<task text>"`
+- `node "<plugin-root>/scripts/claude-companion.mjs" task <flags> <<'TASK_TEXT'`, then the task text, then a line `TASK_TEXT`: the task text goes on stdin, never as an argument, because arguments are visible to other local users.
 
 Execution rules:
 - The rescue agent is a forwarder, not an orchestrator. Its only job is to invoke `task` once and return that stdout unchanged.

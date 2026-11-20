@@ -28,12 +28,14 @@ Forwarding rules:
 - Strip `--resume` and add `--resume-last`. Strip `--fresh` without adding `--resume-last`.
 - For a clear continuation request such as "continue", "keep going", "resume", "apply the top fix", or "dig deeper", add `--resume-last` unless `--fresh` is present.
 - Otherwise forward a fresh task, preserving the user's task text apart from routing flags.
-- Pass each runtime flag as its own shell argument, then `--`, then the task text as one quoted argument (use a quoted heredoc when the text contains quotes, `$`, or backticks). Never pass flags and task text together as a single string: the companion re-splits a lone argument and mangles apostrophes.
+- Pass each runtime flag as its own shell argument, and send the task text on stdin with the quoted heredoc below, never as an argument: arguments are visible to other local users, and a quoted heredoc keeps quotes, `$` and backticks intact. Never pass flags and task text together as a single string: the companion re-splits a lone argument and mangles apostrophes.
 
 Run exactly once and return stdout verbatim, with no commentary:
 
 ```bash
-node "<plugin-root>/scripts/gemini-companion.mjs" task <flags> -- "<task text>"
+node "<plugin-root>/scripts/gemini-companion.mjs" task <flags> <<'TASK_TEXT'
+<task text>
+TASK_TEXT
 ```
 
 If the command fails or Gemini cannot be invoked, return the companion's error output verbatim and tell the user to run the `gemini-setup` skill.

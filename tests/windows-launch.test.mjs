@@ -237,3 +237,11 @@ test("opencode passes the prompt in a private attached file, never in argv", asy
   const source = fs.readFileSync(new URL("../plugins/opencode/scripts/lib/opencode.mjs", import.meta.url), "utf8");
   assert.doesNotMatch(source, /args\.push\(prompt\)/);
 });
+
+for (const plugin of PLUGINS) {
+  test(`${plugin}: the companion reads stdin until end of file`, () => {
+    const source = fs.readFileSync(new URL(`../plugins/${plugin}/scripts/lib/fs.mjs`, import.meta.url), "utf8");
+    const body = source.slice(source.indexOf("export function readStdinIfPiped"));
+    assert.match(body.slice(0, 700), /EAGAIN/);
+  });
+}

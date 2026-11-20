@@ -3,6 +3,7 @@
 ## 0.2.2 — 2026-11-19
 
 ### Security
+- **Rescue and delegate pipe the task text to the companion on stdin** (a quoted heredoc) instead of passing it as an argument, so it never shows in the companion's own process arguments. The companion reads stdin until end of file.
 - **Prompts always go to the backend on stdin**, never in argv, where other local users can read them (`/proc/<pid>/cmdline`). Background (`--bg`) runs write the prompt to a private 0600 file in the jobs folder and pass only its path.
 - **Job state is private to your user.** State folders are created as 0700 and job files as 0600, and folders made by older versions are tightened; job files hold prompts and packed transcripts.
 - **Windows: the CLI launch never uses a bare name.** The run itself, not just the version check, now starts an absolute path from trusted PATH entries, so a CLI planted in the checkout is never started.

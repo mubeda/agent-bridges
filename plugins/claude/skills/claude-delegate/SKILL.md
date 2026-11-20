@@ -84,10 +84,9 @@ Protected paths (beyond defaults): <list>
 ### 2. Launch each chunk as a fresh blocking job
 
 ```bash
-cd <repo> && node "<plugin-root>/scripts/claude-companion.mjs" task --wait --fresh --write --bypass-permissions "$(cat <<'CHUNK_PROMPT'
+cd <repo> && node "<plugin-root>/scripts/claude-companion.mjs" task --wait --fresh --write --bypass-permissions <<'CHUNK_PROMPT'
 <chunk prompt>
 CHUNK_PROMPT
-)"
 ```
 
 - **Always `--fresh --write --bypass-permissions` for implementation.** `--write` runs Claude

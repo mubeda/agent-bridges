@@ -217,12 +217,15 @@ test("claude delegate does not treat output as a liveness signal or call launche
   assert.match(body, /3 consecutive ticks/);
 });
 
-test("rescue surfaces pass task text as one argument after -- and report failures", () => {
+test("rescue surfaces pipe task text on stdin and report failures", () => {
   for (const name of COMPANIONS) {
-    for (const skill of ["cli-runtime", "rescue"]) {
+    for (const skill of ["cli-runtime", "rescue", "delegate"]) {
       const body = readSkill(name, skill);
       assert.doesNotMatch(body, /task "<raw arguments>"/, `${name}-${skill}`);
-      assert.match(body, new RegExp(`${name}-companion\\.mjs" task <flags> -- "<task text>"`), `${name}-${skill}`);
+      // argv is readable by other local users, so task text never goes in it.
+      assert.doesNotMatch(body, /-- "<task text>"/, `${name}-${skill}`);
+      assert.doesNotMatch(body, /"\$\(cat <</, `${name}-${skill}`);
+      assert.match(body, new RegExp(`${name}-companion\\.mjs" task [^\\n]*<<\x27(TASK_TEXT|CHUNK_PROMPT)\x27`), `${name}-${skill}`);
     }
     assert.doesNotMatch(readSkill(name, "rescue"), /return nothing/, name);
     assert.match(readSkill(name, "rescue"), new RegExp(`${name}-setup`), name);

@@ -36,5 +36,20 @@ export function readStdinIfPiped() {
   if (process.stdin.isTTY) {
     return "";
   }
-  return fs.readFileSync(0, "utf8");
+  // Read until end of file: one readFileSync on a pipe can fail with EAGAIN before the data arrives.
+  const chunks = [];
+  const buffer = Buffer.alloc(65536);
+  for (;;) {
+    let count;
+    try {
+      count = fs.readSync(0, buffer, 0, buffer.length, null);
+    } catch (error) {
+      if (error.code === "EAGAIN") continue;
+      if (error.code === "EOF") break;
+      throw error;
+    }
+    if (count === 0) break;
+    chunks.push(Buffer.from(buffer.subarray(0, count)));
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
