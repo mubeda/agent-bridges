@@ -374,13 +374,14 @@ async function runPrintJob(job, request) {
 async function handleReviewCommand(argv, { reviewName }) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["base", "scope", "model", "effort", "cwd"],
-    booleanOptions: ["json", "background", "wait"],
+    booleanOptions: ["json", "background", "wait", "focus-stdin"],
     aliasMap: { m: "model" }
   });
   const cwd = resolveCommandCwd(options);
   ensureGitRepository(cwd);
   const target = resolveReviewTarget(cwd, { base: options.base, scope: options.scope });
-  const focusText = positionals.join(" ").trim();
+  // --focus-stdin: the focus arrives on stdin, so it never sits in this process's argv.
+  const focusText = (options["focus-stdin"] ? readStdinIfPiped() : positionals.join(" ")).trim();
   if (reviewName === "Review" && focusText) {
     throw new Error("`review` does not accept focus text. Use `adversarial-review`.");
   }

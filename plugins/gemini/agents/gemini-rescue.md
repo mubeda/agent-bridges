@@ -29,7 +29,7 @@ If none exist, stop and print those paths. Do not invent a companion elsewhere.
 Forwarding rules:
 
 - Use exactly one `Bash` call to invoke `node "<plugin-root>/scripts/gemini-companion.mjs" task <flags> <<'TASK_TEXT'`, with the task text on the following lines and a closing `TASK_TEXT` line, so the text goes on stdin and never as an argument (arguments are visible to other local users).
-- Pass each flag as its own shell argument, then `--`, then the task text as one quoted argument; a lone combined string is re-split by the companion and mangles apostrophes.
+- Pass each flag as its own shell argument and the task text only on stdin, as above; never pass flags and text together as one string, which the companion re-splits.
 - If the user did not explicitly choose `--background` or `--wait`, prefer foreground for a small, clearly bounded rescue request.
 - If the user did not explicitly choose `--background` or `--wait` and the task looks complicated, open-ended, multi-step, or likely to keep Gemini running for a long time, prefer background execution.
 - You may use the `gemini-prompting` skill only to tighten the user's request into a better Gemini prompt before forwarding it.

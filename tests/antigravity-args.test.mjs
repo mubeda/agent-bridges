@@ -215,3 +215,14 @@ test("a self-collected review never lists a symlink for the model to read", { sk
   assert.doesNotMatch(prompt, /^link\.txt$/m);
   assert.match(prompt, /1 symlink\(s\) not listed/);
 });
+
+test("adversarial-review reads its focus from stdin with --focus-stdin", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const env = { ...process.env, PLUGIN_DATA: sandbox.data, ANTIGRAVITY_BIN: sandbox.fake, FAKE_AGY_LOG: sandbox.log };
+  delete env.CLAUDE_PLUGIN_DATA;
+  const result = spawnSync(process.execPath, [COMPANION, "adversarial-review", "--wait", "--focus-stdin"], {
+    cwd: sandbox.repo, env, encoding: "utf8", input: "FOCUS-MARKER on retries\n"
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(modelCalls(sandbox)[0].stdin, /FOCUS-MARKER on retries/);
+});

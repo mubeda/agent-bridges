@@ -3,6 +3,7 @@
 ## 0.2.2 — 2026-11-19
 
 ### Security
+- **Adversarial-review focus text goes on stdin** with the new `--focus-stdin` flag, never as an argument.
 - **Rescue (skills, agents and commands) and delegate pipe the task text to the companion on stdin** (a quoted heredoc) instead of passing it as an argument, so it never shows in the companion's own process arguments. The companion reads stdin until end of file.
 - **Prompts always go to the backend on stdin**, never in argv, where other local users can read them (`/proc/<pid>/cmdline`).
 - **Job state is private to your user.** State folders are created as 0700 and job files as 0600, and folders made by older versions are tightened; job files hold prompts and packed transcripts.

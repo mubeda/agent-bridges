@@ -16,10 +16,18 @@ If none exist, stop and print those paths, and say that an `npx skills` install 
 
 User arguments (hosts that support it substitute them here; otherwise take them from the user's request): `$ARGUMENTS`
 
-Run and return stdout verbatim. Pass each flag and its value as a separate shell argument, including `--wait` or `--background` when provided. Put free-form focus text last, as one quoted argument after `--`:
+Run and return stdout verbatim. Pass each flag and its value as a separate shell argument, including `--wait` or `--background` when provided. Send free-form focus text on stdin with `--focus-stdin` and a quoted heredoc, never as an argument, because arguments are visible to other local users:
 
 ```bash
-node "<plugin-root>/scripts/cursor-companion.mjs" adversarial-review <arguments>
+node "<plugin-root>/scripts/cursor-companion.mjs" adversarial-review <flags> --focus-stdin <<'FOCUS_TEXT'
+<focus text>
+FOCUS_TEXT
+```
+
+Without focus text, run:
+
+```bash
+node "<plugin-root>/scripts/cursor-companion.mjs" adversarial-review <flags>
 ```
 
 This skill is review-only. Do not patch code or pass `--write`.

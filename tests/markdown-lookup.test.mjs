@@ -238,7 +238,8 @@ test("thin skills do not paste raw user arguments into the shell command", () =>
       const body = readSkill(name, skill);
       assert.doesNotMatch(body, /\.mjs" [a-z-]+ \$ARGUMENTS/, `${name}-${skill}`);
       assert.match(body, /`\$ARGUMENTS`/, `${name}-${skill}`);
-      assert.match(body, /\.mjs" [a-z-]+ <arguments>/, `${name}-${skill}`);
+      // adversarial-review splits flags from focus text, which goes on stdin
+      assert.match(body, skill === "adversarial-review" ? /\.mjs" adversarial-review <flags>/ : /\.mjs" [a-z-]+ <arguments>/, `${name}-${skill}`);
     }
   }
 });
@@ -334,5 +335,28 @@ test("rescue agents and commands pipe task text on stdin", () => {
       assert.match(body, /<<'TASK_TEXT'/, `${name} ${rel}`);
       assert.match(body, /never as an argument/, `${name} ${rel}`);
     }
+  }
+});
+
+test("adversarial-review focus text and rescue agents never go in argv", () => {
+  for (const name of COMPANIONS) {
+    const docs = [readSkill(name, "adversarial-review")];
+    const command = path.join(root, `plugins/${name}/commands/adversarial-review.md`);
+    if (fs.existsSync(command)) docs.push(fs.readFileSync(command, "utf8"));
+    for (const body of docs) {
+      assert.doesNotMatch(body, /adversarial-review "\$ARGUMENTS"/, name);
+      assert.doesNotMatch(body, /focus text last, as one quoted argument/, name);
+      assert.match(body, /adversarial-review <flags> --focus-stdin <<'FOCUS_TEXT'/, name);
+    }
+    const agent = fs.readFileSync(path.join(root, `plugins/${name}/agents/${name}-rescue.md`), "utf8");
+    assert.doesNotMatch(agent, /then `--`, then the task text/, name);
+  }
+});
+
+test("every companion reads adversarial focus from stdin only with --focus-stdin", () => {
+  for (const name of COMPANIONS) {
+    const source = fs.readFileSync(path.join(root, `plugins/${name}/scripts/${name}-companion.mjs`), "utf8");
+    assert.match(source, /"focus-stdin"/, name);
+    assert.match(source, /options\["focus-stdin"\]/, name);
   }
 });

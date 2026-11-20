@@ -755,7 +755,7 @@ function enqueueBackgroundTask(cwd, job, request, workerCommand = "task-worker")
 async function handleReviewCommand(argv, config) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["base", "scope", "model", "cwd"],
-    booleanOptions: ["json", "background", "wait"],
+    booleanOptions: ["json", "background", "wait", "focus-stdin"],
     aliasMap: {
       m: "model"
     }
@@ -763,7 +763,8 @@ async function handleReviewCommand(argv, config) {
 
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
-  const focusText = positionals.join(" ").trim();
+  // --focus-stdin: the focus arrives on stdin, so it never sits in this process's argv.
+  const focusText = (options["focus-stdin"] ? readStdinIfPiped() : positionals.join(" ")).trim();
   const target = resolveReviewTarget(cwd, {
     base: options.base,
     scope: options.scope
