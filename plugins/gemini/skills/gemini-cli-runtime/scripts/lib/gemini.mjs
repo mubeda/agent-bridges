@@ -15,7 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
-import { binaryAvailable, formatCommandFailure, runCommand } from "./process.mjs";
+import { binaryAvailable, formatCommandFailure, runCommand, resolveSpawnCommand, unsupportedLauncher } from "./process.mjs";
 
 const TASK_THREAD_PREFIX = "Gemini Companion Task";
 const DEFAULT_CONTINUE_PROMPT =
@@ -307,9 +307,10 @@ export function getGeminiAvailability(cwd, options = {}) {
   }
 
   const status = binaryAvailable(resolved.bin, ["--version"], { cwd });
+  const problem = status.available ? unsupportedLauncher(resolved.bin) : null;
   return {
-    available: status.available,
-    detail: status.available ? status.detail || resolved.detail : status.detail,
+    available: status.available && !problem,
+    detail: problem ?? (status.available ? status.detail || resolved.detail : status.detail),
     backend: resolved.backend,
     bin: resolved.bin
   };
@@ -821,7 +822,14 @@ function spawnGeminiRun(
   { backend = "gemini", bin = "gemini", stdin = null } = {}
 ) {
   return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, {
+    let command;
+    try {
+      command = resolveSpawnCommand(bin);
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    const child = spawn(command.file, [...command.args, ...args], {
       cwd,
       env: process.env,
       stdio: [stdin != null ? "pipe" : "ignore", "pipe", "pipe"],

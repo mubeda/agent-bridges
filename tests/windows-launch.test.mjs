@@ -62,3 +62,28 @@ for (const plugin of ["opencode", "gemini", "claude", "cursor", "antigravity"]) 
     assert.throws(() => resolveTransferSource(repo, { home, env: {} }));
   });
 }
+
+for (const [plugin, bin, lib, spawnFn] of [["opencode", "opencode", "opencode", "spawnOpencodeRun"], ["gemini", "gemini", "gemini", "spawnGeminiRun"]]) {
+  test(`${plugin}: an npm .cmd shim runs through its .ps1 on Windows`, async (t) => {
+    const { resolveSpawnCommand, unsupportedLauncher } = await import(`../plugins/${plugin}/scripts/lib/process.mjs`);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "shim-"));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const env = { PATH: dir, PATHEXT: ".COM;.EXE;.BAT;.CMD", SystemRoot: "C:\\Windows" };
+    fs.writeFileSync(path.join(dir, `${bin}.cmd`), "@echo off\n");
+    // A .cmd with no .ps1 cannot be started without a shell: refuse it clearly.
+    assert.match(unsupportedLauncher(bin, env, "win32"), /\.cmd launcher with no \.ps1/);
+    assert.throws(() => resolveSpawnCommand(bin, env, "win32"), /\.cmd launcher with no \.ps1/);
+    fs.writeFileSync(path.join(dir, `${bin}.ps1`), "");
+    assert.equal(unsupportedLauncher(bin, env, "win32"), null);
+    const command = resolveSpawnCommand(bin, env, "win32");
+    assert.match(command.file, /powershell\.exe$/i);
+    assert.deepEqual(command.args, ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(dir, `${bin}.ps1`)]);
+    // Off Windows nothing changes.
+    assert.deepEqual(resolveSpawnCommand(bin, env, "linux"), { file: bin, args: [] });
+    assert.equal(unsupportedLauncher(bin, env, "linux"), null);
+    // The real run uses the resolver instead of spawning the bare name.
+    const source = fs.readFileSync(new URL(`../plugins/${plugin}/scripts/lib/${lib}.mjs`, import.meta.url), "utf8");
+    const body = source.slice(source.indexOf(`function ${spawnFn}(`));
+    assert.match(body.slice(0, 600), /resolveSpawnCommand\(/);
+  });
+}

@@ -11,7 +11,7 @@ import { spawn } from "node:child_process";
 import process from "node:process";
 
 import { readJsonFile } from "./fs.mjs";
-import { binaryAvailable, formatCommandFailure, runCommand } from "./process.mjs";
+import { binaryAvailable, formatCommandFailure, runCommand, resolveSpawnCommand, unsupportedLauncher } from "./process.mjs";
 
 const TASK_THREAD_PREFIX = "OpenCode Companion Task";
 const DEFAULT_CONTINUE_PROMPT =
@@ -59,7 +59,9 @@ function cleanOpencodeStderr(stderr) {
 }
 
 export function getOpencodeAvailability(cwd) {
-  return binaryAvailable("opencode", ["--version"], { cwd });
+  const status = binaryAvailable("opencode", ["--version"], { cwd });
+  const problem = status.available ? unsupportedLauncher("opencode") : null;
+  return problem ? { available: false, detail: problem } : status;
 }
 
 export async function getOpencodeAuthStatus(cwd) {
@@ -357,7 +359,14 @@ function buildReviewPrompt(target, focusText, contextSummary) {
 
 function spawnOpencodeRun(cwd, args, onProgress) {
   return new Promise((resolve, reject) => {
-    const child = spawn("opencode", args, {
+    let command;
+    try {
+      command = resolveSpawnCommand("opencode");
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    const child = spawn(command.file, [...command.args, ...args], {
       cwd,
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"],

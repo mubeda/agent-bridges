@@ -3,6 +3,7 @@
 ## 0.2.2 — 2026-11-19
 
 ### Security
+- **Windows: an npm-installed CLI now starts.** npm installs a `.cmd` shim, which Node cannot start without a shell; jobs now run its `.ps1` through PowerShell, and setup reports a `.cmd` with no `.ps1`.
 - **Windows: a CLI path with spaces now works.** A binary under `C:\\Program Files` was passed to `cmd.exe` unquoted and failed.
 - **Transfer never picks another repository's Codex session.** With no session for the current folder it now stops and asks for `--source`.
 - Git really runs without a shell now; the earlier change was ignored by this plugin's process helper.

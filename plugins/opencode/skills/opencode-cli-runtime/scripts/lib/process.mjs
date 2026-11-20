@@ -1,4 +1,6 @@
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 import process from "node:process";
 
 /** cmd.exe splits an unquoted path at its first space, so quote a command that has one. */
@@ -142,4 +144,43 @@ export function formatCommandFailure(result) {
     parts.push(stdout);
   }
   return parts.join(": ");
+}
+
+function findWindowsCommand(bin, env) {
+  if (path.isAbsolute(bin) || /[\\/]/.test(bin)) return bin;
+  const extensions = String(env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").map((ext) => ext.trim().toLowerCase()).filter(Boolean);
+  const ordered = [".cmd", ".exe", ...extensions.filter((ext) => ext !== ".cmd" && ext !== ".exe")];
+  for (const directory of String(env.PATH ?? env.Path ?? "").split(path.delimiter).filter(Boolean)) {
+    for (const extension of ordered) {
+      const candidate = path.join(directory, `${bin}${extension}`);
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  }
+  return bin;
+}
+
+/** A .cmd or .bat with no .ps1 beside it cannot be started without a shell, and prompts must never go through one. */
+export function unsupportedLauncher(bin, env = process.env, platform = process.platform) {
+  if (platform !== "win32") return null;
+  const file = findWindowsCommand(bin, env);
+  const extension = path.extname(file).toLowerCase();
+  if (extension !== ".cmd" && extension !== ".bat") return null;
+  const script = path.join(path.dirname(file), `${path.basename(file, extension)}.ps1`);
+  if (fs.existsSync(script)) return null;
+  return `${file} is a ${extension} launcher with no .ps1 next to it, so jobs cannot start it. Install the CLI so it ships a .ps1 or an .exe.`;
+}
+
+/** Windows npm installs a .cmd shim; Node cannot spawn it without a shell, so run its .ps1 through PowerShell instead. */
+export function resolveSpawnCommand(bin, env = process.env, platform = process.platform) {
+  if (platform !== "win32") return { file: bin, args: [] };
+  const problem = unsupportedLauncher(bin, env, platform);
+  if (problem) throw new Error(problem);
+  const file = findWindowsCommand(bin, env);
+  if (path.extname(file).toLowerCase() !== ".cmd") return { file, args: [] };
+  const script = path.join(path.dirname(file), `${path.basename(file, ".cmd")}.ps1`);
+  const systemRoot = env.SystemRoot || env.SYSTEMROOT || "C:\\Windows";
+  return {
+    file: path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+    args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script]
+  };
 }
