@@ -360,7 +360,31 @@ function buildReviewPrompt(target, focusText, contextSummary) {
   return segments.filter(Boolean).join("\n\n");
 }
 
-function spawnOpencodeRun(cwd, args, onProgress) {
+/**
+ * Read-only runs deny every tool but reading and listing files, MCP tools included. grep is denied too:
+ * it searches file contents, so it would print the .env secrets that the read rule blocks.
+ */
+export const READ_ONLY_PERMISSION = {
+  "*": "deny",
+  read: { "*": "allow", "*.env": "deny", "*.env.*": "deny", "*.env.example": "allow" },
+  glob: "allow",
+  list: "allow"
+};
+
+/** OpenCode reads a per-run config from OPENCODE_CONFIG_CONTENT; a read-only run replaces its `permission` block. */
+export function buildRunEnv(options = {}, env = process.env) {
+  if (options.write) return env;
+  let config = {};
+  try {
+    const parsed = JSON.parse(env.OPENCODE_CONFIG_CONTENT ?? "");
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) config = parsed;
+  } catch {
+    // not set, or not JSON: start from an empty config
+  }
+  return { ...env, OPENCODE_CONFIG_CONTENT: JSON.stringify({ ...config, permission: READ_ONLY_PERMISSION }) };
+}
+
+function spawnOpencodeRun(cwd, args, onProgress, env = process.env) {
   return new Promise((resolve, reject) => {
     let command;
     try {
@@ -371,7 +395,7 @@ function spawnOpencodeRun(cwd, args, onProgress) {
     }
     const child = spawn(command.file, [...command.args, ...args], {
       cwd,
-      env: process.env,
+      env,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true
     });
@@ -511,7 +535,7 @@ export async function runAppServerTurn(cwd, options = {}) {
 
   let result;
   try {
-    result = await spawnOpencodeRun(cwd, args, options.onProgress);
+    result = await spawnOpencodeRun(cwd, args, options.onProgress, buildRunEnv(options));
   } finally {
     attachment.cleanup();
   }

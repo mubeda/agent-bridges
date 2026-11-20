@@ -37,3 +37,13 @@ test("cached OAuth credentials alone are not a sign-in: headless gemini also nee
   fs.writeFileSync(path.join(cwd, ".gemini", "settings.json"), JSON.stringify({ security: { auth: { selectedType: "oauth-personal" } } }));
   assert.equal(getGeminiAuthStatus(cwd, { env: {}, home }).loggedIn, true);
 });
+
+test("leftover OAuth credentials do not hide an API key in ~/.gemini/.env", (t) => {
+  const home = makeHome(t);
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gemini-ws-"));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(home, ".gemini", ".env"), "GEMINI_API_KEY=x\n");
+  const status = getGeminiAuthStatus(cwd, { env: {}, home });
+  assert.equal(status.loggedIn, true);
+  assert.equal(status.source, "dotenv");
+});

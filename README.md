@@ -132,7 +132,8 @@ No companion bypasses a backend CLI's safety checks unless you say so.
 
 - **Write runs.** `--write` makes the backend auto-approve its tools (`--dangerously-skip-permissions` for Claude and Antigravity, `--force` for Cursor, `--approval-mode=yolo` for Gemini, `--auto` for OpenCode). The companion refuses `--write` unless the same command has `--bypass-permissions`, or `AGENT_BRIDGES_ALLOW_BYPASS=1` is set in the environment.
 - **Folder trust.** Cursor's `--trust` and Gemini's `--skip-trust` are passed only with `--trust` on the companion command, or with `AGENT_BRIDGES_TRUST=1`. Without it, the backend applies its own folder-trust check, and a headless run in a folder you have not trusted can stop with the backend's error.
-- Rescue is read-only by default, except on OpenCode. Without `--write`, the OpenCode companion leaves out `--auto` but adds no restriction, so OpenCode's own permissions apply, and by default they allow file edits and shell commands. Until a read-only OpenCode mode lands, treat every OpenCode run, reviews included, as able to change the workspace.
+- Rescue is read-only by default.
+- **OpenCode read-only runs** (reviews, and tasks without `--write`) pass a per-run configuration in `OPENCODE_CONFIG_CONTENT` that denies every tool except `read`, `glob` and `list`, MCP tools included. `grep` is denied too, because it searches file contents, so it could print secrets from files that `read` refuses. Reading `*.env` and `*.env.*` is denied, and `*.env.example` is allowed. The rest of your `OPENCODE_CONFIG_CONTENT` is kept. Without this, OpenCode's defaults allow edits and shell commands even without `--auto`.
 - Delegate passes `--write --bypass-permissions` itself, because invoking it is an explicit request for the backend to make the changes.
 
 ## Windows
@@ -174,7 +175,7 @@ npx skills add mubeda/agent-bridges --skill antigravity-cli-runtime --skill anti
 
 - Setup: `/opencode:setup` and `/gemini:setup` (or Codex/Cursor equivalents, including `claude-setup`)
 - Review: run with `--background` when you want a detached review job
-- Rescue: read-only by default (not yet on OpenCode, see [Permissions are opt-in](#permissions-are-opt-in)); add `--write --bypass-permissions` for unattended edits
+- Rescue: read-only by default; add `--write --bypass-permissions` for unattended edits
 - Transfer: `/opencode:transfer` / `/gemini:transfer` (or Codex transfer skills)
 - Delegate: explicit invocation only (`/opencode:delegate` or the `*-delegate` skills); the backend implements, the session reviews and commits
 - Claude only (optional): `--enable-review-gate` on setup
