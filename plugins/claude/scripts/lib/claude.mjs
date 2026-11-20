@@ -6,8 +6,9 @@ import { binaryAvailable, resolveOnTrustedPath, runCommand } from "./process.mjs
 
 export const WIN32_ARGV_PROMPT_LIMIT = 20_000;
 
-export function shouldPassPromptViaStdin(prompt, platform = process.platform) {
-  return platform === "win32" && typeof prompt === "string" && prompt.length > WIN32_ARGV_PROMPT_LIMIT;
+// Always stdin: argv is readable by other local users (/proc/<pid>/cmdline), and it also has size limits.
+export function shouldPassPromptViaStdin(prompt, _platform = process.platform) {
+  return typeof prompt === "string" && prompt.length > 0;
 }
 
 export function resolveClaudeBin(env = process.env) {
@@ -83,11 +84,11 @@ export function buildRunArgs(options = {}) {
   const platform = options.platform ?? process.platform;
   if (shouldPassPromptViaStdin(prompt, platform)) {
     if (!options.promptFile) {
-      throw new Error("buildRunArgs: promptFile is required for an oversized Windows background prompt.");
+      throw new Error("buildRunArgs: promptFile is required for a background prompt.");
     }
     const promptFile = path.resolve(String(options.promptFile));
-    fs.mkdirSync(path.dirname(promptFile), { recursive: true });
-    fs.writeFileSync(promptFile, prompt, "utf8");
+    fs.mkdirSync(path.dirname(promptFile), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(promptFile, prompt, { encoding: "utf8", mode: 0o600 });
     args.push(`Read and follow the complete prompt in this UTF-8 file: ${promptFile}`);
   } else {
     args.push(prompt);

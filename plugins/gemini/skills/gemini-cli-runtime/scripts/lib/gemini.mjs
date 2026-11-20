@@ -35,12 +35,9 @@ const REVIEW_INSTRUCTIONS = [
  * headless treats a non-TTY stdin pipe as the query (same as `-p` without
  * putting the huge string on argv). Do not pass `-p` with an empty value.
  */
-export function shouldPassPromptViaStdin(prompt, platform = process.platform) {
-  return (
-    platform === "win32" &&
-    typeof prompt === "string" &&
-    prompt.length > WIN32_ARGV_PROMPT_LIMIT
-  );
+// Always stdin: argv is readable by other local users (/proc/<pid>/cmdline), and it also has size limits.
+export function shouldPassPromptViaStdin(prompt, _platform = process.platform) {
+  return typeof prompt === "string" && prompt.length > 0;
 }
 
 // Tools that mutate files. tool_use events with these names are tracked in

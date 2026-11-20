@@ -9,8 +9,9 @@ export const WIN32_ARGV_PROMPT_LIMIT = 20_000;
 const MISSING_BIN_DETAIL =
   "`agent` was not found on PATH. Install Cursor CLI from https://cursor.com/docs/cli/installation then rerun setup. Optional: set CURSOR_BIN.";
 
-export function shouldPassPromptViaStdin(prompt, platform = process.platform) {
-  return platform === "win32" && typeof prompt === "string" && prompt.length > WIN32_ARGV_PROMPT_LIMIT;
+// Always stdin: argv is readable by other local users (/proc/<pid>/cmdline), and it also has size limits.
+export function shouldPassPromptViaStdin(prompt, _platform = process.platform) {
+  return typeof prompt === "string" && prompt.length > 0;
 }
 
 export function resolveCursorBin(env = process.env) {

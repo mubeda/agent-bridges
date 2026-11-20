@@ -205,3 +205,16 @@ for (const plugin of PLUGINS) {
     assert.equal(mode(path.join(state.resolveJobsDir(workspace), "job-1.json")), 0o600);
   });
 }
+
+test("claude, cursor and gemini never put a prompt in argv", async () => {
+  const secret = "short secret transcript";
+  const { buildRunArgs: claudeArgs, shouldPassPromptViaStdin: claudeStdin } = await import("../plugins/claude/scripts/lib/claude.mjs");
+  const { buildRunArgs: cursorArgs, shouldPassPromptViaStdin: cursorStdin } = await import("../plugins/cursor/scripts/lib/cursor.mjs");
+  const { buildRunArgs: geminiArgs, shouldPassPromptViaStdin: geminiStdin } = await import("../plugins/gemini/scripts/lib/gemini.mjs");
+  for (const decide of [claudeStdin, cursorStdin, geminiStdin]) assert.equal(decide(secret, "linux"), true);
+  assert.equal(claudeArgs({ prompt: secret, platform: "linux" }).includes(secret), false);
+  assert.equal(cursorArgs({ prompt: secret, platform: "linux", env: {} }).includes(secret), false);
+  for (const backend of ["gemini", "agy"]) {
+    assert.equal(geminiArgs("/repo", { backend, prompt: secret, platform: "linux", env: {} }).includes(secret), false, backend);
+  }
+});

@@ -50,20 +50,27 @@ test("rescue wait without write uses plan", () => {
   assert.equal(args.includes("--dangerously-skip-permissions"), false);
 });
 
-test("background argv has --bg and no -p", () => {
+test("background argv has --bg and no -p", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-bg-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const promptFile = path.join(dir, "jobs", "job-1.prompt.md");
   const args = buildRunArgs({
     prompt: "fix it",
     invoke: "bg",
     write: true,
-    name: "job-1"
+    name: "job-1",
+    promptFile
   });
+  assert.equal(args.includes("fix it"), false);
+  assert.equal(fs.readFileSync(promptFile, "utf8"), "fix it");
+  if (process.platform !== "win32") assert.equal(fs.statSync(promptFile).mode & 0o777, 0o600);
   assert.ok(args.includes("--bg"));
   assert.ok(args.includes("--name"));
   assert.equal(args[args.indexOf("--name") + 1], "job-1");
   assert.equal(args.includes("-p"), false);
   assert.equal(args.includes("--print"), false);
   assert.equal(args.includes("--json-schema"), false);
-  assert.equal(args.at(-1), "fix it");
+  assert.match(args.at(-1), /^Read and follow the complete prompt in this UTF-8 file: /);
   assert.ok(args.includes("--dangerously-skip-permissions"));
 });
 
