@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.4 — 2026-11-21
+
+### Fixed
+- **Job state stays in this companion's own folder.** The state root no longer comes from `CLAUDE_PLUGIN_DATA`, which another plugin (the OpenAI Codex plugin) exports into every Bash command of a Claude Code session, so its `state.json` and this companion's were one file. State now lives in `$PLUGIN_DATA/state` when set, else `~/.gemini-companion/state`, the same folder from a session, a terminal or a hook. Jobs that older versions wrote into another plugin's folder stay there and are not listed. ([#7](https://github.com/mubeda/agent-bridges/issues/7))
+- **The stop review gate sees the setting `setup` wrote.** The Stop hook ran with this plugin's own `CLAUDE_PLUGIN_DATA` while `setup --enable-review-gate` ran from Bash without it, so the two used different folders and an enabled gate could stay off. Both now use the same folder. If you enabled the gate before, run `setup --enable-review-gate` once more.
+
 ## 0.2.3 — 2026-11-20
 
 ### Fixed

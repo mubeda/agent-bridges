@@ -50,10 +50,16 @@ test("PLUGIN_DATA wins over CLAUDE_PLUGIN_DATA", () => {
   assert.equal(resolveCursorStateRoot(env), path.join(env.PLUGIN_DATA, "state"));
 });
 
-test("CLAUDE_PLUGIN_DATA is used when PLUGIN_DATA is unset", () => {
-  const env = { CLAUDE_PLUGIN_DATA: path.join(os.tmpdir(), "claude-data") };
-  delete env.PLUGIN_DATA;
-  assert.equal(resolveOpencodeStateRoot(env), path.join(env.CLAUDE_PLUGIN_DATA, "state"));
-  assert.equal(resolveClaudeStateRoot(env), path.join(env.CLAUDE_PLUGIN_DATA, "state"));
-  assert.equal(resolveCursorStateRoot(env), path.join(env.CLAUDE_PLUGIN_DATA, "state"));
+test("CLAUDE_PLUGIN_DATA is ignored, because another plugin can export its own (issue 7)", () => {
+  const env = { CLAUDE_PLUGIN_DATA: path.join(os.tmpdir(), "codex-openai-codex") };
+  const resolvers = {
+    opencode: resolveOpencodeStateRoot,
+    gemini: resolveGeminiStateRoot,
+    claude: resolveClaudeStateRoot,
+    cursor: resolveCursorStateRoot,
+    antigravity: resolveAntigravityStateRoot
+  };
+  for (const [name, resolve] of Object.entries(resolvers)) {
+    assert.equal(resolve(env), path.join(os.homedir(), `.${name}-companion`, "state"), name);
+  }
 });

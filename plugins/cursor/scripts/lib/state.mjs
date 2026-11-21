@@ -30,10 +30,7 @@ export function resolveStateRoot(env = process.env) {
   if (pluginData) {
     return path.join(pluginData, "state");
   }
-  const claude = typeof env.CLAUDE_PLUGIN_DATA === "string" ? env.CLAUDE_PLUGIN_DATA.trim() : "";
-  if (claude) {
-    return path.join(claude, "state");
-  }
+  // CLAUDE_PLUGIN_DATA is never read: another plugin can export its own into the session (issue 7).
   const homeName =
     PLUGIN_NAME === "gemini"
       ? ".gemini-companion"

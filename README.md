@@ -150,10 +150,11 @@ Stop review-gate is Claude Code only. It is off by default. Enable with setup `-
 Companions resolve plugin roots via `PLUGIN_ROOT` / `CLAUDE_PLUGIN_ROOT` (host-specific paths). Job state lives under:
 
 1. `$PLUGIN_DATA/state` when set
-2. else `$CLAUDE_PLUGIN_DATA/state`
-3. else `~/.opencode-companion/state`, `~/.gemini-companion/state`, `~/.claude-companion/state`, `~/.cursor-companion/state`, or `~/.antigravity-companion/state`
+2. else `~/.opencode-companion/state`, `~/.gemini-companion/state`, `~/.claude-companion/state`, `~/.cursor-companion/state`, or `~/.antigravity-companion/state`
 
-Use only `PLUGIN_*` / `CLAUDE_PLUGIN_*` env names and the companion state dirs above.
+`CLAUDE_PLUGIN_DATA` is never read for state: another plugin can export its own value into the session, and two tools would then share one `state.json` ([#7](https://github.com/mubeda/agent-bridges/issues/7)).
+
+Plugin roots use only the `PLUGIN_*` and `CLAUDE_PLUGIN_*` names; state uses only the dirs above.
 
 ## Install with npx skills
 
