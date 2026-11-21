@@ -4,6 +4,7 @@
 
 ### Fixed
 - **Job state stays in this companion's own folder.** The state root no longer comes from `CLAUDE_PLUGIN_DATA`, which another plugin (the OpenAI Codex plugin) exports into every Bash command of a Claude Code session, so its `state.json` and this companion's were one file. State now lives in `$PLUGIN_DATA/state` when set, else `~/.antigravity-companion/state`, the same folder from a session, a terminal or a hook. Jobs that older versions wrote into another plugin's folder stay there and are not listed. ([#7](https://github.com/mubeda/agent-bridges/issues/7))
+  Before updating, wait for running background jobs to finish or cancel them: a job started by an older version in another plugin's folder cannot be found by `status` or `cancel` after the update.
 
 ## 0.1.1 — 2026-11-20
 

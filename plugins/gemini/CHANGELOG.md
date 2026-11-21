@@ -4,7 +4,8 @@
 
 ### Fixed
 - **Job state stays in this companion's own folder.** The state root no longer comes from `CLAUDE_PLUGIN_DATA`, which another plugin (the OpenAI Codex plugin) exports into every Bash command of a Claude Code session, so its `state.json` and this companion's were one file. State now lives in `$PLUGIN_DATA/state` when set, else `~/.gemini-companion/state`, the same folder from a session, a terminal or a hook. Jobs that older versions wrote into another plugin's folder stay there and are not listed. ([#7](https://github.com/mubeda/agent-bridges/issues/7))
-- **The stop review gate sees the setting `setup` wrote.** The Stop hook ran with this plugin's own `CLAUDE_PLUGIN_DATA` while `setup --enable-review-gate` ran from Bash without it, so the two used different folders and an enabled gate could stay off. Both now use the same folder. If you enabled the gate before, run `setup --enable-review-gate` once more.
+  Before updating, wait for running background jobs to finish or cancel them: a job started by an older version in another plugin's folder cannot be found by `status` or `cancel` after the update.
+- **The stop review gate and `setup` use the same folder.** Before, the Stop hook and `setup` could resolve different state folders, so a gate enabled with `setup --enable-review-gate` might never fire. After updating, such a gate starts firing. A setting an older `setup` wrote into another plugin's folder is left behind, so the gate can also be off. Run `setup`: if it reports the gate on and you no longer want it, run `setup --disable-review-gate`; if it reports it off and you want it, run `setup --enable-review-gate`.
 
 ## 0.2.3 — 2026-11-20
 
