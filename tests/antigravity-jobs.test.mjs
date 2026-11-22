@@ -530,12 +530,18 @@ test("subagentBusy: RUNNING without a later SYSTEM_MESSAGE is busy, unless the t
   assert.equal(subagentBusy(gemini, "S1", 1000, { now: fs.statSync(transcript).mtimeMs + 60_000 }), false, "SYSTEM_MESSAGE after RUNNING");
 });
 
-test("a pending ask_question does not keep the task open and is named in the result", { skip: POSIX_ONLY }, (t) => {
+test("a pending ask_question does not keep the task open and its question is named in the result", { skip: POSIX_ONLY }, (t) => {
   const sandbox = makeSandbox(t);
-  const after = [{ toolCall: "ask_question", id: "q", title: "Which file?" }];
-  const result = run(sandbox, WRITE.concat("go"), scenario({ turns: [{ chunks: ["need input"], after }] }));
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, "need input\nUnanswered questions: Which file?\n");
+  for (const [step, named] of [
+    [{ question: "Do you prefer red or blue?" }, "Do you prefer red or blue?"],
+    [{ question: "Do you prefer red or blue?", questionVia: "args" }, "Do you prefer red or blue?"],
+    [{}, "Run ask_question"]
+  ]) {
+    const after = [{ toolCall: "ask_question", id: "q", ...step }];
+    const result = run(sandbox, WRITE.concat("go"), scenario({ turns: [{ chunks: ["need input"], after }] }));
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, `need input\nUnanswered questions: ${named}\n`, JSON.stringify(step));
+  }
 });
 
 test("a session that never goes quiet is stopped by the bound on the wait, with the text it wrote", { skip: POSIX_ONLY }, (t) => {

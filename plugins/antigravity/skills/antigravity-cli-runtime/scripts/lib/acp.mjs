@@ -287,7 +287,7 @@ export function subagentBusy(geminiDir, sessionId, settleMs, { now = Date.now(),
 export function startAcpRun(options) {
   const { write, cwd, prompt, readOnly, token, model, effort, resumeSessionId, review } = options;
   const workspaceRoot = options.workspaceRoot ?? cwd;
-  // Every tool call of the session by id: { name, title, status }.
+  // Every tool call of the session by id: { name, title, status, questions }.
   const toolCalls = new Map();
   // Setup requests and the token check are bounded; the real prompt is not (jobs may run long; cancel ends them).
   // Only the wait for a quiet session after a task's turn ended is bounded, by quietTimeoutMs.
@@ -329,6 +329,10 @@ export function startAcpRun(options) {
         if (typeof update.name === "string") call.name = update.name;
         if (typeof update.title === "string") call.title = update.title;
         if (typeof update.status === "string") call.status = update.status;
+        // An ask_question carries its questions in rawInput (or args) .questions[].question.
+        const asked = [update.rawInput, update.args].find((input) => Array.isArray(input?.questions))?.questions
+          .map((entry) => entry?.question).filter(isText);
+        if (asked?.length) call.questions = asked;
         toolCalls.set(update.toolCallId, call);
       }
       // Text counts only inside an open turn (a task's stays open until its session is quiet); a read-only
@@ -521,7 +525,7 @@ export function startAcpRun(options) {
       const denied = formatDeniedActions(deniedActions);
       resultText = response ? `${response}\nDenied: ${denied}` : `no answer; denied: ${denied}`;
     }
-    const questions = openCalls(true).map((call) => call.title ?? "ask_question");
+    const questions = openCalls(true).flatMap((call) => call.questions ?? [call.title ?? "ask_question"]);
     if (questions.length) resultText = `${resultText ? `${resultText}\n` : ""}Unanswered questions: ${questions.join("; ")}`;
     if (stopped) throw stopped;
     return { sessionId, resultText, structured, status: "end_turn", ok: true, error: null, deniedActions, warning, promptSent, raw: null };

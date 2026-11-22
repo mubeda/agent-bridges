@@ -141,13 +141,20 @@ async function prompt(id, params) {
 }
 
 // What the session does after its turn ended, one step after another, each after its delayMs:
-// { toolCall, id, title } opens a tool call, { toolDone: id } completes it, { chunk } adds text,
+// { toolCall, id, title, question, questionVia } opens a tool call, { toolDone: id } completes it, { chunk } adds text,
 // { permission: true } asks and waits for the answer, { exit } exits, { subagent: id } lists a subagent with a RUNNING
 // record in its transcript under scenario.brain, { subagentDone: id } adds its SYSTEM_MESSAGE record.
 async function afterTurn(sessionId, steps) {
   for (const step of steps) {
     await new Promise((resolve) => setTimeout(resolve, step.delayMs ?? 0));
-    if (step.toolCall) update(sessionId, { sessionUpdate: "tool_call", toolCallId: step.id, name: step.toolCall, title: step.title, kind: "execute", status: "in_progress" });
+    if (step.toolCall) {
+      // A real ask_question: title "Run ask_question", the question in rawInput (or args) .questions[].question.
+      const input = step.question ? { questions: [{ is_multi_select: false, options: ["Red", "Blue"], question: step.question }] } : undefined;
+      update(sessionId, {
+        sessionUpdate: "tool_call", toolCallId: step.id, name: step.toolCall, title: step.title ?? `Run ${step.toolCall}`, kind: "execute", status: "in_progress",
+        ...(input ? { [step.questionVia ?? "rawInput"]: input } : {})
+      });
+    }
     if (step.toolDone) update(sessionId, { sessionUpdate: "tool_call_update", toolCallId: step.toolDone, status: "completed" });
     if (step.exit) process.exit(Number(step.exit));
     if (step.chunk) update(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: step.chunk } });
