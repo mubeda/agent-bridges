@@ -286,8 +286,8 @@ export function formatIncomplete(evidence) {
   const reasons = "(too large, binary, a link or unreadable)";
   if (!evidence.truncated) return capNames(`some files were not shown ${reasons}`, skipped).trimStart();
   const skippedSet = new Set(skipped);
-  const cut = (evidence.filesNotShown ?? []).filter((file) => !skippedSet.has(file));
-  return `the evidence was cut at ${evidence.maxBytes} bytes, so the rest of this change was not reviewed.${formatNotShown(cut, evidence.filesPartlyShown ?? [])}${capNames(`Files not shown for another reason ${reasons}`, skipped)}`;
+  const cut = (files) => (files ?? []).filter((file) => !skippedSet.has(file));
+  return `the evidence was cut at ${evidence.maxBytes} bytes, so the rest of this change was not reviewed.${formatNotShown(cut(evidence.filesNotShown), cut(evidence.filesPartlyShown))}${capNames(`Files not shown for another reason ${reasons}`, skipped)}`;
 }
 
 /** Collects sections into a byte budget; once it is used up, later items are only named. */
@@ -304,21 +304,26 @@ function createEvidence(maxBytes) {
     get left() {
       return truncated ? 0 : left;
     },
-    /** Adds text; with a file name, records that file as shown, or as shown only in part when the text is cut. */
-    add(text, file) {
-      if (truncated) return false;
-      if (file !== undefined) shown.add(file);
-      const bytes = Buffer.byteLength(text, "utf8");
-      if (bytes <= left) {
-        parts.push(text);
-        left -= bytes;
-        return true;
+    /**
+     * Adds evidence. With a file name, the text is that file's content and decides how the file is recorded:
+     * shown when all of it fits, shown only in part when some of it fits, not shown when none does. `more` says
+     * the text was already cut while it was read. Headings, fences and blank lines go through `format`.
+     */
+    add(text, file, more = false) {
+      if (truncated) {
+        if (file !== undefined) this.skip(file);
+        return;
       }
-      parts.push(cutUtf8(text, left));
-      left = 0;
-      truncated = true;
-      if (file !== undefined) partlyShown.add(file);
-      return false;
+      const bytes = Buffer.byteLength(text, "utf8");
+      const whole = bytes <= left && !more;
+      const piece = bytes <= left ? text : cutUtf8(text, left);
+      parts.push(piece);
+      left = Math.max(0, left - bytes);
+      if (!whole) truncated = true;
+      if (file === undefined) return;
+      if (!whole && !piece) return this.skip(file);
+      shown.add(file);
+      if (!whole) partlyShown.add(file);
     },
     /** Headings and separators use the budget, but one that does not fit is not a cut of the change. */
     format(text) {
@@ -329,12 +334,12 @@ function createEvidence(maxBytes) {
     },
     /** A file the prompt only names (too large, binary, a symlink): its contents are not shown, whatever the budget. */
     omit(name) {
-      notShown.add(name);
+      // A path with another part already shown (a staged deletion of a file left untracked) is shown only in part.
+      (shown.has(name) ? partlyShown : notShown).add(name);
       skipped.add(name);
     },
-    cut(file) {
+    cut() {
       truncated = true;
-      if (file !== undefined) partlyShown.add(file);
     },
     skip(name) {
       truncated = true;
@@ -380,12 +385,13 @@ function addDiffs(evidence, cwd, title, diffArgs, changes) {
     const key = header.some((line) => line.startsWith("index ")) ? header.join("\n") : null;
     const deletion = /^index [0-9a-f]+\.\.0+\b/m.test(text);
     if (key && !more && !deletion && seen.has(key)) {
-      evidence.add(`(${file}: identical to ${seen.get(key)}, not repeated)\n`, file);
+      evidence.add(`(${file}: identical to ${seen.get(key)}, not repeated)`, file);
+      evidence.format("\n");
       continue;
     }
     if (key && !seen.has(key)) seen.set(key, file);
-    evidence.add(text.endsWith("\n") || !text ? text : `${text}\n`, file);
-    if (more) evidence.cut(file);
+    evidence.add(text, file, more);
+    if (text && !text.endsWith("\n")) evidence.format("\n");
   }
   evidence.format("\n");
 }
@@ -401,19 +407,25 @@ function addUntracked(evidence, cwd, files) {
       continue;
     }
     const body = formatUntrackedFile(cwd, file);
-    if (body.startsWith("(skipped: ", `### ${file}\n`.length)) {
-      evidence.add(`${body}\n\n`);
+    const heading = `### ${file}\n`;
+    if (body.startsWith("(skipped: ", heading.length)) {
+      evidence.add(body);
+      evidence.format("\n\n");
       evidence.omit(file);
       continue;
     }
     const hash = createHash("sha256").update(body.slice(body.indexOf("\n") + 1)).digest("hex");
-    if (body.includes("\n```\n") && seen.has(hash)) {
-      evidence.add(`### ${file}\n(identical to ${seen.get(hash)}, not repeated)\n\n`, file);
+    if (seen.has(hash)) {
+      evidence.format(heading);
+      evidence.add(`(identical to ${seen.get(hash)}, not repeated)`, file);
+      evidence.format("\n\n");
       continue;
     }
-    if (!seen.has(hash)) seen.set(hash, file);
-    evidence.add(body, file);
-    evidence.format("\n\n");
+    seen.set(hash, file);
+    // The body is the heading, a fence, the contents and a fence: only the contents count as the file being shown.
+    evidence.format(`${heading}\`\`\`\n`);
+    evidence.add(body.slice(heading.length + 4, -4), file);
+    evidence.format("\n```\n\n");
   }
 }
 

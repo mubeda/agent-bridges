@@ -595,3 +595,41 @@ test("the incomplete-review notice words each cause, and both in one line", asyn
   );
   assert.doesNotMatch(formatIncomplete({ truncated: false, maxBytes: 9, filesNotShown: ["a\nb"], filesPartlyShown: [], filesSkipped: ["a\nb"] }), /\n/);
 });
+
+test("review evidence: a path whose staged deletion is shown and whose untracked copy is skipped is partly shown, with its skip reason", async (t) => {
+  const { collectReviewContext, formatIncomplete, resolveReviewTarget } = await import("../plugins/antigravity/scripts/lib/git.mjs");
+  const sandbox = makeSandbox(t, { changedFiles: 0 });
+  commitFiles(sandbox.repo, { "big.txt": "a long tracked line\n".repeat(1500) });
+  gitIn(sandbox.repo, "rm", "-q", "--cached", "big.txt");
+  const context = collectReviewContext(sandbox.repo, resolveReviewTarget(sandbox.repo, { scope: "working-tree" }));
+  assert.match(context.content, /deleted file mode/);
+  assert.match(context.content, /### big\.txt\n\(skipped: /);
+  assert.deepEqual([context.truncated, context.notShown, context.partlyShown, context.skipped], [false, [], ["big.txt"], ["big.txt"]]);
+  // Named once, under its skip reason, also when the budget cut the evidence too.
+  const both = formatIncomplete({ truncated: true, maxBytes: 9, filesNotShown: ["c"], filesPartlyShown: ["big.txt"], filesSkipped: ["big.txt"] });
+  assert.equal(both.match(/big\.txt/g).length, 1, both);
+});
+
+test("review evidence: an untracked file is judged by its contents, not by its heading, fences or blank lines", async (t) => {
+  const { collectReviewContext, resolveReviewTarget } = await import("../plugins/antigravity/scripts/lib/git.mjs");
+  const sandbox = makeSandbox(t, { changedFiles: 0 });
+  commitFiles(sandbox.repo, { "keep.txt": "one\n" });
+  for (const name of ["a.txt", "b.txt"]) fs.writeFileSync(path.join(sandbox.repo, name), "the same text\n");
+  const target = resolveReviewTarget(sandbox.repo, { scope: "working-tree" });
+  const whole = collectReviewContext(sandbox.repo, target).content;
+  const at = (text, after = true) => {
+    const index = whole.indexOf(text);
+    assert.ok(index > 0, whole);
+    return { maxInlineDiffBytes: Buffer.byteLength(whole.slice(0, index + (after ? text.length : 0))) };
+  };
+  const lists = (context) => [context.truncated, context.notShown, context.partlyShown];
+  // Only the heading and the opening fence fit: none of the file was shown.
+  assert.deepEqual(lists(collectReviewContext(sandbox.repo, target, at("### a.txt\n```\n"))), [true, ["a.txt", "b.txt"], []]);
+  // Half of the contents fit.
+  assert.deepEqual(lists(collectReviewContext(sandbox.repo, target, at("### a.txt\n```\nthe same"))), [true, ["b.txt"], ["a.txt"]]);
+  // The reference to the identical file fits and only the blank line after it is cut: the whole change was shown.
+  assert.deepEqual(lists(collectReviewContext(sandbox.repo, target, at("(identical to a.txt, not repeated)"))), [false, [], []]);
+  fs.rmSync(path.join(sandbox.repo, "b.txt"));
+  // All of the contents fit and only the closing fence is cut.
+  assert.deepEqual(lists(collectReviewContext(sandbox.repo, target, at("### a.txt\n```\nthe same text"))), [false, [], []]);
+});
