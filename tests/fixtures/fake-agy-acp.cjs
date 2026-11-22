@@ -81,7 +81,24 @@ async function prompt(id, params) {
   if (script.exit) process.exit(Number(script.exit));
   // Close the protocol output but stay alive: the client must not wait for the process to exit.
   if (script.closeStdout) { process.stdout.end(); setInterval(() => {}, 1000); return; }
-  if (script.toolCall) update(sessionId, { sessionUpdate: "tool_call", toolCallId: "t0", name: script.toolCall, kind: "edit", status: "pending" });
+  // "$READER" in a tool path stands for the reader folder passed with --add-dir.
+  const fill = (value) => (typeof value === "string" ? value.replace("$READER", flag("--add-dir") ?? "") : value);
+  const input = script.toolPath === undefined ? undefined : { Path: fill(script.toolPath), StartLine: 1, EndLine: 10 };
+  if (script.toolCall) {
+    update(sessionId, {
+      sessionUpdate: "tool_call",
+      toolCallId: "t0",
+      name: script.toolCall,
+      kind: script.toolCall === "read_file" ? "read" : "edit",
+      status: "in_progress",
+      ...(input && script.toolPathVia !== "args" && script.toolPathVia !== "locations" ? { rawInput: input } : {}),
+      ...(input && script.toolPathVia === "args" ? { args: input } : {}),
+      ...(input && script.toolPathVia === "locations" ? { locations: [{ path: input.Path }] } : {})
+    });
+  }
+  if (script.toolUpdatePath) {
+    update(sessionId, { sessionUpdate: "tool_call_update", toolCallId: "t0", status: "completed", rawInput: { Path: fill(script.toolUpdatePath) } });
+  }
   if (script.permission) await askPermission(sessionId, { toolCallId: "t1", name: "run_command", title: "echo hi" });
   const sleep = Number(process.env.FAKE_AGY_SLEEP_MS ?? 0);
   if (sleep > 0 && scenario.answerOnCancel) {

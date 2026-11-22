@@ -227,6 +227,26 @@ function gitCapped(cwd, args, limit) {
   return { text: more ? cutUtf8(result.stdout, limit) : result.stdout, more };
 }
 
+/**
+ * Changed files with rename pairs kept: `-M --name-status -z` gives `R<score>\0old\0new` for a rename or copy
+ * and `<status>\0path` otherwise. A rename's diff needs both paths, or git shows a full addition.
+ */
+function listChanges(cwd, args) {
+  const fields = gitChecked(cwd, ["-c", "core.quotePath=false", ...args, "-M", "--name-status", "-z"]).stdout.split("\0");
+  const changes = [];
+  for (let index = 0; index < fields.length && fields[index]; ) {
+    const status = fields[index];
+    if (/^[RC]/.test(status)) {
+      changes.push({ file: fields[index + 2], paths: [fields[index + 1], fields[index + 2]] });
+      index += 3;
+    } else {
+      changes.push({ file: fields[index + 1], paths: [fields[index + 1]] });
+      index += 2;
+    }
+  }
+  return changes;
+}
+
 function listPaths(cwd, args) {
   return gitChecked(cwd, ["-c", "core.quotePath=false", ...args, "-z"]).stdout.split("\0").filter(Boolean);
 }
@@ -284,19 +304,25 @@ function createEvidence(maxBytes) {
   };
 }
 
-/** One diff per file, in evidence order; a change identical to one already shown (same blob hashes) is only named. */
-function addDiffs(evidence, cwd, title, diffArgs, files) {
+/**
+ * One diff per file, in evidence order. A change whose header (blob hashes and any mode, rename or copy
+ * lines) equals one already shown is only named; a different mode change keeps its own diff.
+ */
+function addDiffs(evidence, cwd, title, diffArgs, changes) {
   evidence.add(`## ${title}\n\n`);
-  if (!files.length) evidence.add("(none)\n\n");
+  if (!changes.length) evidence.add("(none)\n\n");
+  const byFile = new Map(changes.map((change) => [change.file, change]));
   const seen = new Map();
-  for (const file of orderFiles(files)) {
+  for (const file of orderFiles([...byFile.keys()])) {
     if (evidence.truncated) {
       evidence.skip(file);
       continue;
     }
-    const { text, more } = gitCapped(cwd, ["diff", ...diffArgs, "--", file], evidence.left);
-    const key = text.match(/^index ([0-9a-f]+\.\.[0-9a-f]+)/m)?.[1];
-    if (key && !more && seen.has(key) && !/^index [0-9a-f]+\.\.0+\b/m.test(text)) {
+    const { text, more } = gitCapped(cwd, ["diff", "-M", ...diffArgs, "--", ...byFile.get(file).paths], evidence.left);
+    const header = text.split("\n").slice(1).filter((line) => /^(index|old mode|new mode|new file mode|deleted file mode|similarity index|rename from|rename to|copy from|copy to) /.test(line));
+    const key = header.some((line) => line.startsWith("index ")) ? header.join("\n") : null;
+    const deletion = /^index [0-9a-f]+\.\.0+\b/m.test(text);
+    if (key && !more && !deletion && seen.has(key)) {
       evidence.add(`(${file}: identical to ${seen.get(key)}, not repeated)\n`);
       continue;
     }
@@ -334,8 +360,8 @@ function collectWorkingTreeContext(cwd, state, maxBytes) {
   evidence.add(`${formatSection("Git Status", status.text)}\n`);
   if (status.more) evidence.cut();
   const diffArgs = ["--binary", "--no-ext-diff", "--submodule=diff"];
-  addDiffs(evidence, cwd, "Staged Diff", ["--cached", ...diffArgs], listPaths(cwd, ["diff", "--cached", "--name-only"]));
-  addDiffs(evidence, cwd, "Unstaged Diff", diffArgs, listPaths(cwd, ["diff", "--name-only"]));
+  addDiffs(evidence, cwd, "Staged Diff", ["--cached", ...diffArgs], listChanges(cwd, ["diff", "--cached"]));
+  addDiffs(evidence, cwd, "Unstaged Diff", diffArgs, listChanges(cwd, ["diff"]));
   addUntracked(evidence, cwd, listPaths(cwd, ["ls-files", "--others", "--exclude-standard"]));
   return {
     mode: "working-tree",
@@ -356,7 +382,7 @@ function collectBranchContext(cwd, baseRef, maxBytes) {
     evidence.add(`${formatSection(title, text)}\n`);
     if (more) evidence.cut();
   }
-  addDiffs(evidence, cwd, "Branch Diff", ["--binary", "--no-ext-diff", "--submodule=diff", comparison.commitRange], changedFiles);
+  addDiffs(evidence, cwd, "Branch Diff", ["--binary", "--no-ext-diff", "--submodule=diff", comparison.commitRange], listChanges(cwd, ["diff", comparison.commitRange]));
   return {
     mode: "branch",
     summary: `Reviewing branch ${currentBranch} against ${baseRef} from merge-base ${comparison.mergeBase}.`,

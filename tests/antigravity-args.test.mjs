@@ -110,7 +110,7 @@ test("a read_file call in a review fails the run; in a read-only task it is allo
   const review = run(sandbox, ["review", "--wait"], scenario({ turns: [{ toolCall: "read_file", chunks: ["looked"] }] }));
   assert.notEqual(review.status, 0);
   assert.match(review.stdout, /read_file/);
-  const task = run(sandbox, ["task", "--wait", "look"], scenario({ turns: [{ toolCall: "read_file", chunks: ["looked"] }] }));
+  const task = run(sandbox, ["task", "--wait", "look"], scenario({ turns: [{ toolCall: "read_file", toolPath: path.join(sandbox.repo, "f0.txt"), chunks: ["looked"] }] }));
   assert.equal(task.status, 0, task.stdout);
   assert.match(task.stdout, /looked/);
 });
@@ -241,6 +241,50 @@ test("a permission request with only always choices is cancelled and fails the r
   }
 });
 
+test("a read-only task may read inside its workspace, by absolute or relative path and through each field", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  for (const turn of [
+    { toolPath: path.join(sandbox.repo, "f0.txt") },
+    { toolPath: "f0.txt" },
+    { toolPath: path.join(sandbox.repo, "missing", "new.txt") },
+    { toolPath: path.join(sandbox.repo, "f0.txt"), toolPathVia: "args" },
+    { toolPath: path.join(sandbox.repo, "f0.txt"), toolPathVia: "locations" }
+  ]) {
+    const result = run(sandbox, ["task", "--wait", "look"], scenario({ turns: [{ toolCall: "read_file", ...turn, chunks: ["read it"] }] }));
+    assert.equal(result.status, 0, `${JSON.stringify(turn)}: ${result.stdout}`);
+    assert.match(result.stdout, /read it/);
+  }
+});
+
+test("a read-only task that reads outside its workspace is stopped at once", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const secret = path.join(sandbox.dir, "secret.txt");
+  fs.writeFileSync(secret, "TOP-SECRET\n");
+  fs.symlinkSync(secret, path.join(sandbox.repo, "inside-link.txt"));
+  fs.mkdirSync(path.join(sandbox.dir, "outside"));
+  fs.symlinkSync(path.join(sandbox.dir, "outside"), path.join(sandbox.repo, "linkdir"));
+  const cases = [
+    // The OS follows linkdir before "..", so this lands next to the repository, not inside it.
+    [{ toolPath: "linkdir/../secret.txt" }, "linkdir/../secret.txt"],
+    [{ toolPath: secret }, secret],
+    [{ toolPath: "../secret.txt" }, "../secret.txt"],
+    [{ toolPath: path.join(sandbox.repo, "inside-link.txt") }, path.join(sandbox.repo, "inside-link.txt")],
+    [{ toolPath: secret, toolPathVia: "locations" }, secret],
+    [{ toolPath: "$READER/.agents/plugins/x.md" }, ".agents/plugins/x.md"],
+    [{ toolPath: path.join(sandbox.repo, "f0.txt"), toolUpdatePath: secret }, secret],
+    [{}, "no path"]
+  ];
+  for (const [turn, named] of cases) {
+    const result = run(sandbox, ["task", "--wait", "look"], scenario({ turns: [{ toolCall: "read_file", permission: true, ...turn, chunks: [] }, { chunks: ["second answer"] }] }));
+    const label = JSON.stringify(turn);
+    assert.equal(result.status, 1, `${label}: ${result.stdout}`);
+    assert.match(result.stdout, /reads only inside its workspace/, label);
+    assert.ok(result.stdout.includes(named), `${label}: ${result.stdout}`);
+    // No later prompt: not even the follow-up after the refused permission.
+    assert.deepEqual(promptTexts(sessions(sandbox).at(-1)), [TOKEN_PROMPT, "look"], label);
+  }
+});
+
 test("model and thinking level are set before the prompt", { skip: POSIX_ONLY }, (t) => {
   const sandbox = makeSandbox(t);
   const result = run(sandbox, ["task", "--wait", "--write", "--bypass-permissions", "--model", "gemini-3.8-flash-medium", "--effort", "high", "go"]);
@@ -362,6 +406,33 @@ test("review evidence: source diffs first, tests and generated files last, ident
   assert.match(content, /src\/deep\/copy\/main\.js[\s\S]*identical to src\/main\.js/);
   assert.equal(content.split("NEW-SOURCE").length - 1, 1, "the identical new file is shown once");
   assert.match(content, /copy\/new\.js[\s\S]*identical to new\.js/);
+});
+
+test("review evidence: a pure rename stays a short rename patch, so a real edit fits the budget", async (t) => {
+  const { collectReviewContext, resolveReviewTarget } = await import("../plugins/antigravity/scripts/lib/git.mjs");
+  const sandbox = makeSandbox(t);
+  fs.writeFileSync(path.join(sandbox.repo, "big.txt"), "line of text\n".repeat(25 * 1024));
+  gitIn(sandbox.repo, "add", "big.txt");
+  gitIn(sandbox.repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "big");
+  gitIn(sandbox.repo, "mv", "big.txt", "moved.txt");
+  const context = collectReviewContext(sandbox.repo, resolveReviewTarget(sandbox.repo, { scope: "working-tree" }));
+  assert.equal(context.inputMode, "inline-diff");
+  assert.match(context.content, /rename from big\.txt\nrename to moved\.txt/);
+  assert.match(context.content, /diff --git \S+\/f0\.txt/);
+  assert.ok(Buffer.byteLength(context.content) < 8 * 1024, String(Buffer.byteLength(context.content)));
+});
+
+test("review evidence: the same text change with a different mode change is not called identical", async (t) => {
+  const { collectReviewContext, resolveReviewTarget } = await import("../plugins/antigravity/scripts/lib/git.mjs");
+  const sandbox = makeSandbox(t, { changedFiles: 0 });
+  for (const name of ["a.sh", "b.sh"]) fs.writeFileSync(path.join(sandbox.repo, name), "echo one\n", { mode: 0o755 });
+  gitIn(sandbox.repo, "add", ".");
+  gitIn(sandbox.repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "scripts");
+  for (const name of ["a.sh", "b.sh"]) fs.writeFileSync(path.join(sandbox.repo, name), "echo two\n");
+  fs.chmodSync(path.join(sandbox.repo, "b.sh"), 0o644);
+  const { content } = collectReviewContext(sandbox.repo, resolveReviewTarget(sandbox.repo, { scope: "working-tree" }));
+  assert.doesNotMatch(content, /b\.sh: identical/);
+  assert.match(content, /old mode 100755\nnew mode 100644/);
 });
 
 test("review evidence stops reading at the budget and a huge binary change is cut, not an error", async (t) => {

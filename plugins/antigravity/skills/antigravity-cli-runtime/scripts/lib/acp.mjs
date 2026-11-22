@@ -22,6 +22,25 @@ export const NO_RESUME_WARNING =
   "This Antigravity version cannot continue sessions (its ACP server offers no session/resume); this started a new session.";
 export const CLIENT_INFO = { name: "agent-bridges-antigravity", version: "0.2.0" };
 
+/** realpath of the nearest existing ancestor, with the rest of the path appended: works before the folder exists. */
+export function canonicalPath(target) {
+  let existing = path.resolve(target);
+  const rest = [];
+  while (!fs.existsSync(existing)) {
+    rest.unshift(path.basename(existing));
+    const parent = path.dirname(existing);
+    if (parent === existing) break;
+    existing = parent;
+  }
+  return path.join(fs.realpathSync.native(existing), ...rest);
+}
+
+/** Whole path components only: `<ws>/..state` is inside `<ws>`, `<ws>-other` is not. */
+export function isInside(child, parent) {
+  const relative = path.relative(parent, child);
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+}
+
 export function buildAcpArgs({ agentDir, agentName } = {}) {
   return agentDir && agentName ? ["acp", "--add-dir", agentDir, "--agent", agentName] : ["acp"];
 }
@@ -205,6 +224,8 @@ function toolName(toolCall) {
  */
 export function startAcpRun(options) {
   const { write, cwd, prompt, readOnly, token, model, effort, resumeSessionId, review } = options;
+  const workspaceRoot = options.workspaceRoot ?? cwd;
+  const toolNames = new Map();
   // Setup requests and the token check are bounded; the real prompt is not (jobs may run long; cancel ends them).
   const setup = { timeoutMs: options.setupTimeoutMs ?? 60_000 };
   let sessionId = null;
@@ -236,13 +257,19 @@ export function startAcpRun(options) {
       // Text counts only inside an open turn; a read-only session's tool rule holds at every moment.
       if (update.sessionUpdate === "agent_message_chunk" && typeof update.content?.text === "string") {
         if (turn) turn.text += update.content.text;
+      } else if (update.sessionUpdate === "tool_call_update" && readOnly && !review) {
+        // A later record of a read can carry the path too: the same confinement applies.
+        if ((update.name ?? toolNames.get(update.toolCallId)) === "read_file" && readPath(update) !== null) confineRead(update);
       } else if (update.sessionUpdate === "tool_call" && readOnly) {
         const name = typeof update.name === "string" ? update.name : "";
+        if (update.toolCallId !== undefined) toolNames.set(update.toolCallId, name);
         // The real reader has the token in its instructions: a tool used to answer the check proves nothing.
         if (turn?.verifying) {
           stop(new Error(`${readerMissing()} A tool (${name || "unnamed"}) was used during the token check.`), { security: true });
         } else if (!(review ? REVIEW_TOOLS : TASK_TOOLS).has(name)) {
           stop(new Error(`Antigravity started the tool "${name || "unnamed"}" in a read-only run, so the run was stopped.`), { security: true });
+        } else if (name === "read_file") {
+          confineRead(update);
         }
       }
     },
@@ -265,6 +292,39 @@ export function startAcpRun(options) {
       return { outcome: { outcome: "selected", optionId: choice.optionId } };
     }
   });
+
+  /** The path a read_file record reports: rawInput.Path, then args.Path, then the first location. */
+  function readPath(update) {
+    const candidate = update.rawInput?.Path ?? update.args?.Path ?? update.locations?.[0]?.path;
+    return typeof candidate === "string" && candidate ? candidate : null;
+  }
+
+  /**
+   * Antigravity does not ask before it reads, so the bridge can only stop the session the moment a read
+   * outside the workspace is reported (symlinks resolved, whole path components compared).
+   */
+  function confineRead(update) {
+    const reported = readPath(update);
+    let inside = false;
+    try {
+      if (reported !== null) {
+        // The raw string first: the OS resolves a symlink before a following "..", which path.resolve would not.
+        const raw = path.isAbsolute(reported) ? reported : `${cwd}${path.sep}${reported}`;
+        let real;
+        try {
+          real = fs.realpathSync.native(raw);
+        } catch {
+          real = canonicalPath(raw);
+        }
+        inside = isInside(real, canonicalPath(workspaceRoot));
+      }
+    } catch {
+      inside = false;
+    }
+    if (inside) return;
+    const what = reported === null ? "a file with no path" : `"${reported}"`;
+    stop(new Error(`Antigravity read ${what}, but a read-only task reads only inside its workspace, so the run was stopped at once.`), { security: true });
+  }
 
   const readerMissing = () =>
     `Antigravity's restricted reader was not in effect (its token check failed), so the run was stopped and nothing was ${review ? "reviewed" : "run"}.`;

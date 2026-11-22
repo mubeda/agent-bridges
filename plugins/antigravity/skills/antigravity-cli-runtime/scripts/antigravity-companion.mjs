@@ -7,7 +7,16 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { parseArgs, splitRawArgumentString } from "./lib/args.mjs";
-import { READER_MARKER, READ_ONLY_RESUME_WARNING, buildAcpArgs, createLineReader, startAcpRun, writeReaderAgent } from "./lib/acp.mjs";
+import {
+  READER_MARKER,
+  READ_ONLY_RESUME_WARNING,
+  buildAcpArgs,
+  canonicalPath,
+  createLineReader,
+  isInside,
+  startAcpRun,
+  writeReaderAgent
+} from "./lib/acp.mjs";
 import {
   formatDeniedActions,
   getAgyAvailability,
@@ -226,25 +235,6 @@ function createCompanionJob({ prefix, kind, title, workspaceRoot, jobClass, summ
 
 const FORWARDED_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
 
-/** realpath of the nearest existing ancestor, with the rest of the path appended: works before the folder exists. */
-function canonicalPath(target) {
-  let existing = path.resolve(target);
-  const rest = [];
-  while (!fs.existsSync(existing)) {
-    rest.unshift(path.basename(existing));
-    const parent = path.dirname(existing);
-    if (parent === existing) break;
-    existing = parent;
-  }
-  return path.join(fs.realpathSync.native(existing), ...rest);
-}
-
-/** Whole path components only: `<ws>/..state` is inside `<ws>`, `<ws>-other` is not. */
-function isInside(child, parent) {
-  const relative = path.relative(parent, child);
-  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
-}
-
 /** Absolute: agy runs in the workspace, so a relative PLUGIN_DATA must not be resolved there. */
 function readerRoot(cwd) {
   return path.resolve(resolveStateDir(resolveWorkspaceRoot(cwd)), "readers");
@@ -333,6 +323,7 @@ async function executeAcpRun(request, hooks = {}) {
         child.stdin.write(line);
       },
       cwd,
+      workspaceRoot: resolveWorkspaceRoot(cwd),
       prompt: request.prompt,
       readOnly,
       token: reader?.token,
