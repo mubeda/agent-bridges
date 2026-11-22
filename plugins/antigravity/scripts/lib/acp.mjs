@@ -20,7 +20,7 @@ const READER_PLUGIN = "agent-bridges-reader";
 export const READER_MARKER = ".agent-bridges-reader";
 export const NO_RESUME_WARNING =
   "This Antigravity version cannot continue sessions (its ACP server offers no session/resume); this started a new session.";
-export const CLIENT_INFO = { name: "agent-bridges-antigravity", version: "0.2.0" };
+export const CLIENT_INFO = { name: "agent-bridges-antigravity", version: "0.2.1" };
 
 /** realpath of the nearest existing ancestor, with the rest of the path appended: works before the folder exists. */
 export function canonicalPath(target) {

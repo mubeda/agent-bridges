@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1 — 2026-11-22
+
+### Fixed
+- **A review of a change that was cut says so to the caller.** When the evidence of `review` or `adversarial-review` passes the 256 KiB budget, the rendered result now has one line that starts with `Incomplete review:` and names the files shown only in part (the cut fell inside one, or its staged diff was shown and its unstaged diff left out) and the files left out entirely (the first 100 of each, then a count), and the job record, also in `--json`, `status` and `result` output, has an `evidence` field with `truncated`, `maxBytes` and the full `filesNotShown` and `filesPartlyShown` lists. A change that was shown in full has neither. Before, only the model was told. A file that follows one that used exactly the rest of the budget is now listed as not shown. In a cut review, an untracked file the prompt only names as skipped (over 24 KiB, binary, a symlink) is listed as not shown too. A change whose last file uses exactly the rest of the budget reached the reviewer whole and is not called incomplete. A change within the budget that has such a skipped file gets the line too, worded by its cause (`Incomplete review: some files were not shown (too large, binary, a link or unreadable): …`): `evidence.incomplete` is true whenever the line is printed and is the field a caller reads, `evidence.truncated` is the budget cut only, and `filesSkipped` lists the skipped files. ([#14](https://github.com/mubeda/agent-bridges/issues/14))
+
 ## 0.2.0 — 2026-11-22
 
 ### Changed

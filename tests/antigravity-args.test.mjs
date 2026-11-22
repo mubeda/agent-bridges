@@ -330,7 +330,7 @@ test("a review prompt says there are no tools and carries every diff and new fil
   assert.match(prompt, /cannot read files, list folders, search or run commands/);
   assert.doesNotMatch(prompt, /Read the changed files/);
   // The three files carry the same change: shown once, the others named as identical.
-  assert.match(prompt, /diff --git \S+\/f0\.txt/);
+  assert.match(prompt, /diff --git (\S+\/)?f0\.txt/);
   for (const file of ["f1.txt", "f2.txt"]) assert.match(prompt, new RegExp(`${file.replace(".", "\\.")}: identical to f0\\.txt`));
   assert.match(prompt, /UNTRACKED-CONTENT/);
 });
@@ -418,7 +418,7 @@ test("review evidence: a pure rename stays a short rename patch, so a real edit 
   const context = collectReviewContext(sandbox.repo, resolveReviewTarget(sandbox.repo, { scope: "working-tree" }));
   assert.equal(context.inputMode, "inline-diff");
   assert.match(context.content, /rename from big\.txt\nrename to moved\.txt/);
-  assert.match(context.content, /diff --git \S+\/f0\.txt/);
+  assert.match(context.content, /diff --git (\S+\/)?f0\.txt/);
   assert.ok(Buffer.byteLength(context.content) < 8 * 1024, String(Buffer.byteLength(context.content)));
 });
 
@@ -497,4 +497,160 @@ test("cancel leaves a stored reader folder alone unless the bridge owns it", { s
     assert.equal(run(sandbox, ["cancel", job.id]).status, 0);
     assert.ok(fs.existsSync(path.join(target, "keep.txt")), placement);
   }
+});
+
+test("the cut notice names at most 100 files, then a count, and escapes control characters", async () => {
+  const { formatNotShown } = await import("../plugins/antigravity/scripts/lib/git.mjs");
+  const names = Array.from({ length: 101 }, (_, i) => `f${i}.txt`);
+  assert.match(formatNotShown(names), /f99\.txt and 1 more\.$/);
+  assert.equal(formatNotShown(["b"], ["a"]), " Files shown only in part: a. Files not shown: b.");
+  assert.equal(formatNotShown([], ["a"]), " Files shown only in part: a.");
+  assert.equal(formatNotShown(["a\nb"]), " Files not shown: a\\u000ab.");
+  assert.equal(formatNotShown([]), "");
+});
+
+function commitFiles(repo, files) {
+  for (const [name, text] of Object.entries(files)) fs.writeFileSync(path.join(repo, name), text);
+  gitIn(repo, "add", ".");
+  gitIn(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base");
+}
+
+test("review evidence: a file whose staged diff was shown is not listed as not shown when its unstaged diff is left out", async (t) => {
+  const { collectReviewContext, resolveReviewTarget } = await import("../plugins/antigravity/scripts/lib/git.mjs");
+  const sandbox = makeSandbox(t, { changedFiles: 0 });
+  commitFiles(sandbox.repo, { "a.txt": "one\n", "b.txt": "one\n", "c.txt": "one\n" });
+  fs.writeFileSync(path.join(sandbox.repo, "a.txt"), "staged\n");
+  fs.writeFileSync(path.join(sandbox.repo, "b.txt"), "a long staged line\n".repeat(1000));
+  gitIn(sandbox.repo, "add", ".");
+  fs.writeFileSync(path.join(sandbox.repo, "a.txt"), "unstaged\n");
+  fs.writeFileSync(path.join(sandbox.repo, "c.txt"), "unstaged\n");
+  const context = collectReviewContext(sandbox.repo, resolveReviewTarget(sandbox.repo, { scope: "working-tree" }), { maxInlineDiffBytes: 4096 });
+  assert.match(context.content, /\+staged/);
+  assert.deepEqual(context.notShown, ["c.txt"]);
+  // b.txt is where the cut fell; a.txt has one diff shown and one left out.
+  assert.deepEqual(context.partlyShown, ["b.txt", "a.txt"]);
+  assert.match(context.content, /Files shown only in part: b\.txt, a\.txt\. Files not shown: c\.txt\.\)$/);
+});
+
+test("review evidence: a file that follows one that used exactly the rest of the budget is listed as not shown", async (t) => {
+  const { collectReviewContext, resolveReviewTarget } = await import("../plugins/antigravity/scripts/lib/git.mjs");
+  for (const tracked of [true, false]) {
+    const sandbox = makeSandbox(t, { changedFiles: 0 });
+    commitFiles(sandbox.repo, tracked ? { "a.txt": "one\n", "b.txt": "one\n" } : { "keep.txt": "one\n" });
+    for (const name of ["a.txt", "b.txt"]) fs.writeFileSync(path.join(sandbox.repo, name), `two ${name}\n`);
+    const target = resolveReviewTarget(sandbox.repo, { scope: "working-tree" });
+    const whole = collectReviewContext(sandbox.repo, target).content;
+    const second = whole.search(tracked ? /^diff --git (\S+\/)?b\.txt/m : /^### b\.txt/m);
+    assert.ok(second > 0, whole);
+    const context = collectReviewContext(sandbox.repo, target, { maxInlineDiffBytes: Buffer.byteLength(whole.slice(0, second)) });
+    assert.equal(context.truncated, true);
+    assert.deepEqual(context.notShown, ["b.txt"], String(tracked));
+    assert.deepEqual(context.partlyShown, [], String(tracked));
+  }
+});
+
+test("review evidence: an untracked file that is only named as skipped counts as not shown, and later files are still collected", async (t) => {
+  const { collectReviewContext, resolveReviewTarget } = await import("../plugins/antigravity/scripts/lib/git.mjs");
+  const sandbox = makeSandbox(t, { changedFiles: 0 });
+  commitFiles(sandbox.repo, { "keep.txt": "one\n" });
+  // Over the 24 KiB limit for one untracked file: the prompt gets a skip message, not its contents.
+  fs.writeFileSync(path.join(sandbox.repo, "a-big.txt"), "a long untracked line\n".repeat(1500));
+  fs.writeFileSync(path.join(sandbox.repo, "b.txt"), "the line that uses up the budget\n".repeat(200));
+  fs.writeFileSync(path.join(sandbox.repo, "c.txt"), "never read\n");
+  const context = collectReviewContext(sandbox.repo, resolveReviewTarget(sandbox.repo, { scope: "working-tree" }), { maxInlineDiffBytes: 4096 });
+  assert.match(context.content, /### a-big\.txt\n\(skipped: /);
+  assert.match(context.content, /the line that uses up the budget/);
+  assert.deepEqual(context.notShown, ["a-big.txt", "c.txt"]);
+  assert.deepEqual(context.skipped, ["a-big.txt"]);
+  assert.deepEqual(context.partlyShown, ["b.txt"]);
+});
+
+test("review evidence: a last file that uses exactly the rest of the budget is a whole review, not a cut one", async (t) => {
+  const { collectReviewContext, resolveReviewTarget } = await import("../plugins/antigravity/scripts/lib/git.mjs");
+  for (const scope of ["working-tree", "branch"]) {
+    const sandbox = makeSandbox(t, { changedFiles: 0 });
+    commitFiles(sandbox.repo, { "a.txt": "one\n" });
+    gitIn(sandbox.repo, "branch", "base");
+    fs.writeFileSync(path.join(sandbox.repo, "a.txt"), "two\n");
+    if (scope === "branch") gitIn(sandbox.repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qam", "change");
+    const target = resolveReviewTarget(sandbox.repo, scope === "branch" ? { scope, base: "base" } : { scope });
+    const whole = collectReviewContext(sandbox.repo, target).content;
+    // The diff ends where the separator line after it starts.
+    const end = scope === "branch" ? whole.length - 1 : whole.indexOf("\n## Untracked Files");
+    assert.ok(end > 0 && whole.slice(0, end).endsWith("+two\n"), whole);
+    const context = collectReviewContext(sandbox.repo, target, { maxInlineDiffBytes: Buffer.byteLength(whole.slice(0, end)) });
+    assert.equal(context.truncated, false, scope);
+    assert.equal(context.content, whole.slice(0, end), scope);
+    assert.deepEqual([context.notShown, context.partlyShown], [[], []], scope);
+  }
+});
+
+test("the incomplete-review notice words each cause, and both in one line", async () => {
+  const { formatIncomplete } = await import("../plugins/antigravity/scripts/lib/git.mjs");
+  const reasons = "(too large, binary, a link or unreadable)";
+  assert.equal(formatIncomplete({ truncated: false, maxBytes: 9, filesNotShown: ["a"], filesPartlyShown: [], filesSkipped: ["a"] }), `some files were not shown ${reasons}: a.`);
+  assert.equal(
+    formatIncomplete({ truncated: true, maxBytes: 9, filesNotShown: ["a", "c"], filesPartlyShown: ["b"], filesSkipped: ["a"] }),
+    `the evidence was cut at 9 bytes, so the rest of this change was not reviewed. Files shown only in part: b. Files not shown: c. Files not shown for another reason ${reasons}: a.`
+  );
+  assert.doesNotMatch(formatIncomplete({ truncated: false, maxBytes: 9, filesNotShown: ["a\nb"], filesPartlyShown: [], filesSkipped: ["a\nb"] }), /\n/);
+});
+
+test("review evidence: a path whose staged deletion is shown and whose untracked copy is skipped is partly shown, with its skip reason", async (t) => {
+  const { collectReviewContext, formatIncomplete, resolveReviewTarget } = await import("../plugins/antigravity/scripts/lib/git.mjs");
+  const sandbox = makeSandbox(t, { changedFiles: 0 });
+  commitFiles(sandbox.repo, { "big.txt": "a long tracked line\n".repeat(1500) });
+  gitIn(sandbox.repo, "rm", "-q", "--cached", "big.txt");
+  const context = collectReviewContext(sandbox.repo, resolveReviewTarget(sandbox.repo, { scope: "working-tree" }));
+  assert.match(context.content, /deleted file mode/);
+  assert.match(context.content, /### big\.txt\n\(skipped: /);
+  assert.deepEqual([context.truncated, context.notShown, context.partlyShown, context.skipped], [false, [], ["big.txt"], ["big.txt"]]);
+  // Named once, under its skip reason, also when the budget cut the evidence too.
+  const reasons = "(too large, binary, a link or unreadable)";
+  const record = { maxBytes: 9, filesNotShown: ["c"], filesPartlyShown: ["big.txt"], filesSkipped: ["big.txt"] };
+  assert.equal(
+    formatIncomplete({ ...record, truncated: true }),
+    `the evidence was cut at 9 bytes, so the rest of this change was not reviewed. Files not shown: c. Files shown only in part, the untracked copy skipped ${reasons}: big.txt.`
+  );
+  assert.equal(formatIncomplete({ ...record, truncated: false, filesNotShown: [] }), `some files were shown only in part, the untracked copy skipped ${reasons}: big.txt.`);
+  assert.equal(
+    formatIncomplete({ ...record, truncated: false, filesNotShown: ["a"], filesSkipped: ["a", "big.txt"] }),
+    `some files were not shown ${reasons}: a. Files shown only in part, the untracked copy skipped ${reasons}: big.txt.`
+  );
+});
+
+test("review evidence: an untracked file is judged by its contents, not by its heading, fences or blank lines", async (t) => {
+  const { collectReviewContext, resolveReviewTarget } = await import("../plugins/antigravity/scripts/lib/git.mjs");
+  const sandbox = makeSandbox(t, { changedFiles: 0 });
+  commitFiles(sandbox.repo, { "keep.txt": "one\n" });
+  for (const name of ["a.txt", "b.txt"]) fs.writeFileSync(path.join(sandbox.repo, name), "the same text\n");
+  const target = resolveReviewTarget(sandbox.repo, { scope: "working-tree" });
+  // [truncated, not shown, partly shown] when the budget ends right after `text`; measured on the tree as it is now.
+  const cutAfter = (text) => {
+    const whole = collectReviewContext(sandbox.repo, target).content;
+    const index = whole.indexOf(text);
+    assert.ok(index > 0, whole);
+    const context = collectReviewContext(sandbox.repo, target, { maxInlineDiffBytes: Buffer.byteLength(whole.slice(0, index + text.length)) });
+    return [context.truncated, context.notShown, context.partlyShown];
+  };
+  // Only the heading and the opening fence fit: none of the file was shown.
+  assert.deepEqual(cutAfter("### a.txt\n```\n"), [true, ["a.txt", "b.txt"], []]);
+  // Half of the contents fit.
+  assert.deepEqual(cutAfter("### a.txt\n```\nthe same"), [true, ["b.txt"], ["a.txt"]]);
+  // The reference to the identical file fits and only the blank line after it is cut: the whole change was shown.
+  assert.deepEqual(cutAfter("(identical to a.txt, not repeated)"), [false, [], []]);
+  // Only the first character of the reference fits: a reference is shown whole or not at all.
+  assert.deepEqual(cutAfter("### b.txt\n("), [true, ["b.txt"], []]);
+  fs.rmSync(path.join(sandbox.repo, "b.txt"));
+  // All of the contents fit, the file's last line break included, and only the closing fence is cut.
+  assert.deepEqual(cutAfter("### a.txt\n```\nthe same text\n"), [false, [], []]);
+  // The contents are counted as they are in the file: blank lines at its end that did not fit were not shown.
+  fs.writeFileSync(path.join(sandbox.repo, "a.txt"), "the same text\n\n\n");
+  assert.deepEqual(cutAfter("### a.txt\n```\nthe same text\n"), [true, [], ["a.txt"]]);
+  fs.writeFileSync(path.join(sandbox.repo, "a.txt"), "  \n\n");
+  assert.deepEqual(cutAfter("### a.txt\n```\n"), [true, ["a.txt"], []]);
+  // Two files that differ only in the blank lines at their end are not called identical.
+  fs.writeFileSync(path.join(sandbox.repo, "a.txt"), "the same text\n");
+  fs.writeFileSync(path.join(sandbox.repo, "b.txt"), "the same text\n\n");
+  assert.doesNotMatch(collectReviewContext(sandbox.repo, target).content, /identical to/);
 });
