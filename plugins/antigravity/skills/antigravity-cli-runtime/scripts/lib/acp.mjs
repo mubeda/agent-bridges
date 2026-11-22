@@ -523,6 +523,25 @@ export function startAcpRun(options) {
       if (!session?.sessionId) throw new Error("Antigravity returned no session id.");
       sessionId = String(session.sessionId);
     }
+    // A write task (it needed --bypass-permissions) runs in mode auto, so the session's subagents can run commands
+    // Antigravity counts as safe; read-only runs keep the default mode. Without auto the run goes on, and says so.
+    if (!readOnly) {
+      const modes = session?.modes?.availableModes;
+      let missing = null;
+      if (Array.isArray(modes) && !modes.some((mode) => mode?.id === "auto")) missing = "this Antigravity version lists no auto mode";
+      else {
+        try {
+          await client.request("session/set_mode", { sessionId, modeId: "auto" }, setup);
+        } catch (error) {
+          if (!error?.rpc) throw error;
+          missing = `setting it failed: ${error.message}`;
+        }
+      }
+      if (missing) {
+        const note = `the session could not use Antigravity's auto mode (${missing}), so this task ran in the default mode, where subagents may not run commands.`;
+        warning = warning ? `${warning} Also, ${note}` : `${note[0].toUpperCase()}${note.slice(1)}`;
+      }
+    }
     if (model) {
       // shortcut: a resumed session may not list its models; then the server's own error decides.
       const available = session?.models?.availableModels;

@@ -314,6 +314,40 @@ function stripReadOnlyField(dir) {
   }
 }
 
+test("a write task sets the session mode auto before its prompt; a read-only task and a review keep the default", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  assert.equal(run(sandbox, WRITE.concat("go")).status, 0);
+  const [write] = sessions(sandbox);
+  assert.deepEqual(requests(write, "session/set_mode").map((message) => message.params), [{ sessionId: "S1", modeId: "auto" }]);
+  const methods = write.received.map((message) => message.method);
+  assert.ok(methods.indexOf("session/new") < methods.indexOf("session/set_mode") && methods.indexOf("session/set_mode") < methods.indexOf("session/prompt"));
+  assert.equal(run(sandbox, ["task", "--wait", "look"]).status, 0);
+  assert.equal(run(sandbox, ["review", "--wait"], scenario({ turns: [{ chunks: [JSON.stringify(FINDINGS)] }] })).status, 0);
+  for (const session of sessions(sandbox).slice(1)) assert.equal(requests(session, "session/set_mode").length, 0);
+});
+
+test("a resumed write session sets the mode auto again", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  assert.equal(run(sandbox, WRITE.concat("start")).status, 0);
+  assert.equal(run(sandbox, WRITE.concat("--resume-last", "more")).status, 0);
+  const resumed = sessions(sandbox)[1];
+  assert.equal(requests(resumed, "session/resume").length, 1);
+  assert.deepEqual(requests(resumed, "session/set_mode").map((message) => message.params), [{ sessionId: "S1", modeId: "auto" }]);
+});
+
+test("without the auto mode, or when setting it fails, a write task runs in the default mode and says so in one line", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  for (const [env, sent] of [[{ noAutoMode: true }, 0], [{ setModeError: "mode boom" }, 1]]) {
+    const result = run(sandbox, WRITE.concat("go"), scenario({ ...env, turns: [{ chunks: ["done anyway"] }] }));
+    assert.equal(result.status, 0, result.stderr);
+    const lines = result.stdout.split("\n").filter((line) => /default mode/.test(line));
+    assert.equal(lines.length, 1, result.stdout);
+    assert.match(lines[0], /^Warning: .*auto/);
+    assert.match(result.stdout, /done anyway/);
+    assert.equal(requests(sessions(sandbox).at(-1), "session/set_mode").length, sent);
+  }
+});
+
 test("a job record without the read-only field counts as a write session", { skip: POSIX_ONLY }, (t) => {
   const sandbox = makeSandbox(t);
   assert.equal(run(sandbox, ["task", "--wait", "old"], scenario({ newSessionId: "OLD1" })).status, 0);

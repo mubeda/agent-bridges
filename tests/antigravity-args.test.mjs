@@ -292,13 +292,13 @@ test("a read-only task that reads outside its workspace is stopped at once", { s
   }
 });
 
-test("model and thinking level are set before the prompt", { skip: POSIX_ONLY }, (t) => {
+test("mode, model and thinking level are set before the prompt", { skip: POSIX_ONLY }, (t) => {
   const sandbox = makeSandbox(t);
   const result = run(sandbox, ["task", "--wait", "--write", "--bypass-permissions", "--model", "gemini-3.8-flash-medium", "--effort", "high", "go"]);
   assert.equal(result.status, 0, result.stderr);
   const [session] = sessions(sandbox);
   const methods = session.received.filter((message) => message.method).map((message) => message.method);
-  assert.deepEqual(methods, ["initialize", "session/new", "session/set_model", "session/set_config_option", "session/prompt"]);
+  assert.deepEqual(methods, ["initialize", "session/new", "session/set_mode", "session/set_model", "session/set_config_option", "session/prompt"]);
   assert.deepEqual(requests(session, "session/set_model")[0].params, { sessionId: "S1", modelId: "gemini-3.8-flash-medium" });
   assert.deepEqual(requests(session, "session/set_config_option")[0].params, { sessionId: "S1", configId: "thought_level", value: "high" });
 });

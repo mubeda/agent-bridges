@@ -45,6 +45,7 @@ function readerFiles() {
 }
 log({ argv, pid: process.pid, readerFiles: readerFiles() });
 
+const MODES = [{ id: "default", name: "Default" }, { id: "auto", name: "Auto" }];
 const MODELS = [{ modelId: "gemini-4-neon-high", name: "Gemini 4 Neon (High)" }, { modelId: "gemini-3.8-flash-medium", name: "Flash" }];
 let turn = 0;
 let onCancel = null;
@@ -168,7 +169,7 @@ async function afterTurn(sessionId, steps) {
       fs.writeFileSync(path.join(list, `${step.subagent}.json`), JSON.stringify({ conversationId: step.subagent, subagentDescriptor: { role: step.role ?? "worker" } }));
       // stuck: the model asked for run_command and nothing followed (the command was never asked of the client).
       const record = step.stuck
-        ? { type: "MODEL_RESPONSE", tool_calls: [{ name: "run_command", args: { CommandLine: "npm test" } }] }
+        ? { type: "PLANNER_RESPONSE", tool_calls: [{ name: "run_command", args: { CommandLine: "npm test" } }] }
         : { type: "TOOL_CALL", status: "RUNNING" };
       fs.writeFileSync(path.join(logs, "transcript.jsonl"), JSON.stringify(record) + "\n");
     }
@@ -209,7 +210,7 @@ function handle(message) {
       } });
       return;
     case "session/new":
-      send({ id, result: { sessionId: scenario.newSessionId ?? "S1", models: { availableModels: MODELS, currentModelId: MODELS[0].modelId }, modes: {}, configOptions: [] } });
+      send({ id, result: { sessionId: scenario.newSessionId ?? "S1", models: { availableModels: MODELS, currentModelId: MODELS[0].modelId }, modes: { currentModeId: "default", availableModes: MODES.filter((mode) => !(scenario.noAutoMode && mode.id === "auto")) }, configOptions: [] } });
       return;
     case "session/resume":
       // The error agy 1.5.14 gives for an id it does not have.
@@ -220,6 +221,10 @@ function handle(message) {
     case "session/load":
       // agy 1.5.14 silently creates a session for an unknown id here, which is why the client never calls it.
       send({ id, result: {} });
+      return;
+    case "session/set_mode":
+      if (scenario.setModeError) send({ id, error: { code: -32603, message: scenario.setModeError } });
+      else send({ id, result: {} });
       return;
     case "session/set_model":
       send({ id, result: {} });
