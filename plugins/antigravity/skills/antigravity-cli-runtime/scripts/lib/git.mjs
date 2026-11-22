@@ -159,7 +159,8 @@ function formatSection(title, body) {
   return [`## ${title}`, "", body.trim() ? body.trim() : "(none)", ""].join("\n");
 }
 
-function formatUntrackedFile(cwd, relativePath) {
+/** An untracked file's contents as they are in the file, or the note that stands in for a file that is not read. */
+function readUntrackedFile(cwd, relativePath) {
   const absolutePath = path.join(cwd, relativePath);
   // lstat (not stat) so we see symlinks as symlinks instead of following them.
   // An untracked symlink to e.g. ~/.ssh/id_rsa would otherwise have its target
@@ -168,7 +169,7 @@ function formatUntrackedFile(cwd, relativePath) {
   try {
     stat = fs.lstatSync(absolutePath);
   } catch {
-    return `### ${relativePath}\n(skipped: unreadable file)`;
+    return { skipped: `(skipped: unreadable file)` };
   }
   if (stat.isSymbolicLink()) {
     let target = "";
@@ -177,16 +178,16 @@ function formatUntrackedFile(cwd, relativePath) {
     } catch {
       target = "<unreadable>";
     }
-    return `### ${relativePath}\n(skipped: symlink -> ${target}; symlink targets are never followed for untracked files)`;
+    return { skipped: `(skipped: symlink -> ${target}; symlink targets are never followed for untracked files)` };
   }
   if (stat.isDirectory()) {
-    return `### ${relativePath}\n(skipped: directory)`;
+    return { skipped: `(skipped: directory)` };
   }
   if (!stat.isFile()) {
-    return `### ${relativePath}\n(skipped: not a regular file)`;
+    return { skipped: `(skipped: not a regular file)` };
   }
   if (stat.size > MAX_UNTRACKED_BYTES) {
-    return `### ${relativePath}\n(skipped: ${stat.size} bytes exceeds ${MAX_UNTRACKED_BYTES} byte limit)`;
+    return { skipped: `(skipped: ${stat.size} bytes exceeds ${MAX_UNTRACKED_BYTES} byte limit)` };
   }
 
   // Open with O_NOFOLLOW so a TOCTOU swap to a symlink between lstat and
@@ -195,21 +196,21 @@ function formatUntrackedFile(cwd, relativePath) {
   try {
     fd = fs.openSync(absolutePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
   } catch {
-    return `### ${relativePath}\n(skipped: unreadable file)`;
+    return { skipped: `(skipped: unreadable file)` };
   }
   let buffer;
   try {
     buffer = fs.readFileSync(fd);
   } catch {
-    return `### ${relativePath}\n(skipped: unreadable file)`;
+    return { skipped: `(skipped: unreadable file)` };
   } finally {
     fs.closeSync(fd);
   }
   if (!isProbablyText(buffer)) {
-    return `### ${relativePath}\n(skipped: binary file)`;
+    return { skipped: `(skipped: binary file)` };
   }
 
-  return [`### ${relativePath}`, "```", buffer.toString("utf8").trimEnd(), "```"].join("\n");
+  return { text: buffer.toString("utf8") };
 }
 
 /** Cut a string to at most maxBytes of UTF-8 without splitting a character. */
@@ -279,15 +280,21 @@ export function formatNotShown(notShown, partlyShown = []) {
 
 /**
  * What follows `Incomplete review: ` in a result, by cause: the budget cut the evidence, the prompt only named
- * some files as skipped, or both. A skipped file is named once, under its own cause.
+ * some files as skipped, or both. A skipped file is named once, under its own cause: as not shown, or as shown
+ * only in part when another part of the same path was shown (a staged deletion of a file left untracked).
  */
 export function formatIncomplete(evidence) {
-  const skipped = evidence.filesSkipped ?? [];
+  const skipped = new Set(evidence.filesSkipped ?? []);
+  const partly = new Set(evidence.filesPartlyShown ?? []);
   const reasons = "(too large, binary, a link or unreadable)";
-  if (!evidence.truncated) return capNames(`some files were not shown ${reasons}`, skipped).trimStart();
-  const skippedSet = new Set(skipped);
-  const cut = (files) => (files ?? []).filter((file) => !skippedSet.has(file));
-  return `the evidence was cut at ${evidence.maxBytes} bytes, so the rest of this change was not reviewed.${formatNotShown(cut(evidence.filesNotShown), cut(evidence.filesPartlyShown))}${capNames(`Files not shown for another reason ${reasons}`, skipped)}`;
+  const whole = [...skipped].filter((file) => !partly.has(file));
+  const copies = [...skipped].filter((file) => partly.has(file));
+  const copyLabel = `shown only in part, the untracked copy skipped ${reasons}`;
+  if (!evidence.truncated) {
+    return (capNames(`some files were not shown ${reasons}`, whole) + capNames(`${whole.length ? "Files" : "some files were"} ${copyLabel}`, copies)).trimStart();
+  }
+  const cut = (files) => (files ?? []).filter((file) => !skipped.has(file));
+  return `the evidence was cut at ${evidence.maxBytes} bytes, so the rest of this change was not reviewed.${formatNotShown(cut(evidence.filesNotShown), cut(evidence.filesPartlyShown))}${capNames(`Files not shown for another reason ${reasons}`, whole)}${capNames(`Files ${copyLabel}`, copies)}`;
 }
 
 /** Collects sections into a byte budget; once it is used up, later items are only named. */
@@ -324,6 +331,11 @@ function createEvidence(maxBytes) {
       if (!whole && !piece) return this.skip(file);
       shown.add(file);
       if (!whole) partlyShown.add(file);
+    },
+    /** A reference to another file is one unit: shown when all of it fits, otherwise left out and the file skipped. */
+    unit(text, file) {
+      if (truncated || Buffer.byteLength(text, "utf8") > left) return this.skip(file);
+      this.add(text, file);
     },
     /** Headings and separators use the budget, but one that does not fit is not a cut of the change. */
     format(text) {
@@ -385,7 +397,7 @@ function addDiffs(evidence, cwd, title, diffArgs, changes) {
     const key = header.some((line) => line.startsWith("index ")) ? header.join("\n") : null;
     const deletion = /^index [0-9a-f]+\.\.0+\b/m.test(text);
     if (key && !more && !deletion && seen.has(key)) {
-      evidence.add(`(${file}: identical to ${seen.get(key)}, not repeated)`, file);
+      evidence.unit(`(${file}: identical to ${seen.get(key)}, not repeated)`, file);
       evidence.format("\n");
       continue;
     }
@@ -406,26 +418,25 @@ function addUntracked(evidence, cwd, files) {
       evidence.skip(file);
       continue;
     }
-    const body = formatUntrackedFile(cwd, file);
+    const { skipped, text } = readUntrackedFile(cwd, file);
     const heading = `### ${file}\n`;
-    if (body.startsWith("(skipped: ", heading.length)) {
-      evidence.add(body);
+    if (skipped) {
+      evidence.add(`${heading}${skipped}`);
       evidence.format("\n\n");
       evidence.omit(file);
       continue;
     }
-    const hash = createHash("sha256").update(body.slice(body.indexOf("\n") + 1)).digest("hex");
+    const hash = createHash("sha256").update(text).digest("hex");
     if (seen.has(hash)) {
-      evidence.format(heading);
-      evidence.add(`(identical to ${seen.get(hash)}, not repeated)`, file);
+      evidence.unit(`${heading}(identical to ${seen.get(hash)}, not repeated)`, file);
       evidence.format("\n\n");
       continue;
     }
     seen.set(hash, file);
-    // The body is the heading, a fence, the contents and a fence: only the contents count as the file being shown.
+    // Only the contents, untrimmed, count as the file being shown; the heading and the fences do not.
     evidence.format(`${heading}\`\`\`\n`);
-    evidence.add(body.slice(heading.length + 4, -4), file);
-    evidence.format("\n```\n\n");
+    evidence.add(text, file);
+    evidence.format(`${text.endsWith("\n") ? "" : "\n"}\`\`\`\n\n`);
   }
 }
 

@@ -330,7 +330,7 @@ test("a review prompt says there are no tools and carries every diff and new fil
   assert.match(prompt, /cannot read files, list folders, search or run commands/);
   assert.doesNotMatch(prompt, /Read the changed files/);
   // The three files carry the same change: shown once, the others named as identical.
-  assert.match(prompt, /diff --git \S+\/f0\.txt/);
+  assert.match(prompt, /diff --git (\S+\/)?f0\.txt/);
   for (const file of ["f1.txt", "f2.txt"]) assert.match(prompt, new RegExp(`${file.replace(".", "\\.")}: identical to f0\\.txt`));
   assert.match(prompt, /UNTRACKED-CONTENT/);
 });
@@ -418,7 +418,7 @@ test("review evidence: a pure rename stays a short rename patch, so a real edit 
   const context = collectReviewContext(sandbox.repo, resolveReviewTarget(sandbox.repo, { scope: "working-tree" }));
   assert.equal(context.inputMode, "inline-diff");
   assert.match(context.content, /rename from big\.txt\nrename to moved\.txt/);
-  assert.match(context.content, /diff --git \S+\/f0\.txt/);
+  assert.match(context.content, /diff --git (\S+\/)?f0\.txt/);
   assert.ok(Buffer.byteLength(context.content) < 8 * 1024, String(Buffer.byteLength(context.content)));
 });
 
@@ -540,7 +540,7 @@ test("review evidence: a file that follows one that used exactly the rest of the
     for (const name of ["a.txt", "b.txt"]) fs.writeFileSync(path.join(sandbox.repo, name), `two ${name}\n`);
     const target = resolveReviewTarget(sandbox.repo, { scope: "working-tree" });
     const whole = collectReviewContext(sandbox.repo, target).content;
-    const second = whole.search(tracked ? /^diff --git \S+\/b\.txt/m : /^### b\.txt/m);
+    const second = whole.search(tracked ? /^diff --git (\S+\/)?b\.txt/m : /^### b\.txt/m);
     assert.ok(second > 0, whole);
     const context = collectReviewContext(sandbox.repo, target, { maxInlineDiffBytes: Buffer.byteLength(whole.slice(0, second)) });
     assert.equal(context.truncated, true);
@@ -606,8 +606,17 @@ test("review evidence: a path whose staged deletion is shown and whose untracked
   assert.match(context.content, /### big\.txt\n\(skipped: /);
   assert.deepEqual([context.truncated, context.notShown, context.partlyShown, context.skipped], [false, [], ["big.txt"], ["big.txt"]]);
   // Named once, under its skip reason, also when the budget cut the evidence too.
-  const both = formatIncomplete({ truncated: true, maxBytes: 9, filesNotShown: ["c"], filesPartlyShown: ["big.txt"], filesSkipped: ["big.txt"] });
-  assert.equal(both.match(/big\.txt/g).length, 1, both);
+  const reasons = "(too large, binary, a link or unreadable)";
+  const record = { maxBytes: 9, filesNotShown: ["c"], filesPartlyShown: ["big.txt"], filesSkipped: ["big.txt"] };
+  assert.equal(
+    formatIncomplete({ ...record, truncated: true }),
+    `the evidence was cut at 9 bytes, so the rest of this change was not reviewed. Files not shown: c. Files shown only in part, the untracked copy skipped ${reasons}: big.txt.`
+  );
+  assert.equal(formatIncomplete({ ...record, truncated: false, filesNotShown: [] }), `some files were shown only in part, the untracked copy skipped ${reasons}: big.txt.`);
+  assert.equal(
+    formatIncomplete({ ...record, truncated: false, filesNotShown: ["a"], filesSkipped: ["a", "big.txt"] }),
+    `some files were not shown ${reasons}: a. Files shown only in part, the untracked copy skipped ${reasons}: big.txt.`
+  );
 });
 
 test("review evidence: an untracked file is judged by its contents, not by its heading, fences or blank lines", async (t) => {
@@ -616,20 +625,32 @@ test("review evidence: an untracked file is judged by its contents, not by its h
   commitFiles(sandbox.repo, { "keep.txt": "one\n" });
   for (const name of ["a.txt", "b.txt"]) fs.writeFileSync(path.join(sandbox.repo, name), "the same text\n");
   const target = resolveReviewTarget(sandbox.repo, { scope: "working-tree" });
-  const whole = collectReviewContext(sandbox.repo, target).content;
-  const at = (text, after = true) => {
+  // [truncated, not shown, partly shown] when the budget ends right after `text`; measured on the tree as it is now.
+  const cutAfter = (text) => {
+    const whole = collectReviewContext(sandbox.repo, target).content;
     const index = whole.indexOf(text);
     assert.ok(index > 0, whole);
-    return { maxInlineDiffBytes: Buffer.byteLength(whole.slice(0, index + (after ? text.length : 0))) };
+    const context = collectReviewContext(sandbox.repo, target, { maxInlineDiffBytes: Buffer.byteLength(whole.slice(0, index + text.length)) });
+    return [context.truncated, context.notShown, context.partlyShown];
   };
-  const lists = (context) => [context.truncated, context.notShown, context.partlyShown];
   // Only the heading and the opening fence fit: none of the file was shown.
-  assert.deepEqual(lists(collectReviewContext(sandbox.repo, target, at("### a.txt\n```\n"))), [true, ["a.txt", "b.txt"], []]);
+  assert.deepEqual(cutAfter("### a.txt\n```\n"), [true, ["a.txt", "b.txt"], []]);
   // Half of the contents fit.
-  assert.deepEqual(lists(collectReviewContext(sandbox.repo, target, at("### a.txt\n```\nthe same"))), [true, ["b.txt"], ["a.txt"]]);
+  assert.deepEqual(cutAfter("### a.txt\n```\nthe same"), [true, ["b.txt"], ["a.txt"]]);
   // The reference to the identical file fits and only the blank line after it is cut: the whole change was shown.
-  assert.deepEqual(lists(collectReviewContext(sandbox.repo, target, at("(identical to a.txt, not repeated)"))), [false, [], []]);
+  assert.deepEqual(cutAfter("(identical to a.txt, not repeated)"), [false, [], []]);
+  // Only the first character of the reference fits: a reference is shown whole or not at all.
+  assert.deepEqual(cutAfter("### b.txt\n("), [true, ["b.txt"], []]);
   fs.rmSync(path.join(sandbox.repo, "b.txt"));
-  // All of the contents fit and only the closing fence is cut.
-  assert.deepEqual(lists(collectReviewContext(sandbox.repo, target, at("### a.txt\n```\nthe same text"))), [false, [], []]);
+  // All of the contents fit, the file's last line break included, and only the closing fence is cut.
+  assert.deepEqual(cutAfter("### a.txt\n```\nthe same text\n"), [false, [], []]);
+  // The contents are counted as they are in the file: blank lines at its end that did not fit were not shown.
+  fs.writeFileSync(path.join(sandbox.repo, "a.txt"), "the same text\n\n\n");
+  assert.deepEqual(cutAfter("### a.txt\n```\nthe same text\n"), [true, [], ["a.txt"]]);
+  fs.writeFileSync(path.join(sandbox.repo, "a.txt"), "  \n\n");
+  assert.deepEqual(cutAfter("### a.txt\n```\n"), [true, ["a.txt"], []]);
+  // Two files that differ only in the blank lines at their end are not called identical.
+  fs.writeFileSync(path.join(sandbox.repo, "a.txt"), "the same text\n");
+  fs.writeFileSync(path.join(sandbox.repo, "b.txt"), "the same text\n\n");
+  assert.doesNotMatch(collectReviewContext(sandbox.repo, target).content, /identical to/);
 });
