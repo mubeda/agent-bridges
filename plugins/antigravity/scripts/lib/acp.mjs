@@ -505,10 +505,13 @@ export function startAcpRun(options) {
   const openCalls = (questions) => [...toolCalls.values()].filter((call) => isOpen(call) && (call.name === "ask_question") === questions);
   const unmatched = [];
 
-  /** A terminal record without a call id closes the one open call; with several open, none can be trusted. */
+  /**
+   * A terminal record without a call id closes the one open call; with several open, none can be trusted.
+   * A pending ask_question is never the one it closes: it waits for an answer nobody sends.
+   */
   function closeWithoutId(update) {
     if (update.sessionUpdate !== "tool_call_update" || !TOOL_DONE.has(update.status)) return;
-    const open = [...toolCalls.values()].filter(isOpen);
+    const open = openCalls(false);
     if (open.length === 1) open[0].status = update.status;
     else if (open.length > 1) {
       unmatched.push(open.length);

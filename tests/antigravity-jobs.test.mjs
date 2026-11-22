@@ -691,6 +691,10 @@ test("a completion without a call id closes the one open call, and is reported a
   assert.equal(one.status, 0, one.stdout);
   assert.ok(Date.now() - started < 5000);
   assert.equal(one.stdout, "go closed\n");
+  // A pending ask_question waits for an answer nobody sends: the completion closes the command, not the question.
+  const withQuestion = run(sandbox, WRITE.concat("go"), env([{ toolCall: "ask_question", id: "q", question: "Which?" }, { toolCall: "run_command", id: "bg" }, { delayMs: 300, toolDoneNoId: true }, { chunk: " closed" }]));
+  assert.equal(withQuestion.status, 0, withQuestion.stdout);
+  assert.equal(withQuestion.stdout, "go closed\nUnanswered questions: Which?\n");
   started = Date.now();
   const two = run(sandbox, WRITE.concat("go"), env([{ toolCall: "run_command", id: "a" }, { toolCall: "run_command", id: "b" }, { delayMs: 300, toolDoneNoId: true }]));
   assert.ok(Date.now() - started < 5000, "waited for the bound");
