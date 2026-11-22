@@ -26,7 +26,7 @@ import {
 } from "./lib/agy.mjs";
 import { buildDetachedWorkerOptions, mergeSpawnedPid } from "./lib/detach.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
-import { collectReviewContext, ensureGitRepository, formatNotShown, resolveReviewTarget } from "./lib/git.mjs";
+import { collectReviewContext, ensureGitRepository, formatIncomplete, resolveReviewTarget } from "./lib/git.mjs";
 import { capTranscriptMessages, packTranscript, parseTranscriptJsonl, resolveTransferSource } from "./lib/host-session.mjs";
 import { binaryAvailable, runCommand, terminateProcessTree } from "./lib/process.mjs";
 import { interpolateTemplate, loadPromptTemplate } from "./lib/prompts.mjs";
@@ -411,9 +411,7 @@ function renderExecution(request, command, parsed, evidence) {
   }
   lines.push(`# Antigravity ${request.reviewName}`, "");
   // The model is told inside its prompt; this line tells the caller.
-  if (evidence?.truncated) {
-    lines.push(`Incomplete review: the evidence was cut at ${evidence.maxBytes} bytes, so the rest of this change was not reviewed.${formatNotShown(evidence.filesNotShown ?? [], evidence.filesPartlyShown ?? [])}`, "");
-  }
+  if (evidence?.incomplete) lines.push(`Incomplete review: ${formatIncomplete(evidence)}`, "");
   if (parsed.structured) {
     lines.push(JSON.stringify(parsed.structured, null, 2));
     if (parsed.deniedActions.length) lines.push("", `Denied: ${formatDeniedActions(parsed.deniedActions)}`);
@@ -598,7 +596,17 @@ async function handleReviewCommand(argv, { reviewName }) {
     summary: `${reviewName} ${target.label}`
   });
   // Kept on the job record, so `--json`, `status` and `result` show that only part of the change was reviewed.
-  if (context.truncated) job.evidence = { truncated: true, maxBytes: context.maxBytes, filesNotShown: context.notShown, filesPartlyShown: context.partlyShown };
+  // `incomplete` is what a caller reads; `truncated` is the budget cut only.
+  if (context.truncated || context.skipped.length) {
+    job.evidence = {
+      incomplete: true,
+      truncated: context.truncated,
+      maxBytes: context.maxBytes,
+      filesNotShown: context.notShown,
+      filesPartlyShown: context.partlyShown,
+      filesSkipped: context.skipped
+    };
+  }
   const request = buildRequest(cwd, options, buildReviewPrompt(context, focusText, reviewName), {
     write: false,
     review: true,

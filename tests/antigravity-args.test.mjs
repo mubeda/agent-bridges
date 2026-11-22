@@ -561,6 +561,7 @@ test("review evidence: an untracked file that is only named as skipped counts as
   assert.match(context.content, /### a-big\.txt\n\(skipped: /);
   assert.match(context.content, /the line that uses up the budget/);
   assert.deepEqual(context.notShown, ["a-big.txt", "c.txt"]);
+  assert.deepEqual(context.skipped, ["a-big.txt"]);
   assert.deepEqual(context.partlyShown, ["b.txt"]);
 });
 
@@ -582,4 +583,15 @@ test("review evidence: a last file that uses exactly the rest of the budget is a
     assert.equal(context.content, whole.slice(0, end), scope);
     assert.deepEqual([context.notShown, context.partlyShown], [[], []], scope);
   }
+});
+
+test("the incomplete-review notice words each cause, and both in one line", async () => {
+  const { formatIncomplete } = await import("../plugins/antigravity/scripts/lib/git.mjs");
+  const reasons = "(too large, binary, a link or unreadable)";
+  assert.equal(formatIncomplete({ truncated: false, maxBytes: 9, filesNotShown: ["a"], filesPartlyShown: [], filesSkipped: ["a"] }), `some files were not shown ${reasons}: a.`);
+  assert.equal(
+    formatIncomplete({ truncated: true, maxBytes: 9, filesNotShown: ["a", "c"], filesPartlyShown: ["b"], filesSkipped: ["a"] }),
+    `the evidence was cut at 9 bytes, so the rest of this change was not reviewed. Files shown only in part: b. Files not shown: c. Files not shown for another reason ${reasons}: a.`
+  );
+  assert.doesNotMatch(formatIncomplete({ truncated: false, maxBytes: 9, filesNotShown: ["a\nb"], filesPartlyShown: [], filesSkipped: ["a\nb"] }), /\n/);
 });

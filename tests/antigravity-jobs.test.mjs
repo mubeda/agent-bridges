@@ -115,7 +115,7 @@ for (const command of ["review", "adversarial-review"]) {
     assert.match(notice[0], /cut at 262144 bytes/);
     assert.match(notice[0], /Files shown only in part: f0\.txt\. Files not shown: f1\.txt, f2\.txt\.$/);
     assert.match(promptTexts(sessions(sandbox)[0])[1], /Files shown only in part: f0\.txt\. Files not shown: f1\.txt, f2\.txt\./);
-    const expected = { truncated: true, maxBytes: 262144, filesNotShown: ["f1.txt", "f2.txt"], filesPartlyShown: ["f0.txt"] };
+    const expected = { truncated: true, maxBytes: 262144, filesNotShown: ["f1.txt", "f2.txt"], filesPartlyShown: ["f0.txt"], filesSkipped: [], incomplete: true };
     assert.deepEqual(lastJob(sandbox).evidence, expected);
     // `result` replays the stored rendering, so the line survives a background run too.
     assert.match(run(sandbox, ["result"]).stdout, /^Incomplete review:/m);
@@ -146,6 +146,22 @@ test("a file name with a line break cannot add a line to the cut notice", { skip
   const result = run(sandbox, ["review", "--wait"], scenario({ turns: [{ chunks: [JSON.stringify(FINDINGS)] }] }));
   assert.equal(result.stdout.split("\n").filter((line) => line.startsWith("Incomplete review:")).length, 1, result.stdout);
 });
+
+for (const command of ["review", "adversarial-review"]) {
+  test(`${command}: a small change with a file that is only named as skipped is an incomplete review, not a cut one`, { skip: POSIX_ONLY }, (t) => {
+    const sandbox = makeSandbox(t);
+    // Over the 24 KiB limit for one untracked file, far under the evidence budget.
+    fs.writeFileSync(path.join(sandbox.repo, "big.txt"), "a long untracked line\n".repeat(1500));
+    const turns = scenario({ turns: [{ chunks: [JSON.stringify(FINDINGS)] }] });
+    const result = run(sandbox, [command, "--wait"], turns);
+    assert.equal(result.status, 0, result.stderr);
+    const notice = result.stdout.split("\n").filter((line) => line.startsWith("Incomplete review:"));
+    assert.deepEqual(notice, ["Incomplete review: some files were not shown (too large, binary, a link or unreadable): big.txt."], result.stdout);
+    const json = JSON.parse(run(sandbox, [command, "--wait", "--json"], turns).stdout);
+    assert.deepEqual(json.job.evidence, { truncated: false, maxBytes: 262144, filesNotShown: ["big.txt"], filesPartlyShown: [], filesSkipped: ["big.txt"], incomplete: true });
+    assert.match(run(sandbox, ["result"]).stdout, /^Incomplete review: some files were not shown/m);
+  });
+}
 
 test("a small change shows no cut notice and no evidence field", { skip: POSIX_ONLY }, (t) => {
   const sandbox = makeSandbox(t);

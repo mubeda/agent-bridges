@@ -277,6 +277,19 @@ export function formatNotShown(notShown, partlyShown = []) {
   return capNames("Files shown only in part", partlyShown) + capNames("Files not shown", notShown);
 }
 
+/**
+ * What follows `Incomplete review: ` in a result, by cause: the budget cut the evidence, the prompt only named
+ * some files as skipped, or both. A skipped file is named once, under its own cause.
+ */
+export function formatIncomplete(evidence) {
+  const skipped = evidence.filesSkipped ?? [];
+  const reasons = "(too large, binary, a link or unreadable)";
+  if (!evidence.truncated) return capNames(`some files were not shown ${reasons}`, skipped).trimStart();
+  const skippedSet = new Set(skipped);
+  const cut = (evidence.filesNotShown ?? []).filter((file) => !skippedSet.has(file));
+  return `the evidence was cut at ${evidence.maxBytes} bytes, so the rest of this change was not reviewed.${formatNotShown(cut, evidence.filesPartlyShown ?? [])}${capNames(`Files not shown for another reason ${reasons}`, skipped)}`;
+}
+
 /** Collects sections into a byte budget; once it is used up, later items are only named. */
 function createEvidence(maxBytes) {
   const parts = [];
@@ -284,6 +297,7 @@ function createEvidence(maxBytes) {
   const shown = new Set();
   const partlyShown = new Set();
   const notShown = new Set();
+  const skipped = new Set();
   let left = maxBytes;
   let truncated = false;
   return {
@@ -316,6 +330,7 @@ function createEvidence(maxBytes) {
     /** A file the prompt only names (too large, binary, a symlink): its contents are not shown, whatever the budget. */
     omit(name) {
       notShown.add(name);
+      skipped.add(name);
     },
     cut(file) {
       truncated = true;
@@ -330,6 +345,10 @@ function createEvidence(maxBytes) {
     },
     get partlyShown() {
       return [...partlyShown];
+    },
+    /** The part of `notShown` that the prompt names as skipped, whatever the budget. */
+    get skipped() {
+      return [...skipped];
     },
     get truncated() {
       return truncated;
@@ -414,6 +433,7 @@ function collectWorkingTreeContext(cwd, state, maxBytes) {
     truncated: evidence.truncated,
     notShown: evidence.notShown,
     partlyShown: evidence.partlyShown,
+    skipped: evidence.skipped,
     changedFiles: listUniqueFiles(state.staged, state.unstaged, state.untracked)
   };
 }
@@ -436,6 +456,7 @@ function collectBranchContext(cwd, baseRef, maxBytes) {
     truncated: evidence.truncated,
     notShown: evidence.notShown,
     partlyShown: evidence.partlyShown,
+    skipped: evidence.skipped,
     changedFiles,
     comparison
   };
