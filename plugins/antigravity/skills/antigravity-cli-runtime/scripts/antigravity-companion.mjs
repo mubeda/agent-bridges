@@ -7,13 +7,11 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { parseArgs, splitRawArgumentString } from "./lib/args.mjs";
+import { READER_MARKER, READ_ONLY_RESUME_WARNING, buildAcpArgs, createLineReader, startAcpRun, writeReaderAgent } from "./lib/acp.mjs";
 import {
-  buildPrintInvocation,
   formatDeniedActions,
   getAgyAvailability,
   getAgySetupFacts,
-  parsePrintResult,
-  resolveAgyBin,
   resolveAgySpawnCommand,
   validateEffort
 } from "./lib/agy.mjs";
@@ -48,12 +46,12 @@ function printUsage() {
       "  node scripts/antigravity-companion.mjs setup [--json]",
       "  node scripts/antigravity-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/antigravity-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
-      "  node scripts/antigravity-companion.mjs task [--wait|--background] [--write] [--resume-last|--resume|--fresh] [--model <id>] [prompt]",
+      "  node scripts/antigravity-companion.mjs task [--wait|--background] [--write] [--resume-last|--resume|--resume-job <job-id>|--fresh] [--model <id>] [prompt]",
       "  node scripts/antigravity-companion.mjs status [job-id] [--wait] [--all] [--json]",
       "  node scripts/antigravity-companion.mjs result [job-id] [--json]",
       "  node scripts/antigravity-companion.mjs cancel [job-id] [--json]",
       "  node scripts/antigravity-companion.mjs transfer [--source <path>] [--wait|--background] [--write] [--json]",
-      "  node scripts/antigravity-companion.mjs task-resume-candidate [--json]"
+      "  node scripts/antigravity-companion.mjs task-resume-candidate [--for-write] [--json]"
     ].join("\n")
   );
 }
@@ -112,8 +110,18 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** cancelling: a cancel whose teardown has not finished yet; a second cancel retries it. */
 function isActive(job) {
-  return job.status === "queued" || job.status === "running";
+  return job.status === "queued" || job.status === "running" || job.status === "cancelling";
+}
+
+/** Created by cancel before it reads or signals anything; no job update can overwrite a file. */
+function cancelMarkerFile(workspaceRoot, jobId) {
+  return resolveJobFile(workspaceRoot, jobId).replace(/\.json$/, ".cancelled");
+}
+
+function isCancelMarked(workspaceRoot, jobId) {
+  return fs.existsSync(cancelMarkerFile(workspaceRoot, jobId));
 }
 
 function sortJobs(jobs) {
@@ -157,7 +165,6 @@ function renderSetupReport(report) {
     "Checks:",
     `- binary: ${report.resolvedPath ?? report.bin}`,
     `- version: ${report.version ?? "unavailable"}`,
-    `- GEMINI_API_KEY ${report.apiKeySet ? "set" : "not set"}`,
     `- state dir: ${report.stateDir}`,
     "",
     `Sign-in: ${report.signInNote}`
@@ -213,62 +220,190 @@ function createCompanionJob({ prefix, kind, title, workspaceRoot, jobClass, summ
     jobClass,
     summary,
     write,
-    invoke: "print"
+    invoke: "acp"
   });
 }
 
 const FORWARDED_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
 
-function spawnAgy(cwd, args, promptViaStdin = null, onSpawn = null, onSignal = null) {
-  return new Promise((resolve, reject) => {
-    const command = resolveAgySpawnCommand();
-    // POSIX: agy leads its own process group so cancel can end its whole tree (plan P13).
-    const detached = process.platform !== "win32";
-    const child = spawn(command.file, [...command.args, ...args], { cwd, windowsHide: true, detached, stdio: ["pipe", "pipe", "pipe"] });
-    // A detached agy no longer gets the terminal's signals, so forward them to its group.
-    let stopping = false;
-    const forward = async (signal) => {
-      if (stopping) return;
-      stopping = true;
-      // Same as cancel: a write run must not leave a SIGTERM-resistant command editing files after we exit.
-      if (child.pid) await endAgyTree(child.pid, cwd);
-      if (onSignal) onSignal(signal);
-      process.exit(signal === "SIGINT" ? 130 : 143);
-    };
-    if (detached) for (const signal of FORWARDED_SIGNALS) process.on(signal, forward);
-    const stopForwarding = () => {
-      if (detached) for (const signal of FORWARDED_SIGNALS) process.off(signal, forward);
-    };
-    if (child.pid && onSpawn) onSpawn(child.pid);
-    let stdout = "";
-    let stderr = "";
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => { stdout += chunk; });
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
-    child.once("error", (error) => { stopForwarding(); reject(error); });
-    child.once("close", (code, signal) => { stopForwarding(); resolve({ status: code ?? 1, signal, stdout, stderr, pid: child.pid ?? null }); });
-    child.stdin.on("error", () => {});
-    child.stdin.end(promptViaStdin ?? undefined);
-  });
+/** realpath of the nearest existing ancestor, with the rest of the path appended: works before the folder exists. */
+function canonicalPath(target) {
+  let existing = path.resolve(target);
+  const rest = [];
+  while (!fs.existsSync(existing)) {
+    rest.unshift(path.basename(existing));
+    const parent = path.dirname(existing);
+    if (parent === existing) break;
+    existing = parent;
+  }
+  return path.join(fs.realpathSync.native(existing), ...rest);
 }
 
-async function executePrintRun({ cwd, prompt, write, review, model, effort, resumeSessionId }, onSpawn = null, onSignal = null) {
-  const { args, stdin } = buildPrintInvocation({
-    prompt,
-    write,
-    review,
-    model,
-    effort,
-    resumeSessionId,
-    schemaPath: review ? REVIEW_SCHEMA : undefined
-  });
+/** Whole path components only: `<ws>/..state` is inside `<ws>`, `<ws>-other` is not. */
+function isInside(child, parent) {
+  const relative = path.relative(parent, child);
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+}
+
+/** Absolute: agy runs in the workspace, so a relative PLUGIN_DATA must not be resolved there. */
+function readerRoot(cwd) {
+  return path.resolve(resolveStateDir(resolveWorkspaceRoot(cwd)), "readers");
+}
+
+/** The reader agent lives in the bridge's state, never in the workspace it reads; there is no fallback location. */
+function readerBaseDir(cwd) {
+  const base = readerRoot(cwd);
+  if (isInside(canonicalPath(base), canonicalPath(resolveWorkspaceRoot(cwd)))) {
+    throw new Error(
+      `The companion's state folder (${base}) is inside the workspace, so the restricted reader cannot be written safely and nothing was run. Point PLUGIN_DATA at a folder outside the workspace.`
+    );
+  }
+  return base;
+}
+
+/** Remove a reader folder only when it sits directly in this workspace's reader root and carries the bridge's marker. */
+function removeReaderDir(dir, cwd) {
+  if (typeof dir !== "string" || !dir) return;
+  try {
+    const canonical = fs.realpathSync.native(dir);
+    if (path.dirname(canonical) !== canonicalPath(readerRoot(cwd))) return;
+    if (!fs.lstatSync(path.join(canonical, READER_MARKER)).isFile()) return;
+    fs.rmSync(canonical, { recursive: true, force: true });
+  } catch {
+    // missing folder or marker: leave it alone
+  }
+}
+
+/** A wait that never keeps the process alive on its own. */
+function unrefSleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms).unref());
+}
+
+function stderrTail(text) {
+  const trimmed = String(text ?? "").trim();
+  return trimmed ? `: ${trimmed.slice(-500)}` : "";
+}
+
+/** Start `agy acp`, run one session over its stdio, and end it (spec: ACP transport). */
+async function executeAcpRun(request, hooks = {}) {
+  const { cwd } = request;
   ensureAgyAvailable(cwd);
-  const command = await spawnAgy(cwd, args, stdin, onSpawn, onSignal);
-  return {
-    command,
-    parsed: parsePrintResult(command.stdout, { requestedConversationId: resumeSessionId, exitCode: command.status, stderr: command.stderr })
+  const readOnly = request.review === true || request.write !== true;
+  let reader = null;
+  let child = null;
+  let run = null;
+  let stopping = false;
+  // Registered before anything is written, on every platform: the reader is removed and the process exits
+  // whenever a signal arrives, even when ending the tree throws.
+  const forward = async (signal) => {
+    if (stopping) return;
+    stopping = true;
+    try {
+      // Best effort: let the server stop the turn, then fail the run at once, so a turn that still
+      // finishes during the teardown is never stored or printed as a success.
+      const reachable = run?.abort(new Error(`Interrupted by ${signal}.`));
+      if (reachable) await sleep(250);
+      // Same as cancel: a write run must not leave a SIGTERM-resistant command editing files after we exit.
+      if (child?.pid) await endAgyTree(child.pid, cwd);
+    } catch {
+      // still clean up and exit below
+    } finally {
+      try {
+        if (reader) removeReaderDir(reader.dir, cwd);
+        if (hooks.onSignal) hooks.onSignal(signal);
+      } finally {
+        process.exit(signal === "SIGINT" ? 130 : 143);
+      }
+    }
   };
+  for (const signal of FORWARDED_SIGNALS) process.on(signal, forward);
+  try {
+    if (readOnly) {
+      reader = writeReaderAgent(readerBaseDir(cwd), { canRead: request.review !== true });
+      if (hooks.onReader) hooks.onReader(reader.dir);
+    }
+    const command = resolveAgySpawnCommand();
+    const args = buildAcpArgs({ agentDir: reader?.dir, agentName: reader?.name });
+    // POSIX: agy leads its own process group so cancel can end its whole tree (plan P13).
+    const detached = process.platform !== "win32";
+    child = spawn(command.file, [...command.args, ...args], { cwd, windowsHide: true, detached, stdio: ["pipe", "pipe", "pipe"] });
+    run = startAcpRun({
+      write: (line) => {
+        if (!child.stdin.writable) throw new Error("could not write to agy: its input is closed");
+        child.stdin.write(line);
+      },
+      cwd,
+      prompt: request.prompt,
+      readOnly,
+      token: reader?.token,
+      model: request.model,
+      effort: request.effort,
+      resumeSessionId: request.resumeSessionId,
+      warning: request.resumeWarning ?? null,
+      review: request.review === true,
+      // Test hook: the tests shorten the 60 s setup timeout.
+      setupTimeoutMs: Number(process.env.AGENT_BRIDGES_ACP_SETUP_TIMEOUT_MS) || undefined
+    });
+    let stderr = "";
+    const keep = (text) => {
+      stderr = (stderr + text).slice(-64 * 1024);
+    };
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    // Lines that are not protocol messages (a server log) are skipped but shown with a failure.
+    child.stdout.on("data", createLineReader((message) => run.handle(message), (line) => keep(`[stdout] ${line}\n`)));
+    child.stderr.on("data", keep);
+    child.stdin.on("error", (error) => run.fail(new Error(`could not write to agy: ${error.message}`)));
+    // Output can end while the process lives on; give a real exit a moment to report itself first.
+    const stdoutDone = new Promise((resolve) => {
+      child.stdout.once("end", resolve);
+      child.stdout.once("close", resolve);
+    });
+    child.stdout.once("end", () => {
+      unrefSleep(200).then(() => run.fail(new Error("agy closed its output before it answered")));
+    });
+    const closed = new Promise((resolve) => {
+      child.once("error", (error) => {
+        run.fail(error);
+        resolve({ status: 1, signal: null });
+      });
+      child.once("close", (code, signal) => {
+        run.fail(new Error(`agy exited (${signal ?? `code ${code}`}) before it answered${stderrTail(stderr)}`));
+        resolve({ status: code ?? 1, signal });
+      });
+    });
+    if (child.pid && hooks.onSpawn) hooks.onSpawn(child.pid);
+    // cancel may have marked the job between the worker's check and this spawn.
+    if (hooks.isCancelled?.()) run.abort(new Error("Cancelled by user."));
+    let parsed = await run.result;
+    // A forwarded signal owns the rest: it ends the tree and exits; nothing is stored or printed here.
+    if (stopping) await new Promise(() => {});
+    child.stdin.end();
+    // agy acp may not exit at the end of its input: give it a moment (less after a failure, none after a
+    // read-only security stop), then end its tree.
+    const grace = run.securityStopped() ? 0 : parsed.ok ? 2000 : 250;
+    const exited = grace > 0 && (await Promise.race([closed.then(() => true), unrefSleep(grace).then(() => false)]));
+    if (!exited && child.pid) await endAgyTree(child.pid, cwd);
+    // Keep reading until the output closes, so a forbidden tool call after the final answer still fails the run.
+    await Promise.race([stdoutDone, unrefSleep(1000)]);
+    const status = await Promise.race([closed, unrefSleep(1000).then(() => ({ status: null, signal: null }))]);
+    parsed = run.settle(parsed);
+    if (stopping) await new Promise(() => {});
+    return { command: { ...status, stderr, pid: child.pid ?? null }, parsed };
+  } catch (error) {
+    // Any failure after spawn (bookkeeping included) stops the protocol run and ends the tree.
+    run?.abort(error);
+    if (child?.pid) await endAgyTree(child.pid, cwd).catch(() => {});
+    throw error;
+  } finally {
+    for (const signal of FORWARDED_SIGNALS) process.off(signal, forward);
+    // A descendant that kept a pipe open must not keep the companion alive.
+    if (child) {
+      for (const stream of [child.stdin, child.stdout, child.stderr]) stream?.destroy();
+      child.unref();
+    }
+    if (reader) removeReaderDir(reader.dir, cwd);
+  }
 }
 
 function renderExecution(request, command, parsed) {
@@ -293,37 +428,58 @@ function renderExecution(request, command, parsed) {
   return `${lines.join("\n")}\n`;
 }
 
-async function runPrintJob(job, request) {
-  const running = persistJob(job.workspaceRoot, {
+async function runAcpJob(job, request) {
+  const { workspaceRoot } = job;
+  const isCancelled = () => isCancelMarked(workspaceRoot, job.id);
+  const cancelledResult = () => ({ job: readStoredJob(workspaceRoot, job.id) ?? job, rendered: "Cancelled by user.\n", exitStatus: 1 });
+  // Every write merges onto the stored record. Once cancel has left its marker, the run only adds the handles
+  // cancel needs (agy's pid, the reader folder) and never touches the status cancel wrote.
+  const save = (patch) => {
+    const stored = readStoredJob(workspaceRoot, job.id) ?? job;
+    if (!isCancelled()) return persistJob(workspaceRoot, { ...stored, ...patch });
+    const handles = Object.fromEntries(Object.entries(patch).filter(([key]) => key === "agyPid" || key === "readerDir"));
+    return Object.keys(handles).length ? persistJob(workspaceRoot, { ...stored, ...handles }) : stored;
+  };
+  // A job cancelled before it started never starts agy.
+  if (isCancelled()) return cancelledResult();
+  const running = save({
     ...job,
     status: "running",
     phase: "running",
     pid: process.pid,
     startedAt: nowIso(),
-    worktree: request.cwd
+    worktree: request.cwd,
+    // A session keeps its agent: a write resume must never pick a read-only (reader) session.
+    agyReadOnly: request.review === true || request.write !== true
   });
   try {
-    const { command, parsed } = await executePrintRun(
-      request,
-      (agyPid) => {
-        persistJob(job.workspaceRoot, { ...running, agyPid });
+    const { command, parsed } = await executeAcpRun(request, {
+      onReader: (readerDir) => save({ readerDir }),
+      onSpawn: (agyPid) => {
+        save({ agyPid });
+        // Test hook: simulates a failed bookkeeping write after spawn.
+        if (process.env.AGENT_BRIDGES_TEST_THROW_ON_SPAWN) throw new Error("test hook: recording the agy pid failed");
       },
-      (signal) => {
-        persistJob(job.workspaceRoot, { ...running, status: "failed", phase: "failed", pid: null, agyPid: null, completedAt: nowIso(), errorMessage: `Interrupted by ${signal}.` });
+      isCancelled,
+      onSignal: (signal) => {
+        if (!isCancelled()) save({ status: "failed", phase: "failed", pid: null, agyPid: null, readerDir: null, completedAt: nowIso(), errorMessage: `Interrupted by ${signal}.` });
       }
-    );
-    // cancel may have finished the job while agy was stopping; never overwrite that.
-    const current = readStoredJob(job.workspaceRoot, job.id);
-    if (current?.status === "cancelled") return { job: current, rendered: "Cancelled by user.\n", exitStatus: 1 };
+    });
+    // cancel may have run while agy was stopping; never overwrite it.
+    if (isCancelled()) return cancelledResult();
     const status = parsed.ok ? "completed" : "failed";
     const rendered = renderExecution(request, command, parsed);
-    const completed = persistJob(job.workspaceRoot, {
+    const completed = save({
       ...running,
       status,
       phase: status === "completed" ? "done" : "failed",
       pid: null,
+      agyPid: null,
+      readerDir: null,
       completedAt: nowIso(),
       agySessionId: parsed.sessionId,
+      // Only a session that received the task prompt can be continued by a write run.
+      agyPromptSent: parsed.promptSent === true,
       summary: firstMeaningfulLine(parsed.resultText, `${job.title} finished.`),
       result: {
         rawOutput: parsed.resultText,
@@ -336,14 +492,19 @@ async function runPrintJob(job, request) {
     });
     return { job: completed, rendered, exitStatus: parsed.ok ? 0 : 1 };
   } catch (error) {
-    persistJob(job.workspaceRoot, {
-      ...running,
-      status: "failed",
-      phase: "failed",
-      pid: null,
-      completedAt: nowIso(),
-      errorMessage: error instanceof Error ? error.message : String(error)
-    });
+    if (!isCancelled()) {
+      save({
+        ...running,
+        status: "failed",
+        phase: "failed",
+        pid: null,
+        agyPid: null,
+        readerDir: null,
+        agyPromptSent: false,
+        completedAt: nowIso(),
+        errorMessage: error instanceof Error ? error.message : String(error)
+      });
+    }
     throw error;
   }
 }
@@ -397,10 +558,10 @@ async function handleRunWorker(argv) {
   const job = readStoredJob(workspaceRoot, options["job-id"]);
   if (!job?.request) throw new Error(`No stored job request found for ${options["job-id"]}.`);
   // A job cancelled before its worker started must never run.
-  if (job.status !== "queued") return;
+  if (job.status !== "queued" || isCancelMarked(workspaceRoot, job.id)) return;
   // The job record, not the nested request, decides write permission: a review or read-only job never writes.
   const write = job.write === true && job.request.review !== true && job.request.write === true;
-  await runPrintJob({ ...job, workspaceRoot }, { ...job.request, write });
+  await runAcpJob({ ...job, workspaceRoot }, { ...job.request, write });
 }
 
 function buildRequest(cwd, options, prompt, extra = {}) {
@@ -452,20 +613,45 @@ async function handleReviewCommand(argv, { reviewName }) {
     outputCommandResult({ jobId: queued.id, status: queued.status }, `${job.title} started in the background as ${job.id}.\n`, options.json);
     return;
   }
-  const execution = await runPrintJob(job, request);
+  const execution = await runAcpJob(job, request);
   outputCommandResult({ job: execution.job }, execution.rendered, options.json);
   if (execution.exitStatus !== 0) process.exitCode = execution.exitStatus;
 }
 
-function findLatestTaskSession(workspaceRoot) {
-  return sortJobs(listJobs(workspaceRoot)).find(
-    (job) => job.jobClass === "task" && !isActive(job) && job.agySessionId
-  )?.agySessionId ?? null;
+const WRITE_AFTER_READ_ONLY_WARNING =
+  "The earlier Antigravity session was read-only and cannot be continued with write access; this started a new session.";
+
+const PRE_PROMPT_WARNING =
+  "The most recent Antigravity task failed before its prompt reached the session, so there is nothing to continue; this started a new session.";
+
+/**
+ * Why a write run cannot continue this task job, or null when it can. A record without the fields comes
+ * from 0.1.x, whose print-mode sessions had the full agent and always received their prompt.
+ */
+function whyNotContinuable(job) {
+  if (job.agyReadOnly === true) return WRITE_AFTER_READ_ONLY_WARNING;
+  if (job.agyPromptSent === false || !job.agySessionId) return PRE_PROMPT_WARNING;
+  return null;
+}
+
+/** The most recent finished task job: a write resume continues it or nothing, never an older one. */
+function findLatestTaskJob(workspaceRoot) {
+  return sortJobs(listJobs(workspaceRoot)).find((job) => job.jobClass === "task" && !isActive(job)) ?? null;
+}
+
+/** --resume-job: exactly the job the user confirmed, still continuable, or nothing runs. */
+function resolveResumeJob(cwd, reference) {
+  const { job } = findJob(cwd, reference, (entry) => entry.jobClass === "task");
+  if (!job) throw new Error(`No job found for "${reference}".`);
+  if (isActive(job)) throw new Error(`Job ${job.id} cannot be continued yet: it is still ${job.status}.`);
+  if (job.agyReadOnly === true) throw new Error(`Job ${job.id} cannot be continued: it was a read-only task, and a read-only session cannot be continued with write access.`);
+  if (whyNotContinuable(job)) throw new Error(`Job ${job.id} cannot be continued: it failed before its prompt reached an Antigravity session.`);
+  return job.agySessionId;
 }
 
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["model", "effort", "cwd", "prompt-file"],
+    valueOptions: ["model", "effort", "cwd", "prompt-file", "resume-job"],
     booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background", "wait"],
     aliasMap: { m: "model" }
   });
@@ -473,12 +659,26 @@ async function handleTask(argv) {
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const resumeLatest = Boolean(options["resume-last"] || options.resume);
-  if (resumeLatest && options.fresh) throw new Error("Choose either --resume/--resume-last or --fresh.");
+  const resumeJob = options["resume-job"];
+  if ([resumeLatest, Boolean(resumeJob), Boolean(options.fresh)].filter(Boolean).length > 1) {
+    throw new Error("Choose one of --resume-job, --resume/--resume-last or --fresh.");
+  }
+  if (resumeJob && !options.write) {
+    throw new Error("--resume-job continues a write session: add --write --bypass-permissions, or start a new read-only task without it.");
+  }
   const prompt = options["prompt-file"]
     ? fs.readFileSync(path.resolve(cwd, options["prompt-file"]), "utf8")
     : positionals.join(" ") || readStdinIfPiped();
-  const resumeSessionId = resumeLatest ? findLatestTaskSession(workspaceRoot) : null;
-  if (resumeLatest && !resumeSessionId) throw new Error("No previous Antigravity task session was found for this repository.");
+  let resumeSessionId = resumeJob ? resolveResumeJob(cwd, resumeJob) : null;
+  let resumeWarning = null;
+  if (resumeLatest) {
+    const latest = findLatestTaskJob(workspaceRoot);
+    if (!latest) throw new Error("No previous Antigravity task was found for this repository.");
+    // A read-only run never continues a session (acp.mjs refuses it too); a write run continues only the latest job.
+    if (!options.write) resumeWarning = READ_ONLY_RESUME_WARNING;
+    else resumeWarning = whyNotContinuable(latest);
+    if (options.write && !resumeWarning) resumeSessionId = latest.agySessionId;
+  }
   if (!prompt && !resumeLatest) throw new Error("Provide a prompt, prompt file, piped stdin, or use --resume-last.");
   const effectivePrompt = prompt || "Continue the previous task.";
   ensureAgyAvailable(cwd);
@@ -491,13 +691,13 @@ async function handleTask(argv) {
     summary: shorten(effectivePrompt),
     write: Boolean(options.write)
   });
-  const request = buildRequest(cwd, options, effectivePrompt, { resumeSessionId });
+  const request = buildRequest(cwd, options, effectivePrompt, { resumeSessionId, resumeWarning });
   if (options.background) {
     const queued = enqueueBackground(job, request);
     outputCommandResult({ jobId: queued.id, status: queued.status }, `${job.title} started in the background as ${job.id}.\n`, options.json);
     return;
   }
-  const execution = await runPrintJob(job, request);
+  const execution = await runAcpJob(job, request);
   outputCommandResult({ job: execution.job }, execution.rendered, options.json);
   if (execution.exitStatus !== 0) process.exitCode = execution.exitStatus;
 }
@@ -587,17 +787,30 @@ async function handleCancel(argv) {
   const { options, positionals } = parseCommandInput(argv, { valueOptions: ["cwd"], booleanOptions: ["json"] });
   const selected = findJob(resolveCommandCwd(options), positionals[0] ?? "", isActive);
   if (!selected.job) throw new Error("No active Antigravity job found.");
-  const storedForCancel = readStoredJob(selected.workspaceRoot, selected.job.id) ?? selected.job;
+  const { workspaceRoot } = selected;
+  const id = selected.job.id;
+  // The marker comes first: from here on no worker, finishing run or signal handler can undo the cancellation.
+  fs.writeFileSync(cancelMarkerFile(workspaceRoot, id), `${nowIso()}\n`, { mode: 0o600 });
+  const stored = { ...selected.job, ...(readStoredJob(workspaceRoot, id) ?? {}) };
+  // cancelling keeps the handles, so an interrupted teardown can be retried by another cancel.
+  persistJob(workspaceRoot, { ...stored, status: "cancelling", phase: "cancelling", errorMessage: "Cancelled by user." });
   // End the agy tree first: it no longer shares the companion's process group.
-  await endAgyTree(storedForCancel.agyPid ?? selected.job.agyPid ?? Number.NaN, selected.workspaceRoot);
-  terminateProcessTree(selected.job.pid ?? Number.NaN, { cwd: selected.workspaceRoot });
-  const cancelled = persistJob(selected.workspaceRoot, {
-    ...(readStoredJob(selected.workspaceRoot, selected.job.id) ?? selected.job),
-    ...selected.job,
+  await endAgyTree(stored.agyPid ?? Number.NaN, workspaceRoot);
+  terminateProcessTree(stored.pid ?? Number.NaN, { cwd: workspaceRoot });
+  // The session ran in another process, so it cannot get a session/cancel from here; remove its reader.
+  removeReaderDir(stored.readerDir, workspaceRoot);
+  // A worker may have recorded agy, its own pid or its reader after the first read.
+  const late = readStoredJob(workspaceRoot, id) ?? stored;
+  if (late.agyPid && late.agyPid !== stored.agyPid) await endAgyTree(late.agyPid, workspaceRoot);
+  if (late.pid && late.pid !== stored.pid) terminateProcessTree(late.pid, { cwd: workspaceRoot });
+  if (late.readerDir && late.readerDir !== stored.readerDir) removeReaderDir(late.readerDir, workspaceRoot);
+  const cancelled = persistJob(workspaceRoot, {
+    ...late,
     status: "cancelled",
     phase: "cancelled",
     pid: null,
     agyPid: null,
+    readerDir: null,
     completedAt: nowIso(),
     errorMessage: "Cancelled by user."
   });
@@ -635,7 +848,7 @@ async function handleTransfer(argv) {
     );
     return;
   }
-  const execution = await runPrintJob(job, request);
+  const execution = await runAcpJob(job, request);
   outputCommandResult(
     { host: source.host, sourcePath: source.path, job: execution.job, sessionId: execution.job.agySessionId ?? null },
     execution.rendered,
@@ -647,12 +860,11 @@ async function handleTransfer(argv) {
 function handleTaskResumeCandidate(argv) {
   const { options } = parseCommandInput(argv, {
     valueOptions: ["cwd"],
-    booleanOptions: ["json"]
+    booleanOptions: ["json", "for-write"]
   });
-  const candidate =
-    sortJobs(listJobs(resolveWorkspaceRoot(resolveCommandCwd(options)))).find(
-      (job) => job.jobClass === "task" && !isActive(job) && job.agySessionId
-    ) ?? null;
+  // Same rule as execution: only a write run continues a session, and only the most recent task, when it can.
+  const latest = options["for-write"] ? findLatestTaskJob(resolveWorkspaceRoot(resolveCommandCwd(options))) : null;
+  const candidate = latest && !whyNotContinuable(latest) ? latest : null;
   const payload = {
     available: Boolean(candidate),
     candidate: candidate
@@ -667,7 +879,11 @@ function handleTaskResumeCandidate(argv) {
   };
   outputCommandResult(
     payload,
-    candidate ? `Resumable task found: ${candidate.id} (${candidate.status}).\n` : "No resumable task found.\n",
+    candidate
+      ? `Resumable write task found: ${candidate.id} (${candidate.status}), Antigravity session ${candidate.agySessionId}: ${candidate.summary ?? candidate.title ?? ""}\n`
+      : options["for-write"]
+        ? "No resumable write task found.\n"
+        : "No resumable task: a read-only run never continues an Antigravity session.\n",
     options.json
   );
 }

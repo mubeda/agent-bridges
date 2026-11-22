@@ -4,16 +4,8 @@ import process from "node:process";
 
 import { npmShimTarget, runCommand } from "./process.mjs";
 
-export const WIN32_ARGV_PROMPT_LIMIT = 20_000;
-
 const MISSING_BIN_DETAIL =
-  "`agy` was not found on PATH. Install Antigravity CLI from https://antigravity.google/docs/cli/headless.md then rerun setup. Optional: set ANTIGRAVITY_BIN.";
-
-
-// Always stdin: argv is readable by other local users (/proc/<pid>/cmdline), and it also has size limits.
-export function shouldPassPromptViaStdin(prompt, _platform = process.platform) {
-  return typeof prompt === "string" && prompt.length > 0;
-}
+  "`agy` was not found on PATH. Install Antigravity CLI (the bridge uses its ACP server, see https://antigravity.google/docs/cli/acp.md) then rerun setup. Optional: set ANTIGRAVITY_BIN.";
 
 export function resolveAgyBin(env = process.env) {
   const override = typeof env.ANTIGRAVITY_BIN === "string" ? env.ANTIGRAVITY_BIN.trim() : "";
@@ -79,7 +71,7 @@ export function unsupportedLauncher(env = process.env, platform = process.platfo
 }
 
 export const SIGN_IN_NOTE =
-  "Sign-in cannot be checked without a run. Sign in once with an interactive `agy` session, or set GEMINI_API_KEY with modelProvider \"gemini\" in your Antigravity settings.";
+  "Sign-in cannot be checked without a run. Sign in once with an interactive `agy` session, or run `agy acp --login`. Only the Google sign-in cached by `agy` is supported; API keys are not.";
 
 /** The absolute file `bin` resolves to on PATH, or `bin` itself when it already names a path. */
 function isExecutable(file) {
@@ -131,14 +123,12 @@ export function getAgySetupFacts(cwd, env = process.env, runCommandImpl = runCom
   return {
     ...availability,
     resolvedPath: findOnPath(availability.bin, env),
-    apiKeySet: typeof env.GEMINI_API_KEY === "string" && env.GEMINI_API_KEY.trim() !== "",
     signInNote: SIGN_IN_NOTE
   };
 }
 
-/** Read-only runs deny every file write and every shell command for the session (spec D2). */
-export const READ_ONLY_SETTINGS = '{"permissions":{"deny":["write_file(*)","command(*)"]}}';
-export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
+/** The thinking levels `agy acp` offers as its `thought_level` option. */
+export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh"];
 
 export function validateEffort(value) {
   if (value === undefined || value === null) return;
@@ -147,102 +137,10 @@ export function validateEffort(value) {
   }
 }
 
-export function buildRunArgs(options = {}) {
-  const prompt = options.prompt;
-  if (typeof prompt !== "string" || !prompt) {
-    throw new Error("buildRunArgs: a non-empty prompt is required.");
-  }
-  validateEffort(options.effort);
-  const review = options.review === true;
-  const write = review ? false : options.write === true;
-  const args = write ? ["--dangerously-skip-permissions"] : ["--settings", READ_ONLY_SETTINGS];
-  if (options.model) args.push("--model", String(options.model));
-  if (options.effort) args.push("--effort", String(options.effort));
-  if (options.resumeSessionId) args.push("--conversation", String(options.resumeSessionId));
-  args.push("--output-format", "json");
-  if (review && options.schemaPath) args.push("--json-schema", String(options.schemaPath));
-  const platform = options.platform ?? process.platform;
-  // On win32 above the argv limit the prompt goes on stdin, with no -p at all.
-  if (!shouldPassPromptViaStdin(prompt, platform)) args.push("-p", prompt);
-  return args;
-}
-
-export function buildReviewArgs(options = {}) {
-  return buildRunArgs({ ...options, write: false, review: true });
-}
-
-/** One platform decision for both the argv and the stdin payload. */
-export function buildPrintInvocation(options = {}) {
-  const platform = options.platform ?? process.platform;
-  const args = options.review ? buildReviewArgs({ ...options, platform }) : buildRunArgs({ ...options, platform });
-  return { args, stdin: shouldPassPromptViaStdin(options.prompt, platform) ? options.prompt : null };
-}
-
 export function formatDeniedActions(list) {
   return (Array.isArray(list) ? list : [])
     .map((entry) => (entry?.display_name ? `${entry.action} (${entry.display_name})` : String(entry?.action ?? "unknown")))
     .join(", ");
-}
-
-function readEnvelope(text) {
-  const start = text.indexOf("{");
-  if (start === -1) return null;
-  try {
-    const raw = JSON.parse(text.slice(start));
-    return raw && typeof raw === "object" && ("status" in raw || "conversation_id" in raw || "response" in raw) ? raw : null;
-  } catch {
-    return null;
-  }
-}
-
-/** Parse one `agy --output-format json` run (spec R7, R10, R11, R12). */
-export function parsePrintResult(stdout, { requestedConversationId = null, exitCode = 0, stderr = "" } = {}) {
-  const text = String(stdout ?? "");
-  const raw = readEnvelope(text);
-  if (!raw) {
-    // Non-JSON stdout: the plain-text path, failed only by the exit code.
-    const ok = exitCode === 0;
-    return {
-      sessionId: null,
-      resultText: text.trim(),
-      structured: null,
-      status: null,
-      ok,
-      error: ok ? null : String(stderr ?? "").trim() || `agy exited ${exitCode}.`,
-      deniedActions: [],
-      warning: null,
-      raw: null
-    };
-  }
-  const status = typeof raw.status === "string" ? raw.status : null;
-  const ok = exitCode === 0 && status === "SUCCESS";
-  const sessionId = raw.conversation_id ? String(raw.conversation_id) : null;
-  const deniedActions = Array.isArray(raw.denied_actions) ? raw.denied_actions : [];
-  const response = typeof raw.response === "string" ? raw.response.trim() : "";
-  let resultText = response;
-  if (deniedActions.length) {
-    const denied = formatDeniedActions(deniedActions);
-    resultText = response ? `${response}\nDenied: ${denied}` : `no answer; denied: ${denied}`;
-  }
-  // Only a JSON object counts as a structured review; anything else keeps the plain text visible (R7).
-  const isObject = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);
-  const fromResponse = parseStructuredResult(response);
-  const structured = isObject(raw.structured_output) ? raw.structured_output : isObject(fromResponse) ? fromResponse : null;
-  const warning =
-    requestedConversationId && sessionId && sessionId !== String(requestedConversationId)
-      ? `conversation ${requestedConversationId} not found; Antigravity started a new one`
-      : null;
-  return {
-    sessionId,
-    resultText,
-    structured,
-    status,
-    ok,
-    error: ok ? null : (typeof raw.error === "string" && raw.error) || String(stderr ?? "").trim() || `agy returned status ${status ?? "unknown"}.`,
-    deniedActions,
-    warning,
-    raw
-  };
 }
 
 export function parseStructuredResult(resultText) {

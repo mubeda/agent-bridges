@@ -1,181 +1,305 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
+import { EFFORT_LEVELS, validateEffort } from "../plugins/antigravity/scripts/lib/agy.mjs";
+import { CLIENT_INFO, buildAcpArgs, createLineReader } from "../plugins/antigravity/scripts/lib/acp.mjs";
 import {
-  READ_ONLY_SETTINGS,
-  buildPrintInvocation,
-  buildReviewArgs,
-  buildRunArgs,
-  shouldPassPromptViaStdin
-} from "../plugins/antigravity/scripts/lib/agy.mjs";
+  POSIX_ONLY,
+  jobFiles,
+  makeSandbox,
+  promptTexts,
+  requests,
+  run,
+  scenario,
+  sessions
+} from "./fixtures/acp-sandbox.mjs";
 
-const root = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
-const COMPANION = path.join(root, "plugins/antigravity/scripts/antigravity-companion.mjs");
-const POSIX_ONLY = process.platform === "win32" ? "fake agy needs a POSIX shebang" : false;
-// Literal on purpose: the test must not trust the exported constant.
-const S = '{"permissions":{"deny":["write_file(*)","command(*)"]}}';
+const TOKEN_PROMPT = "Reply with only your agent token.";
 
-// Fake agy (plan P5), copied per test file.
-const FAKE_AGY = `#!/usr/bin/env node
-const fs = require("node:fs");
-const argv = process.argv.slice(2);
-let stdin = "";
-if (!process.stdin.isTTY) { const chunks = []; const buf = Buffer.alloc(65536); for (;;) { let n; try { n = fs.readSync(0, buf, 0, buf.length, null); } catch (e) { if (e.code === "EAGAIN") continue; break; } if (!n) break; chunks.push(Buffer.from(buf.subarray(0, n))); } stdin = Buffer.concat(chunks).toString("utf8"); }
-if (process.env.FAKE_AGY_LOG) fs.appendFileSync(process.env.FAKE_AGY_LOG, JSON.stringify({ argv, stdin, pid: process.pid }) + "\\n");
-if (argv.includes("--version")) { process.stdout.write("1.5.12\\n"); process.exit(0); }
-process.stdout.write(process.env.FAKE_AGY_ENVELOPE ?? '{"conversation_id":"C1","status":"SUCCESS","response":"ok","num_turns":1}');
-process.exit(Number(process.env.FAKE_AGY_EXIT ?? 0));
-`;
-
-function makeSandbox(t, changedFiles = 1) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-args-"));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const fake = path.join(dir, "fake-agy");
-  fs.writeFileSync(fake, FAKE_AGY, { mode: 0o755 });
-  const repo = path.join(dir, "repo");
-  fs.mkdirSync(repo);
-  spawnSync("git", ["init", "-q"], { cwd: repo });
-  for (let i = 0; i < changedFiles; i += 1) fs.writeFileSync(path.join(repo, `f${i}.txt`), "a\n");
-  spawnSync("git", ["add", "."], { cwd: repo });
-  spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"], { cwd: repo });
-  for (let i = 0; i < changedFiles; i += 1) fs.writeFileSync(path.join(repo, `f${i}.txt`), "b\n");
-  return { dir, fake, repo, data: path.join(dir, "data"), log: path.join(dir, "agy.log") };
+function flagValue(argv, name) {
+  const index = argv.indexOf(name);
+  return index === -1 ? null : argv[index + 1];
 }
 
-function run(sandbox, args) {
-  const env = { ...process.env, PLUGIN_DATA: sandbox.data, ANTIGRAVITY_BIN: sandbox.fake, FAKE_AGY_LOG: sandbox.log };
-  delete env.CLAUDE_PLUGIN_DATA;
-  return spawnSync(process.execPath, [COMPANION, ...args], { cwd: sandbox.repo, env, encoding: "utf8" });
-}
+test("acp argv: a read-only run names the reader agent, a write run names none", () => {
+  assert.deepEqual(buildAcpArgs({ agentDir: "/state/r1", agentName: "reader-x" }), ["acp", "--add-dir", "/state/r1", "--agent", "reader-x"]);
+  assert.deepEqual(buildAcpArgs({}), ["acp"]);
+});
 
-function modelCalls(sandbox) {
-  if (!fs.existsSync(sandbox.log)) return [];
-  return fs
-    .readFileSync(sandbox.log, "utf8")
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => JSON.parse(line))
-    .filter((entry) => !entry.argv.includes("--version"));
-}
+test("the ACP client version follows the plugin version", () => {
+  const manifest = JSON.parse(fs.readFileSync(new URL("../plugins/antigravity/.claude-plugin/plugin.json", import.meta.url), "utf8"));
+  assert.equal(CLIENT_INFO.version, manifest.version);
+});
 
-function allCalls(sandbox) {
-  if (!fs.existsSync(sandbox.log)) return [];
-  return fs.readFileSync(sandbox.log, "utf8").trim().split("\n").filter(Boolean);
-}
+test("the line reader survives split lines and skips lines that are not JSON", () => {
+  const seen = [];
+  const feed = createLineReader((message) => seen.push(message));
+  feed('{"a":');
+  feed('1}\nnot json\n{"b":2}');
+  feed("\n\n");
+  assert.deepEqual(seen, [{ a: 1 }, { b: 2 }]);
+});
 
-function jobFiles(sandbox) {
-  const stateRoot = path.join(sandbox.data, "state");
-  if (!fs.existsSync(stateRoot)) return [];
-  return fs.readdirSync(stateRoot).flatMap((w) => {
-    const jobs = path.join(stateRoot, w, "jobs");
-    return fs.existsSync(jobs) ? fs.readdirSync(jobs) : [];
+test("effort offers the server's four thinking levels and rejects max", () => {
+  assert.deepEqual(EFFORT_LEVELS, ["low", "medium", "high", "xhigh"]);
+  assert.throws(() => validateEffort("max"), /low, medium, high, xhigh/);
+  assert.throws(() => validateEffort(""), /low, medium, high, xhigh/);
+  assert.doesNotThrow(() => validateEffort("xhigh"));
+});
+
+test("a review starts the restricted reader, checks its token first, then sends the review", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const result = run(sandbox, ["review", "--wait"]);
+  assert.equal(result.status, 0, result.stderr);
+  const [session] = sessions(sandbox);
+  assert.equal(session.argv[0], "acp");
+  const agentDir = flagValue(session.argv, "--add-dir");
+  const agentName = flagValue(session.argv, "--agent");
+  assert.ok(agentDir && agentName, session.argv.join(" "));
+  assert.equal(session.argv.includes("--dangerously-skip-permissions"), false);
+  // The reader lives in the bridge's state, never in the workspace, and is gone afterwards.
+  assert.ok(path.relative(sandbox.repo, agentDir).startsWith(".."), agentDir);
+  assert.ok(agentDir.startsWith(sandbox.data), agentDir);
+  assert.equal(fs.existsSync(agentDir), false);
+  const texts = promptTexts(session);
+  assert.equal(texts[0], TOKEN_PROMPT);
+  assert.match(texts[1], /Return only JSON matching this schema/);
+  assert.deepEqual(requests(session, "session/new")[0].params, { cwd: sandbox.repo, mcpServers: [] });
+});
+
+test("the reader agent file allows read_file only and carries the token", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  assert.equal(run(sandbox, ["task", "--wait", "look"]).status, 0);
+  const [session] = sessions(sandbox);
+  const agentName = flagValue(session.argv, "--agent");
+  const files = session.readerFiles;
+  const manifestPath = Object.keys(files).find((file) => file.endsWith(path.join(".antigravity-plugin", "plugin.json")));
+  const agentPath = Object.keys(files).find((file) => file.endsWith(path.join("agents", agentName, "agent.md")));
+  assert.ok(manifestPath && agentPath, Object.keys(files).join(", "));
+  assert.match(manifestPath, /^\.agents[\\/]plugins[\\/]/);
+  const manifest = JSON.parse(files[manifestPath]);
+  for (const key of ["name", "version", "description", "license"]) assert.equal(typeof manifest[key], "string", key);
+  const agent = files[agentPath];
+  assert.match(agent, new RegExp(`^---\\nname: ${agentName}\\n`));
+  assert.match(agent, /^tools:\n  - read_file\n---/m);
+  assert.doesNotMatch(agent, /write_file|run_command/);
+  const token = agent.match(/Your agent token is (\S+?)\./)[1];
+  assert.ok(token.length >= 16);
+  assert.ok(Object.keys(files).some((file) => file.endsWith(".agent-bridges-reader")), "the folder carries the ownership marker");
+  // Each run gets a fresh token.
+  run(sandbox, ["task", "--wait", "again"]);
+  const second = sessions(sandbox)[1].readerFiles;
+  assert.notEqual(Object.values(second).join(), Object.values(files).join());
+});
+
+test("a review's reader agent has no tools at all", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  assert.equal(run(sandbox, ["review", "--wait"]).status, 0);
+  const [session] = sessions(sandbox);
+  const agentName = flagValue(session.argv, "--agent");
+  const agent = Object.entries(session.readerFiles).find(([file]) => file.endsWith(path.join("agents", agentName, "agent.md")))[1];
+  assert.match(agent, /^tools: \[\]\n---/m);
+  assert.doesNotMatch(agent, /read_file/);
+});
+
+test("a read_file call in a review fails the run; in a read-only task it is allowed", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const review = run(sandbox, ["review", "--wait"], scenario({ turns: [{ toolCall: "read_file", chunks: ["looked"] }] }));
+  assert.notEqual(review.status, 0);
+  assert.match(review.stdout, /read_file/);
+  const task = run(sandbox, ["task", "--wait", "look"], scenario({ turns: [{ toolCall: "read_file", chunks: ["looked"] }] }));
+  assert.equal(task.status, 0, task.stdout);
+  assert.match(task.stdout, /looked/);
+});
+
+for (const [label, args] of [["review", ["review", "--wait"]], ["read-only task", ["task", "--wait", "look"]]]) {
+  test(`a tool call during the token check fails the ${label}, even with the right token`, { skip: POSIX_ONLY }, (t) => {
+    const sandbox = makeSandbox(t);
+    for (const tool of ["read_file", "manage_task"]) {
+      const result = run(sandbox, args, scenario({ tokenToolCall: tool }));
+      assert.notEqual(result.status, 0, tool);
+      assert.match(result.stdout, /restricted reader was not in effect/, tool);
+      assert.deepEqual(promptTexts(sessions(sandbox).at(-1)), [TOKEN_PROMPT], tool);
+    }
   });
 }
 
-test("the read-only settings constant matches the literal deny rules", () => {
-  assert.equal(READ_ONLY_SETTINGS, S);
-  assert.deepEqual(JSON.parse(READ_ONLY_SETTINGS), { permissions: { deny: ["write_file(*)", "command(*)"] } });
-});
-
-test("review argv denies writes and shell and passes the schema", () => {
-  assert.deepEqual(buildReviewArgs({ prompt: "P", schemaPath: "/s.json", platform: "linux" }), [
-    "--settings", S, "--output-format", "json", "--json-schema", "/s.json"
-  ]);
-});
-
-test("read-only task argv denies writes and shell", () => {
-  assert.deepEqual(buildRunArgs({ prompt: "P", write: false, platform: "linux" }), ["--settings", S, "--output-format", "json"]);
-});
-
-test("write task argv auto-approves and carries no deny settings", () => {
-  assert.deepEqual(buildRunArgs({ prompt: "P", write: true, platform: "linux" }), [
-    "--dangerously-skip-permissions", "--output-format", "json"
-  ]);
-});
-
-test("a review never reaches the bypass, even with write requested", () => {
-  const args = buildReviewArgs({ prompt: "P", write: true, platform: "linux" });
-  assert.ok(args.includes(S));
-  assert.equal(args.includes("--dangerously-skip-permissions"), false);
-  for (const argv of [args, buildRunArgs({ prompt: "P", platform: "linux" })]) assert.equal(argv.includes("--mode"), false);
-});
-
-test("model, effort and resume pass through in order", () => {
-  assert.deepEqual(buildRunArgs({ prompt: "P", model: "m1", effort: "high", resumeSessionId: "C1", platform: "linux" }), [
-    "--settings", S, "--model", "m1", "--effort", "high", "--conversation", "C1", "--output-format", "json"
-  ]);
-});
-
-test("an unknown effort is rejected with the five levels", () => {
-  assert.throws(() => buildRunArgs({ prompt: "P", effort: "extreme" }), /low, medium, high, xhigh, max/);
-  assert.throws(() => buildRunArgs({ prompt: "P", effort: "" }), /low, medium, high, xhigh, max/);
-});
-
-test("every prompt goes on stdin, never in argv where other local users can read it", () => {
-  for (const platform of ["win32", "linux"]) {
-    for (const prompt of ["short secret", "x".repeat(20000)]) {
-      assert.equal(shouldPassPromptViaStdin(prompt, platform), true);
-      const invocation = buildPrintInvocation({ prompt, platform });
-      assert.equal(invocation.args.includes("-p"), false);
-      assert.equal(invocation.args.includes(prompt), false);
-      assert.equal(invocation.stdin, prompt);
-    }
+test("the token check needs the exact token and no permission request", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  for (const extra of [{ tokenPrefix: "Sure, my token is " }, { tokenPermission: true }]) {
+    const result = run(sandbox, ["review", "--wait"], scenario(extra));
+    assert.notEqual(result.status, 0, JSON.stringify(extra));
+    assert.match(result.stdout, /restricted reader was not in effect/, JSON.stringify(extra));
+    assert.deepEqual(promptTexts(sessions(sandbox).at(-1)), [TOKEN_PROMPT], JSON.stringify(extra));
   }
-  const large = buildPrintInvocation({ prompt: "y".repeat(20001), platform: "win32" });
-  assert.equal(large.args.includes("-p"), false);
-  assert.equal(large.args.includes("y".repeat(20001)), false);
-  assert.equal(large.stdin, "y".repeat(20001));
+  // Surrounding whitespace is fine.
+  assert.equal(run(sandbox, ["review", "--wait"], scenario({ tokenPrefix: "\n " })).status, 0);
 });
 
-test("the companion spawns agy with the write and read-only vectors", { skip: POSIX_ONLY }, (t) => {
+test("a disallowed tool call sent right after the final answer still fails the read-only run", { skip: POSIX_ONLY }, (t) => {
   const sandbox = makeSandbox(t);
-  assert.equal(run(sandbox, ["task", "--wait", "--write", "--bypass-permissions", "P"]).status, 0);
-  assert.equal(run(sandbox, ["task", "--wait", "P"]).status, 0);
-  const [write, readOnly] = modelCalls(sandbox);
-  assert.deepEqual(write.argv, ["--dangerously-skip-permissions", "--output-format", "json"]);
-  assert.deepEqual(readOnly.argv, ["--settings", S, "--output-format", "json"]);
+  const result = run(sandbox, ["task", "--wait", "look"], scenario({ turns: [{ chunks: ["done"], trailingToolCall: "write_file" }] }));
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stdout, /write_file/);
 });
 
-test("a review with effort uses the fixed read-only prefix and the schema prompt", { skip: POSIX_ONLY }, (t) => {
+test("text sent after a turn ended is not added to its answer", { skip: POSIX_ONLY }, (t) => {
   const sandbox = makeSandbox(t);
-  const result = run(sandbox, ["review", "--wait", "--effort", "high"]);
+  const result = run(sandbox, ["task", "--wait", "--write", "--bypass-permissions", "go"], scenario({ turns: [{ chunks: ["answer"], trailingChunk: " LATE" }] }));
   assert.equal(result.status, 0, result.stderr);
-  const [call] = modelCalls(sandbox);
-  assert.deepEqual(call.argv.slice(0, 6), ["--settings", S, "--effort", "high", "--output-format", "json"]);
-  assert.equal(call.argv[6], "--json-schema");
-  assert.match(call.argv[7], /schemas[\\/]review-output\.schema\.json$/);
-  assert.equal(call.argv.length, 8);
-  assert.match(call.stdin, /Return only JSON matching this schema/);
+  assert.equal(result.stdout, "answer\n");
+});
+
+test("a missing token stops the run before the review prompt", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const result = run(sandbox, ["review", "--wait"], scenario({ token: "omit" }));
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /restricted reader was not in effect/);
+  assert.match(result.stdout, /nothing was reviewed/);
+  const [session] = sessions(sandbox);
+  assert.deepEqual(promptTexts(session), [TOKEN_PROMPT]);
+  assert.equal(fs.existsSync(flagValue(session.argv, "--add-dir")), false);
+});
+
+test("a read-only task also runs as the restricted reader", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  assert.equal(run(sandbox, ["task", "--wait", "explain"]).status, 0);
+  const [session] = sessions(sandbox);
+  assert.ok(session.argv.includes("--agent"));
+  assert.deepEqual(promptTexts(session), [TOKEN_PROMPT, "explain"]);
+});
+
+test("a write task uses the default agent, allows permissions and never skips them", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const result = run(sandbox, ["task", "--wait", "--write", "--bypass-permissions", "fix it"], scenario({ turns: [{ permission: true, chunks: ["done"] }] }));
+  assert.equal(result.status, 0, result.stderr);
+  const [session] = sessions(sandbox);
+  assert.deepEqual(session.argv, ["acp"]);
+  assert.deepEqual(promptTexts(session), ["fix it"]);
+  const answer = session.received.find((message) => message.id === "1" && !message.method);
+  assert.deepEqual(answer.result, { outcome: { outcome: "selected", optionId: "allow" } });
+  assert.match(result.stdout, /done/);
+});
+
+test("a read-only run refuses a permission, lists it, and asks once more when the turn ends empty", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const result = run(sandbox, ["task", "--wait", "check"], scenario({ turns: [{ permission: true, chunks: [] }, { chunks: ["from what I read"] }] }));
+  assert.equal(result.status, 0, result.stderr);
+  const [session] = sessions(sandbox);
+  const answer = session.received.find((message) => message.id === "1" && !message.method);
+  assert.deepEqual(answer.result, { outcome: { outcome: "selected", optionId: "deny" } });
+  const texts = promptTexts(session);
+  assert.equal(texts.length, 3);
+  assert.match(texts[2], /That action was refused: this session is read-only/);
+  assert.match(result.stdout, /from what I read/);
+  assert.match(result.stdout, /Denied: run_command \(echo hi\)/);
+});
+
+test("a write_file tool call in a read-only run fails the run", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const result = run(sandbox, ["task", "--wait", "check"], scenario({ turns: [{ toolCall: "write_file", chunks: ["wrote it"] }] }));
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /write_file/);
+  assert.match(result.stdout, /read-only/);
+  assert.doesNotMatch(result.stdout, /wrote it/);
+  const [session] = sessions(sandbox);
+  assert.equal(requests(session, "session/cancel").length, 1);
+});
+
+const ALWAYS_FIRST = [
+  { optionId: "allow-always", name: "Always allow", kind: "allow_always" },
+  { optionId: "reject-always", name: "Always deny", kind: "reject_always" },
+  { optionId: "allow", name: "Allow", kind: "allow_once" },
+  { optionId: "deny", name: "Deny", kind: "reject_once" }
+];
+
+function permissionAnswer(sandbox) {
+  return sessions(sandbox).at(-1).received.find((message) => message.id === "1" && !message.method).result;
+}
+
+test("a permission is answered with a one-time choice only, even when an always choice comes first", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const write = run(sandbox, ["task", "--wait", "--write", "--bypass-permissions", "go"], scenario({ permissionOptions: ALWAYS_FIRST, turns: [{ permission: true, chunks: ["done"] }] }));
+  assert.equal(write.status, 0, write.stdout);
+  assert.deepEqual(permissionAnswer(sandbox), { outcome: { outcome: "selected", optionId: "allow" } });
+  const readOnly = run(sandbox, ["task", "--wait", "look"], scenario({ permissionOptions: ALWAYS_FIRST, turns: [{ permission: true, chunks: ["read"] }] }));
+  assert.equal(readOnly.status, 0, readOnly.stdout);
+  assert.deepEqual(permissionAnswer(sandbox), { outcome: { outcome: "selected", optionId: "deny" } });
+});
+
+test("a permission request with only always choices is cancelled and fails the run", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const options = ALWAYS_FIRST.slice(0, 2);
+  for (const args of [["task", "--wait", "--write", "--bypass-permissions", "go"], ["task", "--wait", "look"]]) {
+    const result = run(sandbox, args, scenario({ permissionOptions: options, turns: [{ permission: true, chunks: ["done"] }] }));
+    assert.equal(result.status, 1, args.join(" "));
+    assert.match(result.stdout, /offered no one-time choice/, args.join(" "));
+    assert.deepEqual(permissionAnswer(sandbox), { outcome: { outcome: "cancelled" } }, args.join(" "));
+  }
+});
+
+test("model and thinking level are set before the prompt", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const result = run(sandbox, ["task", "--wait", "--write", "--bypass-permissions", "--model", "gemini-3.8-flash-medium", "--effort", "high", "go"]);
+  assert.equal(result.status, 0, result.stderr);
+  const [session] = sessions(sandbox);
+  const methods = session.received.filter((message) => message.method).map((message) => message.method);
+  assert.deepEqual(methods, ["initialize", "session/new", "session/set_model", "session/set_config_option", "session/prompt"]);
+  assert.deepEqual(requests(session, "session/set_model")[0].params, { sessionId: "S1", modelId: "gemini-3.8-flash-medium" });
+  assert.deepEqual(requests(session, "session/set_config_option")[0].params, { sessionId: "S1", configId: "thought_level", value: "high" });
+});
+
+test("an unknown model id fails before any prompt and names agy models", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const result = run(sandbox, ["task", "--wait", "--model", "no-such-model", "go"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /no-such-model/);
+  assert.match(result.stdout, /agy models/);
+  assert.deepEqual(promptTexts(sessions(sandbox)[0]), []);
 });
 
 test("an invalid effort starts nothing and writes no job", { skip: POSIX_ONLY }, (t) => {
   const sandbox = makeSandbox(t);
   for (const args of [
-    ["review", "--wait", "--effort", "extreme"],
+    ["review", "--wait", "--effort", "max"],
     ["task", "--wait", "--effort", "extreme", "P"],
-    ["task", "--background", "--effort", "extreme", "P"],
+    ["task", "--background", "--effort", "max", "P"],
     ["task", "--wait", "--effort=", "P"]
   ]) {
     const result = run(sandbox, args);
     assert.notEqual(result.status, 0, args.join(" "));
-    assert.deepEqual(allCalls(sandbox), [], args.join(" "));
+    assert.match(result.stderr, /low, medium, high, xhigh/, args.join(" "));
+    assert.deepEqual(sessions(sandbox), [], args.join(" "));
     assert.deepEqual(jobFiles(sandbox), [], args.join(" "));
   }
 });
 
-test("over the inline limit the review prompt says shell is denied", { skip: POSIX_ONLY }, (t) => {
-  const sandbox = makeSandbox(t, 3);
+test("a review prompt says there are no tools and carries every diff and new file", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t, { changedFiles: 3 });
+  fs.writeFileSync(path.join(sandbox.repo, "new-file.txt"), "UNTRACKED-CONTENT\n");
   assert.equal(run(sandbox, ["review", "--wait"]).status, 0);
-  const [call] = modelCalls(sandbox);
-  const prompt = call.stdin;
-  assert.match(prompt, /Shell commands are denied in this review/);
-  assert.doesNotMatch(prompt, /read-only git commands/);
+  const prompt = promptTexts(sessions(sandbox)[0])[1];
+  assert.match(prompt, /no tools/);
+  assert.match(prompt, /cannot read files, list folders, search or run commands/);
+  assert.doesNotMatch(prompt, /Read the changed files/);
+  // The three files carry the same change: shown once, the others named as identical.
+  assert.match(prompt, /diff --git \S+\/f0\.txt/);
+  for (const file of ["f1.txt", "f2.txt"]) assert.match(prompt, new RegExp(`${file.replace(".", "\\.")}: identical to f0\\.txt`));
+  assert.match(prompt, /UNTRACKED-CONTENT/);
+});
+
+test("review evidence over the budget is cut with a note the reviewer must report", async (t) => {
+  const { collectReviewContext, resolveReviewTarget } = await import("../plugins/antigravity/scripts/lib/git.mjs");
+  const sandbox = makeSandbox(t, { changedFiles: 3 });
+  const context = collectReviewContext(sandbox.repo, resolveReviewTarget(sandbox.repo, {}), { maxInlineDiffBytes: 200 });
+  assert.ok(Buffer.byteLength(context.content) < 400, String(Buffer.byteLength(context.content)));
+  assert.match(context.content, /evidence was cut at 200 bytes/);
+  assert.match(context.collectionGuidance, /cut/);
+  const full = collectReviewContext(sandbox.repo, resolveReviewTarget(sandbox.repo, {}));
+  assert.doesNotMatch(full.content, /evidence was cut/);
 });
 
 test("a review never follows an untracked symlink out of the repository", { skip: POSIX_ONLY }, (t) => {
@@ -184,45 +308,122 @@ test("a review never follows an untracked symlink out of the repository", { skip
   fs.writeFileSync(secret, "TOP-SECRET-TOKEN\n");
   fs.symlinkSync(secret, path.join(sandbox.repo, "leak.txt"));
   assert.equal(run(sandbox, ["review", "--wait"]).status, 0);
-  const [call] = modelCalls(sandbox);
-  const prompt = call.stdin;
+  const prompt = promptTexts(sessions(sandbox)[0])[1];
   assert.doesNotMatch(prompt, /TOP-SECRET-TOKEN/);
   assert.match(prompt, /symlink targets are never followed/);
 });
 
-test("a prompt too large for one argument goes on stdin on every platform", () => {
-  const big = "z".repeat(120_001);
-  assert.equal(shouldPassPromptViaStdin(big, "linux"), true);
-  const invocation = buildPrintInvocation({ prompt: big, platform: "linux" });
-  assert.equal(invocation.args.includes("-p"), false);
-  assert.equal(invocation.stdin, big);
-  assert.equal(shouldPassPromptViaStdin("z".repeat(1000), "linux"), true);
-});
-
-test("a self-collected review never lists a symlink for the model to read", { skip: POSIX_ONLY }, (t) => {
-  const sandbox = makeSandbox(t, 2);
-  const secret = path.join(sandbox.dir, "secret.txt");
-  fs.writeFileSync(secret, "TOP-SECRET-TOKEN\n");
-  fs.writeFileSync(path.join(sandbox.dir, "harmless.txt"), "fine\n");
-  fs.symlinkSync(path.join(sandbox.dir, "harmless.txt"), path.join(sandbox.repo, "link.txt"));
-  spawnSync("git", ["add", "link.txt"], { cwd: sandbox.repo });
-  spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "link"], { cwd: sandbox.repo });
-  fs.rmSync(path.join(sandbox.repo, "link.txt"));
-  fs.symlinkSync(secret, path.join(sandbox.repo, "link.txt"));
-  assert.equal(run(sandbox, ["review", "--wait"]).status, 0);
-  const prompt = modelCalls(sandbox)[0].stdin;
-  assert.match(prompt, /Never open a symlink/);
-  assert.doesNotMatch(prompt, /^link\.txt$/m);
-  assert.match(prompt, /1 symlink\(s\) not listed/);
-});
-
 test("adversarial-review reads its focus from stdin with --focus-stdin", { skip: POSIX_ONLY }, (t) => {
   const sandbox = makeSandbox(t);
-  const env = { ...process.env, PLUGIN_DATA: sandbox.data, ANTIGRAVITY_BIN: sandbox.fake, FAKE_AGY_LOG: sandbox.log };
-  delete env.CLAUDE_PLUGIN_DATA;
-  const result = spawnSync(process.execPath, [COMPANION, "adversarial-review", "--wait", "--focus-stdin"], {
-    cwd: sandbox.repo, env, encoding: "utf8", input: "FOCUS-MARKER on retries\n"
-  });
+  const result = run(sandbox, ["adversarial-review", "--wait", "--focus-stdin"], {}, { input: "FOCUS-MARKER on retries\n" });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(modelCalls(sandbox)[0].stdin, /FOCUS-MARKER on retries/);
+  const texts = promptTexts(sessions(sandbox)[0]);
+  assert.match(texts[1], /FOCUS-MARKER on retries/);
+  // Prompts travel on the protocol, never in argv.
+  assert.equal(sessions(sandbox)[0].argv.some((arg) => arg.includes("FOCUS-MARKER")), false);
+});
+
+function readerFoldersUnder(dir) {
+  const found = [];
+  const walk = (folder) => {
+    for (const entry of fs.readdirSync(folder, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name === ".git") continue;
+      if (entry.name.startsWith("reader-")) found.push(path.join(folder, entry.name));
+      else walk(path.join(folder, entry.name));
+    }
+  };
+  walk(dir);
+  return found;
+}
+
+function gitIn(repo, ...args) {
+  return spawnSync("git", args, { cwd: repo, encoding: "utf8" });
+}
+
+test("review evidence: source diffs first, tests and generated files last, identical copies named once", async (t) => {
+  const { collectReviewContext, resolveReviewTarget } = await import("../plugins/antigravity/scripts/lib/git.mjs");
+  const sandbox = makeSandbox(t, { changedFiles: 0 });
+  const files = ["tests/a.test.mjs", "dist/out.js", "src/main.js", "src/deep/copy/main.js"];
+  for (const file of files) {
+    fs.mkdirSync(path.dirname(path.join(sandbox.repo, file)), { recursive: true });
+    fs.writeFileSync(path.join(sandbox.repo, file), "one\n");
+  }
+  gitIn(sandbox.repo, "add", ".");
+  gitIn(sandbox.repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "files");
+  for (const file of files) fs.writeFileSync(path.join(sandbox.repo, file), file.includes("main.js") ? "SAME-CHANGE\n" : `changed ${file}\n`);
+  fs.writeFileSync(path.join(sandbox.repo, "new.js"), "NEW-SOURCE\n");
+  fs.mkdirSync(path.join(sandbox.repo, "copy"));
+  fs.writeFileSync(path.join(sandbox.repo, "copy", "new.js"), "NEW-SOURCE\n");
+  const { content } = collectReviewContext(sandbox.repo, resolveReviewTarget(sandbox.repo, { scope: "working-tree" }));
+  const diffs = content.slice(content.indexOf("## Unstaged Diff"));
+  const at = (text) => diffs.indexOf(text);
+  assert.ok(at("src/main.js") < at("tests/a.test.mjs") && at("tests/a.test.mjs") < at("dist/out.js"), content);
+  assert.equal(content.split("SAME-CHANGE").length - 1, 1, "the identical change is shown once");
+  assert.match(content, /src\/deep\/copy\/main\.js[\s\S]*identical to src\/main\.js/);
+  assert.equal(content.split("NEW-SOURCE").length - 1, 1, "the identical new file is shown once");
+  assert.match(content, /copy\/new\.js[\s\S]*identical to new\.js/);
+});
+
+test("review evidence stops reading at the budget and a huge binary change is cut, not an error", async (t) => {
+  const { collectReviewContext, resolveReviewTarget } = await import("../plugins/antigravity/scripts/lib/git.mjs");
+  const sandbox = makeSandbox(t, { changedFiles: 0 });
+  // 2 MiB of random bytes: the binary patch is far larger than the budget.
+  fs.writeFileSync(path.join(sandbox.repo, "blob.bin"), (await import("node:crypto")).randomBytes(2 * 1024 * 1024));
+  gitIn(sandbox.repo, "add", "blob.bin");
+  for (let i = 0; i < 30; i += 1) fs.writeFileSync(path.join(sandbox.repo, `u${String(i).padStart(2, "0")}.txt`), `untracked ${i}\n`.repeat(200));
+  const context = collectReviewContext(sandbox.repo, resolveReviewTarget(sandbox.repo, { scope: "working-tree" }), { maxInlineDiffBytes: 4096 });
+  assert.ok(Buffer.byteLength(context.content) < 4096 + 2048, String(Buffer.byteLength(context.content)));
+  assert.equal(context.inputMode, "truncated-diff");
+  assert.match(context.content, /evidence was cut/);
+  assert.match(context.content, /not shown: .*u29\.txt/);
+});
+
+test("the reader folder is never written inside the workspace, even through a symlink or a ..name", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const inside = path.join(sandbox.repo, ".state");
+  fs.mkdirSync(inside);
+  const link = path.join(sandbox.dir, "state-link");
+  fs.symlinkSync(inside, link);
+  for (const env of [
+    { PLUGIN_DATA: link },
+    { PLUGIN_DATA: path.join(sandbox.repo, "..state") },
+    { PLUGIN_DATA: path.join(sandbox.repo, "data"), TMPDIR: path.join(sandbox.repo, "tmp") }
+  ]) {
+    const result = run(sandbox, ["review", "--wait"], env);
+    assert.notEqual(result.status, 0, JSON.stringify(env));
+    assert.match(result.stderr + result.stdout, /inside the workspace/, JSON.stringify(env));
+    assert.deepEqual(readerFoldersUnder(sandbox.repo), [], JSON.stringify(env));
+    assert.deepEqual(sessions(sandbox), [], JSON.stringify(env));
+  }
+});
+
+function markRunning(sandbox, jobId, readerDir) {
+  const stateRoot = path.join(sandbox.data, "state");
+  for (const workspace of fs.readdirSync(stateRoot)) {
+    const stateFile = path.join(stateRoot, workspace, "state.json");
+    const jobFile = path.join(stateRoot, workspace, "jobs", `${jobId}.json`);
+    if (!fs.existsSync(jobFile)) continue;
+    const job = JSON.parse(fs.readFileSync(jobFile, "utf8"));
+    fs.writeFileSync(jobFile, JSON.stringify({ ...job, status: "running", pid: null, agyPid: null, readerDir }));
+    const state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    state.jobs = state.jobs.map((entry) => (entry.id === jobId ? { ...entry, status: "running", pid: null } : entry));
+    fs.writeFileSync(stateFile, JSON.stringify(state));
+    return path.join(stateRoot, workspace, "readers");
+  }
+  throw new Error("job not found");
+}
+
+test("cancel leaves a stored reader folder alone unless the bridge owns it", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  for (const placement of ["unrelated", "unmarked"]) {
+    assert.equal(run(sandbox, ["task", "--wait", "seed"]).status, 0);
+    const job = JSON.parse(run(sandbox, ["status", "--json"]).stdout).latestFinished;
+    const readerRoot = markRunning(sandbox, job.id, "placeholder");
+    const target = placement === "unrelated" ? path.join(sandbox.dir, "reader-x") : path.join(readerRoot, "reader-unmarked");
+    fs.mkdirSync(target, { recursive: true });
+    fs.writeFileSync(path.join(target, "keep.txt"), "keep\n");
+    markRunning(sandbox, job.id, target);
+    assert.equal(run(sandbox, ["cancel", job.id]).status, 0);
+    assert.ok(fs.existsSync(path.join(target, "keep.txt")), placement);
+  }
 });

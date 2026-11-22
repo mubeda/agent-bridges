@@ -67,9 +67,9 @@ test("README documents the Antigravity companion", () => {
   assert.match(readme, /install-opencode\.mjs --plugin antigravity/);
   assert.match(readme, /ANTIGRAVITY_BIN/);
   assert.match(readme, /~\/\.antigravity-companion\/state/);
-  assert.match(readme, /write_file\(\*\)/);
-  assert.match(readme, /command\(\*\)/);
-  assert.match(readme, /modelProvider/);
+  assert.match(readme, /agy acp/);
+  assert.match(readme, /restricted reader agent/);
+  assert.match(readme, /API keys are not supported/);
 });
 
 test("README documents npx skills installs", () => {

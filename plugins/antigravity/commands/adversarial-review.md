@@ -17,6 +17,7 @@ Core constraint:
 - This command is review-only.
 - Do not fix issues, apply patches, or suggest that you are about to make changes.
 - Your only job is to run the review and return Antigravity's output verbatim to the user.
+- Antigravity reviews through a restricted reader agent with no tools: it answers only from the diff and the new files' contents that the companion puts in its prompt (up to 256 KiB; a larger change is cut, and the review should say so). It cannot read other files, list folders, search or run commands. If the companion reports that the restricted reader was not in effect, nothing was reviewed; return that message as is.
 - Keep the framing focused on whether the current approach is the right one, what assumptions it depends on, and where the design could fail under real-world conditions.
 
 Execution mode rules:

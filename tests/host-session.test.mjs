@@ -263,21 +263,14 @@ test("capTranscriptMessages drops oldest so packed size stays within limit", () 
 // --- antigravity transfer (Task 1.7): private temp roots and a fake agy, never tests/.tmp ---
 const AGY_COMPANION = path.join(repoRoot, "plugins/antigravity/scripts/antigravity-companion.mjs");
 const AGY_POSIX_ONLY = process.platform === "win32" ? "fake agy needs a POSIX shebang" : false;
-const AGY_FAKE = `#!/usr/bin/env node
-const fs = require("node:fs");
-const argv = process.argv.slice(2);
-let stdin = "";
-if (!process.stdin.isTTY) { const chunks = []; const buf = Buffer.alloc(65536); for (;;) { let n; try { n = fs.readSync(0, buf, 0, buf.length, null); } catch (e) { if (e.code === "EAGAIN") continue; break; } if (!n) break; chunks.push(Buffer.from(buf.subarray(0, n))); } stdin = Buffer.concat(chunks).toString("utf8"); }
-fs.appendFileSync(process.env.FAKE_AGY_LOG, JSON.stringify({ argv, stdin }) + "\\n");
-if (argv.includes("--version")) { process.stdout.write("1.5.12\\n"); process.exit(0); }
-process.stdout.write('{"conversation_id":"C1","status":"SUCCESS","response":"ok","num_turns":1}');
-`;
+const AGY_FAKE_SOURCE = path.join(repoRoot, "tests/fixtures/fake-agy-acp.cjs");
 
 function agySandbox(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-transfer-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const fake = path.join(dir, "fake-agy");
-  fs.writeFileSync(fake, AGY_FAKE, { mode: 0o755 });
+  fs.copyFileSync(AGY_FAKE_SOURCE, fake);
+  fs.chmodSync(fake, 0o755);
   const repo = path.join(dir, "repo");
   fs.mkdirSync(repo);
   return { dir, fake, repo, home: path.join(dir, "home"), data: path.join(dir, "data"), log: path.join(dir, "agy.log") };
@@ -301,9 +294,15 @@ function runAgy(sandbox, args) {
   return spawnSync(process.execPath, [AGY_COMPANION, ...args], { cwd: sandbox.repo, env, encoding: "utf8" });
 }
 
+// One entry per `agy acp` start, with the prompt texts it received.
 function agyModelCalls(sandbox) {
   if (!fs.existsSync(sandbox.log)) return [];
-  return fs.readFileSync(sandbox.log, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((e) => !e.argv.includes("--version"));
+  const byPid = new Map();
+  for (const entry of fs.readFileSync(sandbox.log, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l))) {
+    if (entry.argv && !entry.argv.includes("--version")) byPid.set(entry.pid, { argv: entry.argv, prompts: [] });
+    else if (entry.received?.method === "session/prompt") byPid.get(entry.pid)?.prompts.push(entry.received.params.prompt[0].text);
+  }
+  return [...byPid.values()].map((call) => ({ ...call, stdin: call.prompts.join("\n") }));
 }
 
 test("antigravity transfer packs the matching Codex rollout and stores the conversation", { skip: AGY_POSIX_ONLY }, (t) => {
@@ -314,7 +313,7 @@ test("antigravity transfer packs the matching Codex rollout and stores the conve
   const calls = agyModelCalls(sandbox);
   assert.equal(calls.length, 1);
   assert.match(calls[0].stdin, /matching codex text/);
-  assert.equal(JSON.parse(result.stdout).job.agySessionId, "C1");
+  assert.equal(JSON.parse(result.stdout).job.agySessionId, "S1");
 });
 
 test("antigravity transfer refuses a Codex rollout from another workspace", { skip: AGY_POSIX_ONLY }, (t) => {
@@ -347,6 +346,6 @@ test("antigravity transfer --write auto-approves, and without it the run is read
   assert.equal(runAgy(sandbox, ["transfer", "--wait", "--write", "--bypass-permissions", "--source", source]).status, 0);
   assert.equal(runAgy(sandbox, ["transfer", "--wait", "--source", source]).status, 0);
   const [write, readOnly] = agyModelCalls(sandbox);
-  assert.equal(write.argv[0], "--dangerously-skip-permissions");
-  assert.equal(readOnly.argv[0], "--settings");
+  assert.deepEqual(write.argv, ["acp"]);
+  assert.ok(readOnly.argv.includes("--agent"));
 });

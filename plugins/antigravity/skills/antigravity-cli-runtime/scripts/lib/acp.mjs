@@ -1,0 +1,381 @@
+// A small Agent Client Protocol client for `agy acp`: newline-delimited JSON-RPC 2.0 on stdio.
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+
+import { formatDeniedActions, parseStructuredResult } from "./agy.mjs";
+
+export const TOKEN_PROMPT = "Reply with only your agent token.";
+export const REFUSED_PROMPT = "That action was refused: this session is read-only. Answer from what you have read.";
+export const JSON_RETRY_PROMPT = "Reply with only the JSON object that matches the schema above, with no other text before or after it.";
+export const READ_ONLY_RESUME_WARNING =
+  "A read-only run cannot continue an earlier Antigravity session, because the restricted reader cannot be attached to it; this started a new session. Add --write to continue the earlier one.";
+export const AUTH_MESSAGE = "Antigravity is not signed in: run `agy` once interactively, or `agy acp --login`.";
+const AUTH_ERROR_CODE = -32000;
+// manage_task is built into every agy agent. A review's reader has no other tool; a read-only task's has read_file.
+const REVIEW_TOOLS = new Set(["manage_task"]);
+const TASK_TOOLS = new Set(["read_file", "manage_task"]);
+const READER_PLUGIN = "agent-bridges-reader";
+/** Written into every reader folder at creation: cleanup removes only folders that carry it. */
+export const READER_MARKER = ".agent-bridges-reader";
+export const NO_RESUME_WARNING =
+  "This Antigravity version cannot continue sessions (its ACP server offers no session/resume); this started a new session.";
+export const CLIENT_INFO = { name: "agent-bridges-antigravity", version: "0.2.0" };
+
+export function buildAcpArgs({ agentDir, agentName } = {}) {
+  return agentDir && agentName ? ["acp", "--add-dir", agentDir, "--agent", agentName] : ["acp"];
+}
+
+/**
+ * Write a plugin with one restricted agent, plus a random token that proves agy loaded it.
+ * A review's reader has no tools (`tools: []`); a read-only task's can read files.
+ */
+export function writeReaderAgent(baseDir, { canRead = false } = {}) {
+  fs.mkdirSync(baseDir, { recursive: true, mode: 0o700 });
+  const dir = fs.mkdtempSync(path.join(baseDir, "reader-"));
+  fs.writeFileSync(path.join(dir, READER_MARKER), "agent-bridges antigravity reader\n", { mode: 0o600 });
+  const name = `bridge-reader-${crypto.randomBytes(4).toString("hex")}`;
+  const token = crypto.randomBytes(16).toString("hex");
+  const pluginDir = path.join(dir, ".agents", "plugins", READER_PLUGIN);
+  fs.mkdirSync(path.join(pluginDir, ".antigravity-plugin"), { recursive: true, mode: 0o700 });
+  fs.mkdirSync(path.join(pluginDir, "agents", name), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(
+    path.join(pluginDir, ".antigravity-plugin", "plugin.json"),
+    `${JSON.stringify({ name: READER_PLUGIN, version: "1.0.0", description: "Read-only reader for agent-bridges runs.", license: "Apache-2.0" }, null, 2)}\n`,
+    { mode: 0o600 }
+  );
+  fs.writeFileSync(
+    path.join(pluginDir, "agents", name, "agent.md"),
+    [
+      "---",
+      `name: ${name}`,
+      "description: Read-only reader for agent-bridges reviews and read-only tasks.",
+      ...(canRead ? ["tools:", "  - read_file"] : ["tools: []"]),
+      "---",
+      `Your agent token is ${token}. When asked for your agent token, reply with exactly that token and nothing else.`,
+      "",
+      canRead
+        ? "You are a read-only assistant. You can read files by path; you cannot change files, run commands, list folders or search."
+        : "You are a reviewer with no tools: you cannot read files, list folders, search or run commands. Answer only from the evidence in the prompt.",
+      ""
+    ].join("\n"),
+    { mode: 0o600 }
+  );
+  return { dir, name, token };
+}
+
+/** Feed it stdout chunks; it calls onMessage once per complete JSON line, and onSkipped for any other line (a server log). */
+export function createLineReader(onMessage, onSkipped = () => {}) {
+  let buffer = "";
+  return (chunk) => {
+    buffer += chunk;
+    let index;
+    while ((index = buffer.indexOf("\n")) !== -1) {
+      const line = buffer.slice(0, index).trim();
+      buffer = buffer.slice(index + 1);
+      if (!line) continue;
+      let message;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        onSkipped(line);
+        continue;
+      }
+      if (message && typeof message === "object" && !Array.isArray(message)) onMessage(message);
+      else onSkipped(line);
+    }
+  };
+}
+
+function rpcError(error, method) {
+  const code = typeof error?.code === "number" ? error.code : null;
+  const text = typeof error?.message === "string" ? error.message : "unknown error";
+  const auth = code === AUTH_ERROR_CODE || /authentication required/i.test(text);
+  return Object.assign(new Error(auth ? AUTH_MESSAGE : `${method} failed: ${text}${code === null ? "" : ` (code ${code})`}`), { code, rpc: true, auth });
+}
+
+export function createAcpClient({ write, onRequest = () => undefined, onNotification = () => {} }) {
+  let nextId = 1;
+  let closedError = null;
+  const pending = new Map();
+  const send = (message) => write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
+  const client = {
+    /**
+     * onSettle runs synchronously when the response arrives, before any later line of the same chunk.
+     * timeoutMs fails the whole client when the server does not answer in time.
+     */
+    request(method, params, { onSettle = null, timeoutMs = 0, label = method } = {}) {
+      if (closedError) return Promise.reject(closedError);
+      const id = nextId++;
+      return new Promise((resolve, reject) => {
+        const timer = timeoutMs > 0
+          ? setTimeout(() => client.fail(new Error(`agy did not answer ${label} within ${timeoutMs / 1000} s.`)), timeoutMs)
+          : null;
+        const settle = (fn) => (value) => {
+          if (timer) clearTimeout(timer);
+          if (onSettle) onSettle();
+          fn(value);
+        };
+        pending.set(id, { resolve: settle(resolve), reject: settle(reject), method });
+        try {
+          send({ id, method, params });
+        } catch (error) {
+          client.fail(error);
+        }
+      });
+    },
+    notify(method, params) {
+      try {
+        if (!closedError) send({ method, params });
+      } catch {
+        // best effort
+      }
+    },
+    async handle(message) {
+      // The server's own requests carry string ids, so dispatch on `method` before matching a response.
+      if (typeof message.method === "string") {
+        if (message.id === undefined || message.id === null) return onNotification(message);
+        let reply;
+        try {
+          const result = await onRequest(message);
+          reply = result === undefined ? { error: { code: -32601, message: `Method not found: ${message.method}` } } : { result };
+        } catch (error) {
+          reply = { error: { code: -32603, message: error instanceof Error ? error.message : String(error) } };
+        }
+        try {
+          if (!closedError) send({ id: message.id, ...reply });
+        } catch (error) {
+          client.fail(error);
+        }
+        return undefined;
+      }
+      // An error the server could not tie to a request (id null) would otherwise leave a request waiting forever.
+      if ((message.id === null || message.id === undefined) && message.error) {
+        client.fail(rpcError(message.error, "agy"));
+        return undefined;
+      }
+      const key = pending.has(message.id) ? message.id : typeof message.id === "string" && /^\d+$/.test(message.id) ? Number(message.id) : message.id;
+      const entry = pending.get(key);
+      if (!entry) return undefined;
+      pending.delete(key);
+      if (message.error) entry.reject(rpcError(message.error, entry.method));
+      else entry.resolve(message.result ?? {});
+      return undefined;
+    },
+    fail(error) {
+      closedError = closedError ?? error;
+      for (const entry of [...pending.values()]) entry.reject(closedError);
+      pending.clear();
+    }
+  };
+  return client;
+}
+
+const isObject = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);
+const isText = (value) => typeof value === "string" && value.length > 0;
+const isLine = (value) => Number.isInteger(value) && value >= 1;
+const onlyKeys = (value, keys) => Object.keys(value).every((key) => keys.includes(key));
+const FINDING_KEYS = ["severity", "title", "body", "file", "line_start", "line_end", "confidence", "recommendation"];
+
+/** Hand-written check of schemas/review-output.schema.json: required fields, types, enums, no extra keys. */
+export function isReviewResult(value) {
+  if (!isObject(value) || !onlyKeys(value, ["verdict", "summary", "findings", "next_steps"])) return false;
+  if (!["approve", "needs-attention"].includes(value.verdict) || !isText(value.summary)) return false;
+  if (!Array.isArray(value.next_steps) || !value.next_steps.every(isText)) return false;
+  return Array.isArray(value.findings) && value.findings.every((finding) =>
+    isObject(finding) &&
+    onlyKeys(finding, FINDING_KEYS) &&
+    FINDING_KEYS.every((key) => key in finding) &&
+    ["critical", "high", "medium", "low"].includes(finding.severity) &&
+    isText(finding.title) && isText(finding.body) && isText(finding.file) &&
+    isLine(finding.line_start) && isLine(finding.line_end) &&
+    typeof finding.confidence === "number" && finding.confidence >= 0 && finding.confidence <= 1 &&
+    typeof finding.recommendation === "string"
+  );
+}
+
+function toolName(toolCall) {
+  return String(toolCall?.name ?? toolCall?.kind ?? "unknown");
+}
+
+/**
+ * One run: initialize, open or resume a session, set model and thinking level, prove the reader in a
+ * read-only run, send the prompt(s). Returns { handle, fail, cancel, result }; result never rejects and
+ * resolves to the parsed shape the companion renders.
+ */
+export function startAcpRun(options) {
+  const { write, cwd, prompt, readOnly, token, model, effort, resumeSessionId, review } = options;
+  // Setup requests and the token check are bounded; the real prompt is not (jobs may run long; cancel ends them).
+  const setup = { timeoutMs: options.setupTimeoutMs ?? 60_000 };
+  let sessionId = null;
+  let turn = null;
+  let stopped = null;
+  let securityStop = false;
+  let promptSent = false;
+  let warning = options.warning ?? null;
+  const deniedActions = [];
+
+  // afterReply: mark the run stopped now, but let a reply that is being sent reach the server first.
+  const stop = (error, { afterReply = false, security = false } = {}) => {
+    if (stopped) return;
+    stopped = error;
+    securityStop = security;
+    const end = () => {
+      if (sessionId) client.notify("session/cancel", { sessionId });
+      client.fail(error);
+    };
+    if (afterReply) setImmediate(end);
+    else end();
+  };
+
+  const client = createAcpClient({
+    write,
+    onNotification(message) {
+      if (message.method !== "session/update") return;
+      const update = message.params?.update ?? {};
+      // Text counts only inside an open turn; a read-only session's tool rule holds at every moment.
+      if (update.sessionUpdate === "agent_message_chunk" && typeof update.content?.text === "string") {
+        if (turn) turn.text += update.content.text;
+      } else if (update.sessionUpdate === "tool_call" && readOnly) {
+        const name = typeof update.name === "string" ? update.name : "";
+        // The real reader has the token in its instructions: a tool used to answer the check proves nothing.
+        if (turn?.verifying) {
+          stop(new Error(`${readerMissing()} A tool (${name || "unnamed"}) was used during the token check.`), { security: true });
+        } else if (!(review ? REVIEW_TOOLS : TASK_TOOLS).has(name)) {
+          stop(new Error(`Antigravity started the tool "${name || "unnamed"}" in a read-only run, so the run was stopped.`), { security: true });
+        }
+      }
+    },
+    onRequest(message) {
+      if (message.method !== "session/request_permission") return undefined;
+      const params = message.params ?? {};
+      if (turn?.verifying) stop(new Error(`${readerMissing()} A permission request came during the token check.`), { security: true });
+      const choices = Array.isArray(params.options) ? params.options : [];
+      // Exact one-time kinds only: an *_always choice could save a rule in the user's Antigravity settings.
+      const kind = readOnly ? "reject_once" : "allow_once";
+      const choice = choices.find((option) => option?.kind === kind);
+      if (readOnly) deniedActions.push({ action: toolName(params.toolCall), display_name: params.toolCall?.title ?? null });
+      if (!choice) {
+        stop(
+          new Error(`Antigravity's permission request for ${toolName(params.toolCall)} offered no one-time choice (${kind}), so it was cancelled and the run was stopped.`),
+          { afterReply: true }
+        );
+        return { outcome: { outcome: "cancelled" } };
+      }
+      return { outcome: { outcome: "selected", optionId: choice.optionId } };
+    }
+  });
+
+  const readerMissing = () =>
+    `Antigravity's restricted reader was not in effect (its token check failed), so the run was stopped and nothing was ${review ? "reviewed" : "run"}.`;
+
+  async function sendPrompt(text, verifying = false) {
+    const current = { text: "", verifying };
+    turn = current;
+    // Close the turn the moment its response arrives, so a later line of the same chunk cannot add to it.
+    const response = await client.request(
+      "session/prompt",
+      { sessionId, prompt: [{ type: "text", text }] },
+      { onSettle: () => { if (turn === current) turn = null; }, ...(verifying ? { ...setup, label: "the token check" } : {}) }
+    );
+    if (stopped) throw stopped;
+    if (response?.stopReason !== "end_turn") {
+      throw new Error(`Antigravity ended the turn with stop reason "${response?.stopReason ?? "none"}".`);
+    }
+    return current.text;
+  }
+
+  async function main() {
+    const init = await client.request("initialize", {
+      protocolVersion: 1,
+      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+      clientInfo: CLIENT_INFO
+    }, setup);
+    let session = null;
+    // A session keeps the agent it was made with, so a read-only run never resumes: it could be a full-tool session.
+    if (resumeSessionId && readOnly) warning = READ_ONLY_RESUME_WARNING;
+    // Write runs only, and session/resume only: session/load on an unknown id silently creates a session.
+    else if (resumeSessionId && !init?.agentCapabilities?.sessionCapabilities?.resume) warning = NO_RESUME_WARNING;
+    else if (resumeSessionId) {
+      try {
+        session = await client.request("session/resume", { sessionId: resumeSessionId, cwd, mcpServers: [] }, setup);
+        sessionId = String(resumeSessionId);
+      } catch (error) {
+        // Only a confirmed missing session starts afresh; any other error must not run a prompt that needs the history.
+        if (!error?.rpc || !/Failed to read session/.test(error.message)) throw error;
+        warning = `conversation ${resumeSessionId} not found; Antigravity started a new one`;
+      }
+    }
+    if (!sessionId) {
+      session = await client.request("session/new", { cwd, mcpServers: [] }, setup);
+      if (!session?.sessionId) throw new Error("Antigravity returned no session id.");
+      sessionId = String(session.sessionId);
+    }
+    if (model) {
+      // shortcut: a resumed session may not list its models; then the server's own error decides.
+      const available = session?.models?.availableModels;
+      if (Array.isArray(available) && !available.some((entry) => entry?.modelId === model)) {
+        throw new Error(`Antigravity has no model "${model}". Run \`agy models\` to list the model ids.`);
+      }
+      await client.request("session/set_model", { sessionId, modelId: model }, setup);
+    }
+    if (effort) await client.request("session/set_config_option", { sessionId, configId: "thought_level", value: effort }, setup);
+    if (readOnly) {
+      const answer = await sendPrompt(TOKEN_PROMPT, true);
+      if (!token || answer.trim() !== token) {
+        stop(new Error(readerMissing()), { security: true });
+        throw stopped;
+      }
+    }
+    promptSent = true;
+    let text = await sendPrompt(prompt);
+    if (readOnly && !text.trim() && deniedActions.length) text = await sendPrompt(REFUSED_PROMPT);
+    let structured = null;
+    if (review) {
+      structured = isReviewResult(parseStructuredResult(text)) ? parseStructuredResult(text) : null;
+      if (!structured) {
+        const retry = await sendPrompt(JSON_RETRY_PROMPT);
+        const parsed = parseStructuredResult(retry);
+        if (isReviewResult(parsed)) structured = parsed;
+        if (retry.trim()) text = retry;
+      }
+    }
+    const response = text.trim();
+    let resultText = response;
+    if (deniedActions.length) {
+      const denied = formatDeniedActions(deniedActions);
+      resultText = response ? `${response}\nDenied: ${denied}` : `no answer; denied: ${denied}`;
+    }
+    if (stopped) throw stopped;
+    return { sessionId, resultText, structured, status: "end_turn", ok: true, error: null, deniedActions, warning, promptSent, raw: null };
+  }
+
+  const failure = (error) => ({
+    sessionId,
+    resultText: "",
+    structured: null,
+    status: null,
+    ok: false,
+    error: error instanceof Error ? error.message : String(error),
+    deniedActions,
+    warning,
+    promptSent,
+    raw: null
+  });
+  const result = main().catch((error) => failure(stopped ?? error));
+
+  return {
+    result,
+    handle: (message) => client.handle(message),
+    fail: (error) => client.fail(error),
+    /** Stop the run now (sends session/cancel when a session exists): nothing later can turn it into a success. */
+    abort: (error) => {
+      stop(error);
+      return Boolean(sessionId);
+    },
+    /** True when a read-only security rule stopped the run: end the tree at once. */
+    securityStopped: () => securityStop,
+    /** Re-check after the output closed: a violation that came after the final answer still fails the run. */
+    settle: (parsed) => (parsed.ok && stopped ? failure(stopped) : parsed),
+  };
+}

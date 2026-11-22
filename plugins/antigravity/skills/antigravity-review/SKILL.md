@@ -24,3 +24,5 @@ node "<plugin-root>/scripts/antigravity-companion.mjs" review <arguments>
 
 This skill is review-only. Do not patch code or pass `--write`.
 
+Antigravity reviews through a restricted reader agent with no tools: it answers only from the diff and the new files' contents that the companion puts in its prompt (up to 256 KiB; a larger change is cut, and the review should say so). It cannot read other files, list folders, search or run commands. If the companion reports that the restricted reader was not in effect, nothing was reviewed; return that message as is.
+
