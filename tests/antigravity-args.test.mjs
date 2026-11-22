@@ -548,3 +548,38 @@ test("review evidence: a file that follows one that used exactly the rest of the
     assert.deepEqual(context.partlyShown, [], String(tracked));
   }
 });
+
+test("review evidence: an untracked file that is only named as skipped counts as not shown, and later files are still collected", async (t) => {
+  const { collectReviewContext, resolveReviewTarget } = await import("../plugins/antigravity/scripts/lib/git.mjs");
+  const sandbox = makeSandbox(t, { changedFiles: 0 });
+  commitFiles(sandbox.repo, { "keep.txt": "one\n" });
+  // Over the 24 KiB limit for one untracked file: the prompt gets a skip message, not its contents.
+  fs.writeFileSync(path.join(sandbox.repo, "a-big.txt"), "a long untracked line\n".repeat(1500));
+  fs.writeFileSync(path.join(sandbox.repo, "b.txt"), "the line that uses up the budget\n".repeat(200));
+  fs.writeFileSync(path.join(sandbox.repo, "c.txt"), "never read\n");
+  const context = collectReviewContext(sandbox.repo, resolveReviewTarget(sandbox.repo, { scope: "working-tree" }), { maxInlineDiffBytes: 4096 });
+  assert.match(context.content, /### a-big\.txt\n\(skipped: /);
+  assert.match(context.content, /the line that uses up the budget/);
+  assert.deepEqual(context.notShown, ["a-big.txt", "c.txt"]);
+  assert.deepEqual(context.partlyShown, ["b.txt"]);
+});
+
+test("review evidence: a last file that uses exactly the rest of the budget is a whole review, not a cut one", async (t) => {
+  const { collectReviewContext, resolveReviewTarget } = await import("../plugins/antigravity/scripts/lib/git.mjs");
+  for (const scope of ["working-tree", "branch"]) {
+    const sandbox = makeSandbox(t, { changedFiles: 0 });
+    commitFiles(sandbox.repo, { "a.txt": "one\n" });
+    gitIn(sandbox.repo, "branch", "base");
+    fs.writeFileSync(path.join(sandbox.repo, "a.txt"), "two\n");
+    if (scope === "branch") gitIn(sandbox.repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qam", "change");
+    const target = resolveReviewTarget(sandbox.repo, scope === "branch" ? { scope, base: "base" } : { scope });
+    const whole = collectReviewContext(sandbox.repo, target).content;
+    // The diff ends where the separator line after it starts.
+    const end = scope === "branch" ? whole.length - 1 : whole.indexOf("\n## Untracked Files");
+    assert.ok(end > 0 && whole.slice(0, end).endsWith("+two\n"), whole);
+    const context = collectReviewContext(sandbox.repo, target, { maxInlineDiffBytes: Buffer.byteLength(whole.slice(0, end)) });
+    assert.equal(context.truncated, false, scope);
+    assert.equal(context.content, whole.slice(0, end), scope);
+    assert.deepEqual([context.notShown, context.partlyShown], [[], []], scope);
+  }
+});

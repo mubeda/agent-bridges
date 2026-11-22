@@ -306,6 +306,17 @@ function createEvidence(maxBytes) {
       if (file !== undefined) partlyShown.add(file);
       return false;
     },
+    /** Headings and separators use the budget, but one that does not fit is not a cut of the change. */
+    format(text) {
+      if (truncated) return;
+      const bytes = Buffer.byteLength(text, "utf8");
+      parts.push(bytes <= left ? text : cutUtf8(text, left));
+      left = Math.max(0, left - bytes);
+    },
+    /** A file the prompt only names (too large, binary, a symlink): its contents are not shown, whatever the budget. */
+    omit(name) {
+      notShown.add(name);
+    },
     cut(file) {
       truncated = true;
       if (file !== undefined) partlyShown.add(file);
@@ -335,8 +346,8 @@ function createEvidence(maxBytes) {
  * lines) equals one already shown is only named; a different mode change keeps its own diff.
  */
 function addDiffs(evidence, cwd, title, diffArgs, changes) {
-  evidence.add(`## ${title}\n\n`);
-  if (!changes.length) evidence.add("(none)\n\n");
+  evidence.format(`## ${title}\n\n`);
+  if (!changes.length) evidence.format("(none)\n\n");
   const byFile = new Map(changes.map((change) => [change.file, change]));
   const seen = new Map();
   for (const file of orderFiles([...byFile.keys()])) {
@@ -357,12 +368,12 @@ function addDiffs(evidence, cwd, title, diffArgs, changes) {
     evidence.add(text.endsWith("\n") || !text ? text : `${text}\n`, file);
     if (more) evidence.cut(file);
   }
-  evidence.add("\n");
+  evidence.format("\n");
 }
 
 function addUntracked(evidence, cwd, files) {
-  evidence.add("## Untracked Files\n\n");
-  if (!files.length) evidence.add("(none)\n");
+  evidence.format("## Untracked Files\n\n");
+  if (!files.length) evidence.format("(none)\n");
   const seen = new Map();
   for (const file of orderFiles(files)) {
     // Stop reading once the budget is used: the rest are only named.
@@ -371,13 +382,19 @@ function addUntracked(evidence, cwd, files) {
       continue;
     }
     const body = formatUntrackedFile(cwd, file);
+    if (body.startsWith("(skipped: ", `### ${file}\n`.length)) {
+      evidence.add(`${body}\n\n`);
+      evidence.omit(file);
+      continue;
+    }
     const hash = createHash("sha256").update(body.slice(body.indexOf("\n") + 1)).digest("hex");
     if (body.includes("\n```\n") && seen.has(hash)) {
       evidence.add(`### ${file}\n(identical to ${seen.get(hash)}, not repeated)\n\n`, file);
       continue;
     }
     if (!seen.has(hash)) seen.set(hash, file);
-    evidence.add(`${body}\n\n`, file);
+    evidence.add(body, file);
+    evidence.format("\n\n");
   }
 }
 
