@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { formatDeniedActions } from "../plugins/antigravity/scripts/lib/agy.mjs";
-import { QUIET_SETTLE_MS, TOKEN_PROMPT, startAcpRun, subagentBusy, subagentStates } from "../plugins/antigravity/scripts/lib/acp.mjs";
+import { QUIET_SETTLE_MS, TOKEN_PROMPT, finishAgyRun, startAcpRun, subagentBusy, subagentStates } from "../plugins/antigravity/scripts/lib/acp.mjs";
 import { spawn } from "node:child_process";
 
 import {
@@ -31,6 +31,24 @@ const FINDINGS = {
   findings: [{ severity: "high", title: "t", body: "b", file: "a.js", line_start: 3, line_end: 4, confidence: 0.9, recommendation: "r" }]
 };
 const WRITE = ["task", "--wait", "--write", "--bypass-permissions"];
+
+/** Alive and not a zombie: an orphan whose parent never reaps it still answers signal 0, but cannot write anything. */
+function processAlive(pid) {
+  if (process.platform === "linux") {
+    try {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+      return stat.slice(stat.lastIndexOf(")") + 2)[0] !== "Z";
+    } catch {
+      return false;
+    }
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 test("denied actions format as tool (title)", () => {
   assert.equal(formatDeniedActions([{ action: "run_command", display_name: "echo hi" }]), "run_command (echo hi)");
@@ -335,17 +353,21 @@ test("a resumed write session sets the mode auto again", { skip: POSIX_ONLY }, (
   assert.deepEqual(requests(resumed, "session/set_mode").map((message) => message.params), [{ sessionId: "S1", modeId: "auto" }]);
 });
 
-test("without the auto mode, or when setting it fails, a write task runs in the default mode and says so in one line", { skip: POSIX_ONLY }, (t) => {
+test("without the auto mode, or when setting it fails, a write task goes on in the session's mode and says which in one line", { skip: POSIX_ONLY }, (t) => {
   const sandbox = makeSandbox(t);
   for (const [env, sent] of [[{ noAutoMode: true }, 0], [{ setModeError: "mode boom" }, 1]]) {
     const result = run(sandbox, WRITE.concat("go"), scenario({ ...env, turns: [{ chunks: ["done anyway"] }] }));
     assert.equal(result.status, 0, result.stderr);
-    const lines = result.stdout.split("\n").filter((line) => /default mode/.test(line));
+    const lines = result.stdout.split("\n").filter((line) => /auto mode/.test(line));
     assert.equal(lines.length, 1, result.stdout);
-    assert.match(lines[0], /^Warning: .*auto/);
+    assert.match(lines[0], /^Warning: .*the session stayed in mode "default"/);
     assert.match(result.stdout, /done anyway/);
     assert.equal(requests(sessions(sandbox).at(-1), "session/set_mode").length, sent);
   }
+  // A resumed session lists no modes, so its current mode is not known.
+  const resumed = run(sandbox, WRITE.concat("--resume-last", "more"), scenario({ setModeError: "mode boom" }));
+  assert.equal(resumed.status, 0, resumed.stderr);
+  assert.match(resumed.stdout, /^Warning: .*auto mode.*the mode was left unchanged/m);
 });
 
 test("a job record without the read-only field counts as a write session", { skip: POSIX_ONLY }, (t) => {
@@ -632,7 +654,8 @@ test("a read-only violation after the wait's bound hit still discards the partia
   const sandbox = makeSandbox(t);
   const inside = path.join(sandbox.repo, "f0.txt");
   const after = [{ toolCall: "read_file", id: "r", path: inside }, { delayMs: 1150, toolCall: "write_file", id: "w" }];
-  const result = run(sandbox, ["task", "--wait", "look"], { ...scenario({ exitDelayMs: 1000, turns: [{ chunks: ["PARTIAL"], after }] }), AGENT_BRIDGES_ACP_QUIET_TIMEOUT_MS: "1000" });
+  // agy ignores SIGTERM, so the violation arrives while its tree is being ended.
+  const result = run(sandbox, ["task", "--wait", "look"], { ...scenario({ ignoreTerm: true, exitDelayMs: 1000, turns: [{ chunks: ["PARTIAL"], after }] }), AGENT_BRIDGES_ACP_QUIET_TIMEOUT_MS: "1000" });
   assert.equal(result.status, 1, result.stdout);
   assert.match(result.stdout, /write_file/);
   assert.doesNotMatch(result.stdout, /PARTIAL/);
@@ -745,7 +768,34 @@ test("the wait's bound ends agy's whole process group, even after agy itself exi
   assert.equal(result.status, 1, result.stdout);
   const { bgPid } = JSON.parse(fs.readFileSync(sandbox.pidfile, "utf8"));
   t.after(() => { try { process.kill(bgPid, "SIGKILL"); } catch {} });
-  assert.throws(() => process.kill(bgPid, 0), "the background command outlived the run");
+  assert.equal(processAlive(bgPid), false, "the background command outlived the run");
+});
+
+test("an unexpected agy exit during the wait ends the background command agy left behind", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const after = [{ toolCall: "run_command", id: "bg" }, { background: true }, { delayMs: 300, exit: 3 }];
+  const result = run(sandbox, WRITE.concat("go"), scenario({ turns: [{ chunks: ["started"], after }] }));
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stdout, /agy exited/);
+  const { bgPid } = JSON.parse(fs.readFileSync(sandbox.pidfile, "utf8"));
+  t.after(() => { try { process.kill(bgPid, "SIGKILL"); } catch {} });
+  assert.equal(processAlive(bgPid), false, "the background command outlived the run");
+});
+
+test("finishAgyRun: a run that did not complete cleanly ends the tree before agy's input closes; a clean one gets its grace first", async () => {
+  const order = (clean, exits) => {
+    const calls = [];
+    return finishAgyRun({
+      clean,
+      endTree: async () => { calls.push("endTree"); },
+      closeInput: () => { calls.push("closeInput"); },
+      waitExit: async () => { calls.push("waitExit"); return exits; }
+    }).then(() => calls);
+  };
+  // Windows: taskkill /T reaches the tree only while agy's PID still addresses it, so it comes before EOF.
+  assert.deepEqual(await order(false, true), ["endTree", "closeInput"]);
+  assert.deepEqual(await order(true, true), ["closeInput", "waitExit"]);
+  assert.deepEqual(await order(true, false), ["closeInput", "waitExit", "endTree"]);
 });
 
 test("call ids that are absent, null or empty are one case: anonymous starts are waited for and closed", { skip: POSIX_ONLY }, (t) => {
@@ -845,7 +895,8 @@ test("a session that never goes quiet is stopped by the bound on the wait, with 
   const sandbox = makeSandbox(t);
   const after = [{ toolCall: "run_command", id: "bg" }];
   const started = Date.now();
-  const result = run(sandbox, WRITE.concat("go"), { ...scenario({ turns: [{ chunks: ["still going"], after }] }), AGENT_BRIDGES_ACP_QUIET_TIMEOUT_MS: "1000" });
+  // agy ignores SIGTERM, so it lives long enough to log the session/cancel sent before the tree is ended.
+  const result = run(sandbox, WRITE.concat("go"), { ...scenario({ ignoreTerm: true, turns: [{ chunks: ["still going"], after }] }), AGENT_BRIDGES_ACP_QUIET_TIMEOUT_MS: "1000" });
   assert.equal(result.status, 1, result.stdout);
   assert.ok(Date.now() - started < 15000);
   assert.match(result.stdout, /still working 1 s after its turn ended/);

@@ -17,6 +17,8 @@ if (argv.includes("--version")) {
 }
 
 const scenario = JSON.parse(process.env.FAKE_ACP || "{}");
+// A server slow to stop: SIGTERM is ignored, so only the SIGKILL that follows ends it.
+if (scenario.ignoreTerm) process.on("SIGTERM", () => {});
 const line = (message) => JSON.stringify({ jsonrpc: "2.0", ...message, ...(scenario.stringIds && message.id !== undefined && !message.method ? { id: String(message.id) } : {}) }) + "\n";
 const send = (message) => process.stdout.write(line(message));
 const flag = (name) => { const i = argv.indexOf(name); return i === -1 ? null : argv[i + 1]; };

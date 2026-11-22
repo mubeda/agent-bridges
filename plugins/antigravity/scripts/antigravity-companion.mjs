@@ -14,6 +14,7 @@ import {
   canonicalPath,
   createLineReader,
   isInside,
+  finishAgyRun,
   startAcpRun,
   writeReaderAgent
 } from "./lib/acp.mjs";
@@ -372,17 +373,22 @@ async function executeAcpRun(request, hooks = {}) {
     let parsed = await run.result;
     // A forwarded signal owns the rest: it ends the tree and exits; nothing is stored or printed here.
     if (stopping) await new Promise(() => {});
-    child.stdin.end();
-    // agy acp may not exit at the end of its input: give it a moment (less after a failure, none after a
-    // read-only security stop), then end its tree.
-    const grace = run.securityStopped() ? 0 : parsed.ok ? 2000 : 250;
-    const exited = grace > 0 && (await Promise.race([closed.then(() => true), unrefSleep(grace).then(() => false)]));
-    // After the wait's bound a background command with its own stdio may outlive agy: end the group regardless.
-    if ((!exited || run.timedOut()) && child.pid) await endAgyTree(child.pid, cwd);
+    // Every end that is not a clean completion ends the whole tree, by one path (and only once).
+    let ended = null;
+    const endTree = () => (ended ??= child.pid ? endAgyTree(child.pid, cwd) : Promise.resolve());
+    await finishAgyRun({
+      clean: parsed.ok && !run.securityStopped(),
+      endTree,
+      closeInput: () => child.stdin.end(),
+      // agy acp may not exit at the end of its input.
+      waitExit: (ms) => Promise.race([closed.then(() => true), unrefSleep(ms).then(() => false)])
+    });
     // Keep reading until the output closes, so a forbidden tool call after the final answer still fails the run.
     await Promise.race([stdoutDone, unrefSleep(1000)]);
     const status = await Promise.race([closed, unrefSleep(1000).then(() => ({ status: null, signal: null }))]);
     parsed = run.settle(parsed);
+    // A violation after the final answer fails the run too: end whatever agy left (a no-op when already ended).
+    if (!parsed.ok) await endTree();
     if (stopping) await new Promise(() => {});
     return { command: { ...status, stderr, pid: child.pid ?? null }, parsed };
   } catch (error) {

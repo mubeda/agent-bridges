@@ -325,6 +325,23 @@ function unfinishedLine(unfinished) {
 }
 
 /**
+ * The end of an agy run, by one path. A run that did not complete cleanly (the wait's bound, agy exiting, a
+ * security stop, cancel, any failure) ends agy's whole tree first, while agy's PID still addresses it: on
+ * Windows `taskkill /T` cannot reach a tree whose root already exited (agy may exit on end of input), and on
+ * POSIX the process group outlives its leader. A clean run closes agy's input, gives it a grace period, and
+ * ends whatever is left.
+ */
+export async function finishAgyRun({ clean, endTree, closeInput, waitExit, graceMs = 2000 }) {
+  if (!clean) {
+    await endTree();
+    closeInput();
+    return;
+  }
+  closeInput();
+  if (!(await waitExit(graceMs))) await endTree();
+}
+
+/**
  * One run: initialize, open or resume a session, set model and thinking level, prove the reader in a
  * read-only run, send the prompt(s). Returns { handle, fail, cancel, result }; result never rejects and
  * resolves to the parsed shape the companion renders.
@@ -351,7 +368,6 @@ export function startAcpRun(options) {
   let anonymousCalls = 0;
   // Resolves the quiet wait's sleep, so a stop or a closed server ends the wait at once.
   let wakeWait = null;
-  let quietTimedOut = false;
   let turn = null;
   let stopped = null;
   let securityStop = false;
@@ -603,7 +619,6 @@ export function startAcpRun(options) {
         unfinished = subagentStates(geminiDir, sessionId, settleMs, { ...options, diagnose: true })
           .filter((state) => state.running || state.stuck || state.recent)
           .map(({ id, role, running, stuck }) => ({ id, role, reason: running ? "still running" : stuck ? "stuck on a command" : "recently active" }));
-        quietTimedOut = true;
         stop(Object.assign(
           new Error(`Antigravity's session was still working ${Math.round(quietTimeoutMs / 1000)} s after its turn ended, so the run was stopped.`),
           { partialText: resultLines(current.text) }
@@ -659,7 +674,9 @@ export function startAcpRun(options) {
         }
       }
       if (missing) {
-        const note = `the session could not use Antigravity's auto mode (${missing}), so this task ran in the default mode, where subagents may not run commands.`;
+        // A failed set_mode leaves the mode as it was, which is not always the default (a resumed session).
+        const current = isText(session?.modes?.currentModeId) ? `the session stayed in mode "${session.modes.currentModeId}"` : "the mode was left unchanged";
+        const note = `the session could not use Antigravity's auto mode (${missing}), so ${current}, and its subagents may not be able to run commands.`;
         warning = warning ? `${warning} Also, ${note}` : `${note[0].toUpperCase()}${note.slice(1)}`;
       }
     }
@@ -742,8 +759,6 @@ export function startAcpRun(options) {
     },
     /** True when a read-only security rule stopped the run: end the tree at once. */
     securityStopped: () => securityStop,
-    /** True when the wait's bound stopped the run: end agy's whole process group, even when agy itself exited. */
-    timedOut: () => quietTimedOut,
     /** Re-check after the output closed: a violation that came after the final answer still fails the run. */
     settle: (parsed) => ((parsed.ok || securityStop) && stopped ? failure(stopped) : parsed),
   };
