@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { formatDeniedActions } from "../plugins/antigravity/scripts/lib/agy.mjs";
+import { subagentBusy } from "../plugins/antigravity/scripts/lib/acp.mjs";
 import { spawn } from "node:child_process";
 
 import {
@@ -504,6 +506,28 @@ test("a busy subagent keeps the task open until its transcript has a SYSTEM_MESS
   assert.equal(result.status, 0, result.stderr);
   assert.ok(Date.now() - started >= 1500, "the run ended while the subagent was still RUNNING");
   assert.equal(result.stdout, "asked a subagent\n");
+});
+
+test("subagentBusy: RUNNING without a later SYSTEM_MESSAGE is busy, unless the transcript predates the run", (t) => {
+  const gemini = fs.mkdtempSync(path.join(os.tmpdir(), "agy-brain-"));
+  t.after(() => fs.rmSync(gemini, { recursive: true, force: true }));
+  const brain = path.join(gemini, "antigravity-cli", "brain");
+  const list = path.join(brain, "S1", ".system_generated", "subagents");
+  const logs = path.join(brain, "sub1", ".system_generated", "logs");
+  fs.mkdirSync(list, { recursive: true });
+  fs.mkdirSync(logs, { recursive: true });
+  fs.writeFileSync(path.join(list, "sub1.json"), JSON.stringify({ conversationId: "sub1" }));
+  const transcript = path.join(logs, "transcript.jsonl");
+  fs.writeFileSync(transcript, `${JSON.stringify({ type: "TOOL_CALL", status: "RUNNING" })}\nnot json\n`);
+  const mtime = fs.statSync(transcript).mtimeMs;
+  const later = mtime + 60_000;
+  assert.equal(subagentBusy(gemini, "S1", 1000, { now: mtime + 10 }), true, "changed within the settle time");
+  assert.equal(subagentBusy(gemini, "S1", 1000, { now: later }), true, "RUNNING");
+  assert.equal(subagentBusy(gemini, "S1", 1000, { now: later, since: mtime + 1 }), false, "left by an earlier run");
+  assert.equal(subagentBusy(gemini, "../S1", 1000, { now: later }), false, "an id with a separator");
+  assert.equal(subagentBusy(gemini, "S2", 1000, { now: later }), false, "no subagents");
+  fs.appendFileSync(transcript, `${JSON.stringify({ type: "SYSTEM_MESSAGE" })}\n`);
+  assert.equal(subagentBusy(gemini, "S1", 1000, { now: fs.statSync(transcript).mtimeMs + 60_000 }), false, "SYSTEM_MESSAGE after RUNNING");
 });
 
 test("a pending ask_question does not keep the task open and is named in the result", { skip: POSIX_ONLY }, (t) => {

@@ -234,9 +234,10 @@ function safeId(value) {
 /**
  * True when a subagent of the session is still working (read only, never written): its transcript changed
  * within settleMs, or its latest tool record is RUNNING with no SYSTEM_MESSAGE record after it.
- * Missing folders and unreadable files count as not busy.
+ * Missing folders and unreadable files count as not busy, and so does a transcript last changed before
+ * `since` (this run's start): a resumed session lists earlier runs' subagents, which may have been cut off.
  */
-export function subagentBusy(geminiDir, sessionId, settleMs, now = Date.now()) {
+export function subagentBusy(geminiDir, sessionId, settleMs, { now = Date.now(), since = 0 } = {}) {
   const brain = path.join(geminiDir, "antigravity-cli", "brain");
   const session = safeId(sessionId);
   if (!session) return false;
@@ -260,6 +261,7 @@ export function subagentBusy(geminiDir, sessionId, settleMs, now = Date.now()) {
     } catch {
       return false;
     }
+    if (mtime < since) return false;
     if (now - mtime < settleMs) return true;
     let running = false;
     for (const line of transcript.split("\n")) {
@@ -293,7 +295,8 @@ export function startAcpRun(options) {
   const settleMs = options.quietSettleMs ?? QUIET_SETTLE_MS;
   const quietTimeoutMs = options.quietTimeoutMs ?? QUIET_TIMEOUT_MS;
   const geminiDir = options.geminiDir ?? path.join(os.homedir(), ".gemini");
-  let lastUpdate = Date.now();
+  const runStarted = Date.now();
+  let lastUpdate = runStarted;
   let sessionId = null;
   let turn = null;
   let stopped = null;
@@ -445,7 +448,7 @@ export function startAcpRun(options) {
       const error = stopped ?? client.closedError();
       if (error) throw error;
       const now = Date.now();
-      if (!openCalls(false).length && now - lastUpdate >= settleMs && !subagentBusy(geminiDir, sessionId, settleMs, now)) return;
+      if (!openCalls(false).length && now - lastUpdate >= settleMs && !subagentBusy(geminiDir, sessionId, settleMs, { now, since: runStarted })) return;
       if (now - started >= quietTimeoutMs) {
         stop(Object.assign(
           new Error(`Antigravity's session was still working ${Math.round(quietTimeoutMs / 1000)} s after its turn ended, so the run was stopped.`),
