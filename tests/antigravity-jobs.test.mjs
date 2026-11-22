@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { formatDeniedActions } from "../plugins/antigravity/scripts/lib/agy.mjs";
-import { subagentBusy } from "../plugins/antigravity/scripts/lib/acp.mjs";
+import { QUIET_SETTLE_MS, subagentBusy } from "../plugins/antigravity/scripts/lib/acp.mjs";
 import { spawn } from "node:child_process";
 
 import {
@@ -528,6 +528,54 @@ test("subagentBusy: RUNNING without a later SYSTEM_MESSAGE is busy, unless the t
   assert.equal(subagentBusy(gemini, "S2", 1000, { now: later }), false, "no subagents");
   fs.appendFileSync(transcript, `${JSON.stringify({ type: "SYSTEM_MESSAGE" })}\n`);
   assert.equal(subagentBusy(gemini, "S1", 1000, { now: fs.statSync(transcript).mtimeMs + 60_000 }), false, "SYSTEM_MESSAGE after RUNNING");
+});
+
+test("the default settle time is 30 s: a thinking model can be silent for 17 s", () => {
+  assert.equal(QUIET_SETTLE_MS, 30_000);
+});
+
+test("subagentBusy: two background commands and one SYSTEM_MESSAGE are still busy", (t) => {
+  const gemini = fs.mkdtempSync(path.join(os.tmpdir(), "agy-brain-"));
+  t.after(() => fs.rmSync(gemini, { recursive: true, force: true }));
+  const brain = path.join(gemini, "antigravity-cli", "brain");
+  fs.mkdirSync(path.join(brain, "S1", ".system_generated", "subagents"), { recursive: true });
+  fs.writeFileSync(path.join(brain, "S1", ".system_generated", "subagents", "sub1.json"), JSON.stringify({ conversationId: "sub1" }));
+  const logs = path.join(brain, "sub1", ".system_generated", "logs");
+  fs.mkdirSync(logs, { recursive: true });
+  const transcript = path.join(logs, "transcript.jsonl");
+  const running = JSON.stringify({ type: "TOOL_CALL", status: "RUNNING" });
+  const done = JSON.stringify({ type: "SYSTEM_MESSAGE" });
+  fs.writeFileSync(transcript, `${running}\n${running}\n${done}\n`);
+  const later = () => fs.statSync(transcript).mtimeMs + 60_000;
+  assert.equal(subagentBusy(gemini, "S1", 1000, { now: later() }), true, "one of two commands ended");
+  fs.appendFileSync(transcript, `${done}\n`);
+  assert.equal(subagentBusy(gemini, "S1", 1000, { now: later() }), false, "both ended");
+});
+
+test("a subagent stuck on a command it never ran is named, and the task is not a plain success", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const brain = path.join(sandbox.dir, ".gemini", "antigravity-cli", "brain");
+  const after = [{ subagent: "sub1", role: "implementer", stuck: true }];
+  const result = run(sandbox, WRITE.concat("go"), scenario({ brain, turns: [{ chunks: ["Waiting for its report."], after }] }));
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stdout, /Waiting for its report\./);
+  assert.match(result.stdout, /^Unfinished subagents: implementer \(sub1\): stuck on a command$/m);
+  const job = lastJob(sandbox);
+  assert.equal(job.status, "failed");
+  assert.deepEqual(job.unfinishedSubagents, [{ id: "sub1", role: "implementer", reason: "stuck on a command" }]);
+});
+
+test("a subagent still running when the wait's bound hits is named", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const brain = path.join(sandbox.dir, ".gemini", "antigravity-cli", "brain");
+  const after = [{ subagent: "sub1", role: "tester" }];
+  const result = run(sandbox, WRITE.concat("go"), { ...scenario({ brain, turns: [{ chunks: ["asked a subagent"], after }] }), AGENT_BRIDGES_ACP_QUIET_TIMEOUT_MS: "1500" });
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stdout, /still working 2 s after its turn ended/);
+  assert.match(result.stdout, /^Unfinished subagents: tester \(sub1\): still running$/m);
+  const job = lastJob(sandbox);
+  assert.equal(job.status, "failed");
+  assert.deepEqual(job.unfinishedSubagents, [{ id: "sub1", role: "tester", reason: "still running" }]);
 });
 
 test("a pending ask_question does not keep the task open and its question is named in the result", { skip: POSIX_ONLY }, (t) => {

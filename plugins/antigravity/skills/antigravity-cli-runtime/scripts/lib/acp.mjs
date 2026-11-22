@@ -23,7 +23,8 @@ export const NO_RESUME_WARNING =
   "This Antigravity version cannot continue sessions (its ACP server offers no session/resume); this started a new session.";
 export const CLIENT_INFO = { name: "agent-bridges-antigravity", version: "0.2.2" };
 /** A task's session goes on after its turn ends: it is done once nothing changed for this long. */
-export const QUIET_SETTLE_MS = 20_000;
+// A thinking model was seen silent for 17 s before its turn ended.
+export const QUIET_SETTLE_MS = 30_000;
 /** The wait after a task's turn ended is bounded by this, so a session that never goes quiet ends. */
 export const QUIET_TIMEOUT_MS = 30 * 60_000;
 const TOOL_DONE = new Set(["completed", "failed"]);
@@ -232,38 +233,45 @@ function safeId(value) {
 }
 
 /**
- * True when a subagent of the session is still working (read only, never written): its transcript changed
- * within settleMs, or its latest tool record is RUNNING with no SYSTEM_MESSAGE record after it.
- * Missing folders and unreadable files count as not busy, and so does a transcript last changed before
- * `since` (this run's start): a resumed session lists earlier runs' subagents, which may have been cut off.
+ * The subagents this run's session started, read only (never written), each { id, role, busy, running, stuck }:
+ * - running: a background command is still open. RUNNING tool records are counted against the SYSTEM_MESSAGE
+ *   records after them, because the transcript does not say which command a SYSTEM_MESSAGE ends.
+ * - stuck: the latest record is a model turn with run_command in its tool_calls and nothing followed (in the
+ *   default mode such a command is never asked of the client and never runs).
+ * - busy: running, or the transcript changed within settleMs.
+ * Missing folders and unreadable files are skipped, and so is a transcript last changed before `since` (this
+ * run's start): a resumed session lists earlier runs' subagents, which may have been cut off.
  */
-export function subagentBusy(geminiDir, sessionId, settleMs, { now = Date.now(), since = 0 } = {}) {
+export function subagentStates(geminiDir, sessionId, settleMs, { now = Date.now(), since = 0 } = {}) {
   const brain = path.join(geminiDir, "antigravity-cli", "brain");
   const session = safeId(sessionId);
-  if (!session) return false;
+  if (!session) return [];
   const listDir = path.join(brain, session, ".system_generated", "subagents");
   let names;
   try {
     names = fs.readdirSync(listDir).filter((name) => name.endsWith(".json"));
   } catch {
-    return false;
+    return [];
   }
-  return names.some((name) => {
+  return names.flatMap((name) => {
     let id;
+    let role;
     let transcript;
     let mtime;
     try {
-      id = safeId(JSON.parse(fs.readFileSync(path.join(listDir, name), "utf8"))?.conversationId);
-      if (!id) return false;
+      const listing = JSON.parse(fs.readFileSync(path.join(listDir, name), "utf8"));
+      id = safeId(listing?.conversationId);
+      if (!id) return [];
+      role = isText(listing?.subagentDescriptor?.role) ? listing.subagentDescriptor.role : null;
       const file = path.join(brain, id, ".system_generated", "logs", "transcript.jsonl");
       mtime = fs.statSync(file).mtimeMs;
       transcript = fs.readFileSync(file, "utf8");
     } catch {
-      return false;
+      return [];
     }
-    if (mtime < since) return false;
-    if (now - mtime < settleMs) return true;
-    let running = false;
+    if (mtime < since) return [];
+    let open = 0;
+    let last = null;
     for (const line of transcript.split("\n")) {
       let record;
       try {
@@ -272,11 +280,25 @@ export function subagentBusy(geminiDir, sessionId, settleMs, { now = Date.now(),
         continue;
       }
       if (!isObject(record)) continue;
-      if (record.type === "SYSTEM_MESSAGE") running = false;
-      else if ("status" in record) running = record.status === "RUNNING";
+      last = record;
+      if (record.type === "SYSTEM_MESSAGE") open = Math.max(0, open - 1);
+      else if (record.status === "RUNNING") open += 1;
     }
-    return running;
+    const running = open > 0;
+    const stuck = !running && Array.isArray(last?.tool_calls) && last.tool_calls.some((call) => call?.name === "run_command");
+    return [{ id, role, busy: running || now - mtime < settleMs, running, stuck }];
   });
+}
+
+export function subagentBusy(geminiDir, sessionId, settleMs, options) {
+  return subagentStates(geminiDir, sessionId, settleMs, options).some((state) => state.busy);
+}
+
+/** The `Unfinished subagents:` line, or "" when every subagent finished. */
+function unfinishedLine(unfinished) {
+  return unfinished.length
+    ? `Unfinished subagents: ${unfinished.map(({ id, role, reason }) => `${role ? `${role} (${id})` : id}: ${reason}`).join("; ")}`
+    : "";
 }
 
 /**
@@ -297,6 +319,8 @@ export function startAcpRun(options) {
   const geminiDir = options.geminiDir ?? path.join(os.homedir(), ".gemini");
   const runStarted = Date.now();
   let lastUpdate = runStarted;
+  // Subagents left unfinished when the last wait ended: { id, role, reason }.
+  let unfinished = [];
   let sessionId = null;
   let turn = null;
   let stopped = null;
@@ -452,11 +476,20 @@ export function startAcpRun(options) {
       const error = stopped ?? client.closedError();
       if (error) throw error;
       const now = Date.now();
-      if (!openCalls(false).length && now - lastUpdate >= settleMs && !subagentBusy(geminiDir, sessionId, settleMs, { now, since: runStarted })) return;
-      if (now - started >= quietTimeoutMs) {
+      const quietSoFar = !openCalls(false).length && now - lastUpdate >= settleMs;
+      const timedOut = now - started >= quietTimeoutMs;
+      const states = quietSoFar || timedOut ? subagentStates(geminiDir, sessionId, settleMs, { now, since: runStarted }) : [];
+      if (quietSoFar && !states.some((state) => state.busy)) {
+        unfinished = states.filter((state) => state.stuck).map(({ id, role }) => ({ id, role, reason: "stuck on a command" }));
+        return;
+      }
+      if (timedOut) {
+        unfinished = states
+          .filter((state) => state.running || state.stuck)
+          .map(({ id, role, running }) => ({ id, role, reason: running ? "still running" : "stuck on a command" }));
         stop(Object.assign(
           new Error(`Antigravity's session was still working ${Math.round(quietTimeoutMs / 1000)} s after its turn ended, so the run was stopped.`),
-          { partialText: current.text.trim() }
+          { partialText: [current.text.trim(), unfinishedLine(unfinished)].filter(Boolean).join("\n") }
         ));
         throw stopped;
       }
@@ -528,7 +561,23 @@ export function startAcpRun(options) {
     const questions = openCalls(true).flatMap((call) => call.questions ?? [call.title ?? "ask_question"]);
     if (questions.length) resultText = `${resultText ? `${resultText}\n` : ""}Unanswered questions: ${questions.join("; ")}`;
     if (stopped) throw stopped;
-    return { sessionId, resultText, structured, status: "end_turn", ok: true, error: null, deniedActions, warning, promptSent, raw: null };
+    if (unfinished.length) {
+      // Work the session handed to a subagent did not happen: not a plain success.
+      return {
+        sessionId,
+        resultText: [resultText, unfinishedLine(unfinished)].filter(Boolean).join("\n"),
+        structured,
+        status: "end_turn",
+        ok: false,
+        error: `the session ended with ${unfinished.length} unfinished subagent${unfinished.length === 1 ? "" : "s"}.`,
+        deniedActions,
+        warning,
+        promptSent,
+        unfinishedSubagents: unfinished,
+        raw: null
+      };
+    }
+    return { sessionId, resultText, structured, status: "end_turn", ok: true, error: null, deniedActions, warning, promptSent, unfinishedSubagents: [], raw: null };
   }
 
   const failure = (error) => ({
@@ -541,6 +590,7 @@ export function startAcpRun(options) {
     deniedActions,
     warning,
     promptSent,
+    unfinishedSubagents: unfinished,
     raw: null
   });
   const result = main().catch((error) => failure(stopped ?? error));

@@ -143,7 +143,8 @@ async function prompt(id, params) {
 // What the session does after its turn ended, one step after another, each after its delayMs:
 // { toolCall, id, title, question, questionVia } opens a tool call, { toolDone: id } completes it, { chunk } adds text,
 // { permission: true } asks and waits for the answer, { exit } exits, { subagent: id } lists a subagent with a RUNNING
-// record in its transcript under scenario.brain, { subagentDone: id } adds its SYSTEM_MESSAGE record.
+// record in its transcript under scenario.brain ({ stuck: true }: a run_command model turn instead, { role }),
+// { subagentDone: id } adds its SYSTEM_MESSAGE record.
 async function afterTurn(sessionId, steps) {
   for (const step of steps) {
     await new Promise((resolve) => setTimeout(resolve, step.delayMs ?? 0));
@@ -164,8 +165,12 @@ async function afterTurn(sessionId, steps) {
       const logs = path.join(scenario.brain, step.subagent, ".system_generated", "logs");
       fs.mkdirSync(list, { recursive: true });
       fs.mkdirSync(logs, { recursive: true });
-      fs.writeFileSync(path.join(list, `${step.subagent}.json`), JSON.stringify({ conversationId: step.subagent }));
-      fs.writeFileSync(path.join(logs, "transcript.jsonl"), JSON.stringify({ type: "TOOL_CALL", status: "RUNNING" }) + "\n");
+      fs.writeFileSync(path.join(list, `${step.subagent}.json`), JSON.stringify({ conversationId: step.subagent, subagentDescriptor: { role: step.role ?? "worker" } }));
+      // stuck: the model asked for run_command and nothing followed (the command was never asked of the client).
+      const record = step.stuck
+        ? { type: "MODEL_RESPONSE", tool_calls: [{ name: "run_command", args: { CommandLine: "npm test" } }] }
+        : { type: "TOOL_CALL", status: "RUNNING" };
+      fs.writeFileSync(path.join(logs, "transcript.jsonl"), JSON.stringify(record) + "\n");
     }
     if (step.subagentDone) {
       fs.appendFileSync(path.join(scenario.brain, step.subagentDone, ".system_generated", "logs", "transcript.jsonl"), JSON.stringify({ type: "SYSTEM_MESSAGE" }) + "\n");
