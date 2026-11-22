@@ -377,7 +377,8 @@ async function executeAcpRun(request, hooks = {}) {
     // read-only security stop), then end its tree.
     const grace = run.securityStopped() ? 0 : parsed.ok ? 2000 : 250;
     const exited = grace > 0 && (await Promise.race([closed.then(() => true), unrefSleep(grace).then(() => false)]));
-    if (!exited && child.pid) await endAgyTree(child.pid, cwd);
+    // After the wait's bound a background command with its own stdio may outlive agy: end the group regardless.
+    if ((!exited || run.timedOut()) && child.pid) await endAgyTree(child.pid, cwd);
     // Keep reading until the output closes, so a forbidden tool call after the final answer still fails the run.
     await Promise.race([stdoutDone, unrefSleep(1000)]);
     const status = await Promise.race([closed, unrefSleep(1000).then(() => ({ status: null, signal: null }))]);

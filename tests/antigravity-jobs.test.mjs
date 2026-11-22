@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { formatDeniedActions } from "../plugins/antigravity/scripts/lib/agy.mjs";
-import { QUIET_SETTLE_MS, subagentBusy, subagentStates } from "../plugins/antigravity/scripts/lib/acp.mjs";
+import { QUIET_SETTLE_MS, TOKEN_PROMPT, startAcpRun, subagentBusy, subagentStates } from "../plugins/antigravity/scripts/lib/acp.mjs";
 import { spawn } from "node:child_process";
 
 import {
@@ -736,6 +736,95 @@ test("subagentStates does not parse a transcript still changing within the settl
   const now = fs.statSync(transcript).mtimeMs + 10;
   assert.deepEqual(subagentStates(gemini, "S1", 1000, { now }), [{ id: "sub1", role: null, busy: true, running: false, stuck: false, recent: true }]);
   assert.deepEqual(subagentStates(gemini, "S1", 1000, { now, diagnose: true }), [{ id: "sub1", role: null, busy: true, running: true, stuck: false, recent: true }]);
+});
+
+test("the wait's bound ends agy's whole process group, even after agy itself exited", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const after = [{ toolCall: "run_command", id: "bg" }, { background: true }];
+  const result = run(sandbox, WRITE.concat("go"), { ...scenario({ turns: [{ chunks: ["started"], after }] }), AGENT_BRIDGES_ACP_QUIET_TIMEOUT_MS: "1000" });
+  assert.equal(result.status, 1, result.stdout);
+  const { bgPid } = JSON.parse(fs.readFileSync(sandbox.pidfile, "utf8"));
+  t.after(() => { try { process.kill(bgPid, "SIGKILL"); } catch {} });
+  assert.throws(() => process.kill(bgPid, 0), "the background command outlived the run");
+});
+
+test("call ids that are absent, null or empty are one case: anonymous starts are waited for and closed", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const env = (after, extra = {}) => ({ ...scenario({ turns: [{ chunks: ["go"], after }] }), AGENT_BRIDGES_ACP_QUIET_TIMEOUT_MS: "5000", ...extra });
+  let started = Date.now();
+  const anonymous = run(sandbox, WRITE.concat("go"), env([{ toolCall: "run_command", noId: true }, { delayMs: 600, toolDoneNoId: true }, { chunk: " done" }]));
+  assert.equal(anonymous.status, 0, anonymous.stdout);
+  assert.ok(Date.now() - started >= 600, "an anonymous command was not waited for");
+  assert.equal(anonymous.stdout, "go done\n");
+  for (const value of [null, ""]) {
+    started = Date.now();
+    const closed = run(sandbox, WRITE.concat("go"), env([{ toolCall: "run_command", id: "bg" }, { delayMs: 300, toolDoneWithId: value }, { chunk: " closed" }]));
+    assert.equal(closed.status, 0, `${value}: ${closed.stdout}`);
+    assert.ok(Date.now() - started < 5000, `${value}: waited for the bound`);
+    assert.equal(closed.stdout, "go closed\n");
+  }
+  const question = run(sandbox, WRITE.concat("go"), env([{ toolCall: "ask_question", noId: true, question: "Which?" }]));
+  assert.equal(question.stdout, "go\nUnanswered questions: Which?\n");
+});
+
+test("a call reported active again after an ambiguous completion is waited for again", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const after = [
+    { toolCall: "run_command", id: "a" },
+    { toolCall: "run_command", id: "b" },
+    { delayMs: 50, toolDoneNoId: true },
+    { delayMs: 50, toolActive: "a" },
+    { delayMs: 800, toolDone: "a" },
+    { chunk: " a done" }
+  ];
+  const result = run(sandbox, WRITE.concat("go"), { ...scenario({ turns: [{ chunks: ["go"], after }] }), AGENT_BRIDGES_ACP_SETTLE_MS: "300" });
+  assert.equal(result.status, 0, result.stdout);
+  assert.match(result.stdout, /^go a done$/m);
+});
+
+test("a tool call before the session id is known: another session's does not hold the wait; a forbidden one still stops a read-only run", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const started = Date.now();
+  const write = run(sandbox, WRITE.concat("go"), { ...scenario({ preSessionToolCall: { name: "run_command", sessionId: "SUB1" } }), AGENT_BRIDGES_ACP_QUIET_TIMEOUT_MS: "5000" });
+  assert.equal(write.status, 0, write.stdout);
+  assert.ok(Date.now() - started < 5000);
+  const readOnly = run(sandbox, ["task", "--wait", "look"], scenario({ preSessionToolCall: { name: "write_file", sessionId: "SUB1" } }));
+  assert.equal(readOnly.status, 1, readOnly.stdout);
+  assert.match(readOnly.stdout, /write_file/);
+});
+
+test("a read-only violation during the quiet wait ends the run at once, not at the next poll", async () => {
+  const token = "tok";
+  let run;
+  const reply = (message) => setImmediate(() => run.handle(message));
+  run = startAcpRun({
+    cwd: process.cwd(),
+    prompt: "look",
+    readOnly: true,
+    token,
+    quietSettleMs: 10_000,
+    geminiDir: path.join(os.tmpdir(), "agy-no-gemini"),
+    write(line) {
+      const message = JSON.parse(line);
+      if (message.method === "initialize") reply({ id: message.id, result: { agentCapabilities: {} } });
+      else if (message.method === "session/new") reply({ id: message.id, result: { sessionId: "S1" } });
+      else if (message.method === "session/prompt" && message.params.prompt[0].text === TOKEN_PROMPT) {
+        reply({ method: "session/update", params: { sessionId: "S1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: token } } } });
+        reply({ id: message.id, result: { stopReason: "end_turn" } });
+      } else if (message.method === "session/prompt") {
+        reply({ id: message.id, result: { stopReason: "end_turn" } });
+        setTimeout(() => {
+          run.violationAt = Date.now();
+          run.handle({ method: "session/update", params: { sessionId: "S1", update: { sessionUpdate: "tool_call", toolCallId: "w", name: "write_file", status: "pending" } } });
+        }, 30);
+      }
+    }
+  });
+  const parsed = await run.result;
+  const delay = Date.now() - run.violationAt;
+  assert.equal(parsed.ok, false);
+  assert.match(parsed.error, /write_file/);
+  assert.ok(delay < 100, `the wait noticed the stop after ${delay} ms`);
 });
 
 test("a pending ask_question does not keep the task open and its question is named in the result", { skip: POSIX_ONLY }, (t) => {

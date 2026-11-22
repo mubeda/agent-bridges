@@ -155,7 +155,9 @@ async function prompt(id, params) {
 // { permission: true } asks and waits for the answer, { exit } exits, { subagent: id } lists a subagent with a RUNNING
 // record in its transcript under scenario.brain ({ stuck: true }: a run_command model turn instead; { plain: true }:
 // a model turn that asked for read_file; { role }), { subagentDone: id } adds its SYSTEM_MESSAGE record,
-// { subagentTouch: id } adds another plain model turn.
+// { subagentTouch: id } adds another plain model turn. { noId: true } on a toolCall sends it without a call id,
+// { toolDoneWithId: value } completes with that exact toolCallId (null, ""), { toolActive: id } reports the call
+// in_progress again, { background: true } starts a long command in agy's process group (pid in FAKE_AGY_PIDFILE).
 const PLAIN_TURN = { type: "PLANNER_RESPONSE", tool_calls: [{ name: "read_file", args: { Path: "a.txt" } }] };
 async function afterTurn(sessionId, steps) {
   for (const step of steps) {
@@ -164,13 +166,20 @@ async function afterTurn(sessionId, steps) {
       // A real ask_question: title "Run ask_question", the question in rawInput (or args) .questions[].question.
       const input = step.question ? { questions: [{ is_multi_select: false, options: ["Red", "Blue"], question: step.question }] } : undefined;
       update(step.sessionId ?? sessionId, {
-        sessionUpdate: "tool_call", toolCallId: step.id, name: step.toolCall, title: step.title ?? `Run ${step.toolCall}`, kind: "execute", status: "in_progress",
+        sessionUpdate: "tool_call", ...(step.noId ? {} : { toolCallId: step.id }), name: step.toolCall, title: step.title ?? `Run ${step.toolCall}`, kind: "execute", status: "in_progress",
         ...(input ? { [step.questionVia ?? "rawInput"]: input } : {}),
         ...(step.path ? { rawInput: { Path: step.path } } : {})
       });
     }
     if (step.toolDone) update(step.sessionId ?? sessionId, { sessionUpdate: "tool_call_update", toolCallId: step.toolDone, status: "completed" });
     if (step.toolDoneNoId) update(sessionId, { sessionUpdate: "tool_call_update", status: "completed" });
+    if ("toolDoneWithId" in step) update(sessionId, { sessionUpdate: "tool_call_update", toolCallId: step.toolDoneWithId, status: "completed" });
+    if (step.toolActive) update(sessionId, { sessionUpdate: "tool_call_update", toolCallId: step.toolActive, status: "in_progress" });
+    if (step.background) {
+      // A command with its own stdio, in agy's process group: it outlives agy unless the group is ended.
+      const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore" });
+      fs.writeFileSync(process.env.FAKE_AGY_PIDFILE, JSON.stringify({ bgPid: child.pid }));
+    }
     if (step.exit) process.exit(Number(step.exit));
     if (step.chunk) update(step.sessionId ?? sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: step.chunk } });
     if (step.permission) await askPermission(sessionId, { toolCallId: "t2", name: "run_command", title: "echo later" });
@@ -226,6 +235,8 @@ function handle(message) {
       } });
       return;
     case "session/new":
+      // A tool call sent before the session id is known (scenario.preSessionToolCall: { name, sessionId }).
+      if (scenario.preSessionToolCall) update(scenario.preSessionToolCall.sessionId, { sessionUpdate: "tool_call", toolCallId: "pre", name: scenario.preSessionToolCall.name, kind: "execute", status: "in_progress" });
       send({ id, result: { sessionId: scenario.newSessionId ?? "S1", models: { availableModels: MODELS, currentModelId: MODELS[0].modelId }, modes: { currentModeId: "default", availableModes: MODES.filter((mode) => !(scenario.noAutoMode && mode.id === "auto")) }, configOptions: [] } });
       return;
     case "session/resume":

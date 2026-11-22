@@ -226,6 +226,12 @@ function toolName(toolCall) {
   return String(toolCall?.name ?? toolCall?.kind ?? "unknown");
 }
 
+/** A record's call id; absent, null and empty are one case: no id. */
+function callId(update) {
+  const id = update.toolCallId;
+  return id === undefined || id === null || id === "" ? null : id;
+}
+
 /** A session or subagent id used as one path component: no separators, never "." or "..". */
 function safeId(value) {
   const text = typeof value === "string" || typeof value === "number" ? String(value) : "";
@@ -340,6 +346,12 @@ export function startAcpRun(options) {
   let unfinished = [];
   const transcriptCache = new Map();
   let sessionId = null;
+  // Updates that came before the session id was known, for the bookkeeping once it is.
+  const heldBack = [];
+  let anonymousCalls = 0;
+  // Resolves the quiet wait's sleep, so a stop or a closed server ends the wait at once.
+  let wakeWait = null;
+  let quietTimedOut = false;
   let turn = null;
   let stopped = null;
   let securityStop = false;
@@ -357,6 +369,7 @@ export function startAcpRun(options) {
     }
     if (stopped) return;
     stopped = error;
+    wakeWait?.();
     securityStop = security;
     const end = () => {
       if (sessionId) client.notify("session/cancel", { sessionId });
@@ -370,47 +383,11 @@ export function startAcpRun(options) {
     write,
     onNotification(message) {
       if (message.method !== "session/update") return;
-      const update = message.params?.update ?? {};
-      // Another session's updates (a subagent's, on the same connection) never hold the wait open and never add
-      // text or questions; the read-only rules below still check every session's tool calls.
-      const own = isOwn(message.params);
-      if (own) lastUpdate = Date.now();
-      if (own && (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") && update.toolCallId === undefined) {
-        closeWithoutId(update);
-      } else if (own && (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update")) {
-        const call = toolCalls.get(update.toolCallId) ?? { name: "", title: null, status: "pending" };
-        // Only non-empty values: a later record with an empty field must not erase what an earlier one said.
-        if (isText(update.name)) call.name = update.name;
-        if (isText(update.title)) call.title = update.title;
-        if (isText(update.status)) call.status = update.status;
-        // An ask_question carries its questions in rawInput (or args) .questions[].question.
-        const asked = [update.rawInput, update.args].find((input) => Array.isArray(input?.questions))?.questions
-          .map((entry) => entry?.question).filter(isText);
-        if (asked?.length) call.questions = asked;
-        toolCalls.set(update.toolCallId, call);
-      }
-      // Text counts only inside an open turn (a task's stays open until its session is quiet); a read-only
-      // session's tool rule holds at every moment.
-      if (update.sessionUpdate === "agent_message_chunk" && typeof update.content?.text === "string") {
-        if (turn && own) turn.text += update.content.text;
-      } else if (update.sessionUpdate === "tool_call_update" && readOnly && !review) {
-        // A later record of a read can carry the path too: the same confinement applies. The record's own name
-        // first, then the tracked one; a record that names neither is confined too, because a read-only task's
-        // only other tool (manage_task) is the one exception.
-        // The tool map holds only this session's calls, so another session's record is looked up by its own name.
-        const name = isText(update.name) ? update.name : own ? toolCalls.get(update.toolCallId)?.name : undefined;
-        if (name !== "manage_task" && readPath(update) !== null) confineRead(update);
-      } else if (update.sessionUpdate === "tool_call" && readOnly) {
-        const name = typeof update.name === "string" ? update.name : "";
-        // The real reader has the token in its instructions: a tool used to answer the check proves nothing.
-        if (turn?.verifying) {
-          stop(new Error(`${readerMissing()} A tool (${name || "unnamed"}) was used during the token check.`), { security: true });
-        } else if (!(review ? REVIEW_TOOLS : TASK_TOOLS).has(name)) {
-          stop(new Error(`Antigravity started the tool "${name || "unnamed"}" in a read-only run, so the run was stopped.`), { security: true });
-        } else if (name === "read_file") {
-          confineRead(update);
-        }
-      }
+      // Before the session id is known no update can be told apart as this session's: the bookkeeping waits for
+      // the id, while the read-only rules check every update at once.
+      if (sessionId === null) heldBack.push(message);
+      else bookkeep(message);
+      enforce(message);
     },
     onRequest(message) {
       if (message.method !== "session/request_permission") return undefined;
@@ -432,6 +409,71 @@ export function startAcpRun(options) {
       return { outcome: { outcome: "selected", optionId: choice.optionId } };
     }
   });
+
+  /**
+   * This session's updates only: another session's (a subagent's, on the same connection) never hold the wait
+   * open and never add text, questions or tool calls.
+   */
+  function bookkeep(message) {
+    const update = message.params?.update ?? {};
+    if (!isOwn(message.params)) return;
+    lastUpdate = Date.now();
+    // Text counts only inside an open turn (a task's stays open until its session is quiet).
+    if (update.sessionUpdate === "agent_message_chunk" && typeof update.content?.text === "string") {
+      if (turn) turn.text += update.content.text;
+    } else if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
+      const id = callId(update);
+      if (id !== null) recordCall(id, update);
+      // A start without an id is tracked under a key of its own, so an id-less completion can close it.
+      else if (update.sessionUpdate === "tool_call") recordCall(`\0anonymous-${anonymousCalls++}`, update);
+      else if (TOOL_DONE.has(update.status)) closeWithoutId(update.status);
+    }
+  }
+
+  function recordCall(key, update) {
+    const call = toolCalls.get(key) ?? { name: "", title: null, status: "pending" };
+    // Only non-empty values: a later record with an empty field must not erase what an earlier one said.
+    if (isText(update.name)) call.name = update.name;
+    if (isText(update.title)) call.title = update.title;
+    if (isText(update.status)) call.status = update.status;
+    // A call this record shows active again is waited for again, after an ambiguous id-less completion too.
+    if (isText(update.status) && !TOOL_DONE.has(update.status)) call.untracked = false;
+    // An ask_question carries its questions in rawInput (or args) .questions[].question.
+    const asked = [update.rawInput, update.args].find((input) => Array.isArray(input?.questions))?.questions
+      .map((entry) => entry?.question).filter(isText);
+    if (asked?.length) call.questions = asked;
+    toolCalls.set(key, call);
+  }
+
+  /** The read-only rules, for every update of every session, at every moment. */
+  function enforce(message) {
+    const update = message.params?.update ?? {};
+    if (update.sessionUpdate === "tool_call_update" && readOnly && !review) {
+      // A later record of a read can carry the path too: the same confinement applies. The record's own name
+      // first, then the tracked one; a record that names neither is confined too, because a read-only task's
+      // only other tool (manage_task) is the one exception. The tool map holds only this session's calls, so
+      // another session's record (or one before the session id is known) goes by its own name.
+      const tracked = sessionId !== null && isOwn(message.params) && callId(update) !== null ? toolCalls.get(callId(update))?.name : undefined;
+      const name = isText(update.name) ? update.name : tracked;
+      if (name !== "manage_task" && readPath(update) !== null) confineRead(update);
+    } else if (update.sessionUpdate === "tool_call" && readOnly) {
+      const name = typeof update.name === "string" ? update.name : "";
+      // The real reader has the token in its instructions: a tool used to answer the check proves nothing.
+      if (turn?.verifying) {
+        stop(new Error(`${readerMissing()} A tool (${name || "unnamed"}) was used during the token check.`), { security: true });
+      } else if (!(review ? REVIEW_TOOLS : TASK_TOOLS).has(name)) {
+        stop(new Error(`Antigravity started the tool "${name || "unnamed"}" in a read-only run, so the run was stopped.`), { security: true });
+      } else if (name === "read_file") {
+        confineRead(update);
+      }
+    }
+  }
+
+  /** The session id is known: apply the bookkeeping of the updates that came before it. */
+  function setSession(id) {
+    sessionId = id;
+    for (const message of heldBack.splice(0)) bookkeep(message);
+  }
 
   /** The path a read_file record reports: rawInput.Path, then args.Path, then the first location. */
   function readPath(update) {
@@ -497,7 +539,8 @@ export function startAcpRun(options) {
 
   /** An update of this run's session (one with no session id counts as this session's). */
   function isOwn(params) {
-    return params?.sessionId === undefined || sessionId === null || String(params.sessionId) === sessionId;
+    const id = params?.sessionId;
+    return id === undefined || id === null || id === "" || String(id) === sessionId;
   }
 
   // Open calls that a completion without a call id may have closed: no longer waited for, and reported.
@@ -509,10 +552,9 @@ export function startAcpRun(options) {
    * A terminal record without a call id closes the one open call; with several open, none can be trusted.
    * A pending ask_question is never the one it closes: it waits for an answer nobody sends.
    */
-  function closeWithoutId(update) {
-    if (update.sessionUpdate !== "tool_call_update" || !TOOL_DONE.has(update.status)) return;
+  function closeWithoutId(status) {
     const open = openCalls(false);
-    if (open.length === 1) open[0].status = update.status;
+    if (open.length === 1) open[0].status = status;
     else if (open.length > 1) {
       unmatched.push(open.length);
       for (const call of open) call.untracked = true;
@@ -561,13 +603,18 @@ export function startAcpRun(options) {
         unfinished = subagentStates(geminiDir, sessionId, settleMs, { ...options, diagnose: true })
           .filter((state) => state.running || state.stuck || state.recent)
           .map(({ id, role, running, stuck }) => ({ id, role, reason: running ? "still running" : stuck ? "stuck on a command" : "recently active" }));
+        quietTimedOut = true;
         stop(Object.assign(
           new Error(`Antigravity's session was still working ${Math.round(quietTimeoutMs / 1000)} s after its turn ended, so the run was stopped.`),
           { partialText: resultLines(current.text) }
         ));
         throw stopped;
       }
-      await new Promise((resolve) => setTimeout(resolve, Math.min(250, settleMs)));
+      await new Promise((resolve) => {
+        wakeWait = resolve;
+        setTimeout(resolve, Math.min(250, settleMs));
+      });
+      wakeWait = null;
     }
   }
 
@@ -585,7 +632,7 @@ export function startAcpRun(options) {
     else if (resumeSessionId) {
       try {
         session = await client.request("session/resume", { sessionId: resumeSessionId, cwd, mcpServers: [] }, setup);
-        sessionId = String(resumeSessionId);
+        setSession(String(resumeSessionId));
       } catch (error) {
         // Only a confirmed missing session starts afresh; any other error must not run a prompt that needs the history.
         if (!error?.rpc || !/Failed to read session/.test(error.message)) throw error;
@@ -595,7 +642,7 @@ export function startAcpRun(options) {
     if (!sessionId) {
       session = await client.request("session/new", { cwd, mcpServers: [] }, setup);
       if (!session?.sessionId) throw new Error("Antigravity returned no session id.");
-      sessionId = String(session.sessionId);
+      setSession(String(session.sessionId));
     }
     // A write task (it needed --bypass-permissions) runs in mode auto, so the session's subagents can run commands
     // Antigravity counts as safe; read-only runs keep the default mode. Without auto the run goes on, and says so.
@@ -684,7 +731,10 @@ export function startAcpRun(options) {
   return {
     result,
     handle: (message) => client.handle(message),
-    fail: (error) => client.fail(error),
+    fail: (error) => {
+      client.fail(error);
+      wakeWait?.();
+    },
     /** Stop the run now (sends session/cancel when a session exists): nothing later can turn it into a success. */
     abort: (error) => {
       stop(error);
@@ -692,6 +742,8 @@ export function startAcpRun(options) {
     },
     /** True when a read-only security rule stopped the run: end the tree at once. */
     securityStopped: () => securityStop,
+    /** True when the wait's bound stopped the run: end agy's whole process group, even when agy itself exited. */
+    timedOut: () => quietTimedOut,
     /** Re-check after the output closed: a violation that came after the final answer still fails the run. */
     settle: (parsed) => ((parsed.ok || securityStop) && stopped ? failure(stopped) : parsed),
   };
