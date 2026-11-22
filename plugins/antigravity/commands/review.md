@@ -15,7 +15,7 @@ Core constraint:
 - This command is review-only.
 - Do not fix issues, apply patches, or suggest that you are about to make changes.
 - Your only job is to run the review and return Antigravity's output verbatim to the user.
-- Antigravity reviews through a restricted reader agent with no tools: it answers only from the diff and the new files' contents that the companion puts in its prompt (up to 256 KiB). It cannot read other files, list folders, search or run commands. A larger change is cut: the result then has a line that starts with `Incomplete review:` and names the files left out entirely (the file where the cut fell is not named), and the job record in `--json` output has an `evidence` field. Keep that line in what you return, and never count such a review as a review of the whole change. If the companion reports that the restricted reader was not in effect, nothing was reviewed; return that message as is.
+- Antigravity reviews through a restricted reader agent with no tools: it answers only from the diff and the new files' contents that the companion puts in its prompt (up to 256 KiB). It cannot read other files, list folders, search or run commands. A larger change is cut: the result then has a line that starts with `Incomplete review:` and names the files shown only in part and the files left out entirely, and the job record in `--json` output has an `evidence` field with both lists. Keep that line in what you return, and never count such a review as a review of the whole change. If the companion reports that the restricted reader was not in effect, nothing was reviewed; return that message as is.
 
 Execution mode rules:
 - If the raw arguments include `--wait`, do not ask. Run the review in the foreground.

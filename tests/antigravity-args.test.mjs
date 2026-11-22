@@ -503,6 +503,48 @@ test("the cut notice names at most 100 files, then a count, and escapes control 
   const { formatNotShown } = await import("../plugins/antigravity/scripts/lib/git.mjs");
   const names = Array.from({ length: 101 }, (_, i) => `f${i}.txt`);
   assert.match(formatNotShown(names), /f99\.txt and 1 more\.$/);
+  assert.equal(formatNotShown(["b"], ["a"]), " Files shown only in part: a. Files not shown: b.");
+  assert.equal(formatNotShown([], ["a"]), " Files shown only in part: a.");
   assert.equal(formatNotShown(["a\nb"]), " Files not shown: a\\u000ab.");
   assert.equal(formatNotShown([]), "");
+});
+
+function commitFiles(repo, files) {
+  for (const [name, text] of Object.entries(files)) fs.writeFileSync(path.join(repo, name), text);
+  gitIn(repo, "add", ".");
+  gitIn(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base");
+}
+
+test("review evidence: a file whose staged diff was shown is not listed as not shown when its unstaged diff is left out", async (t) => {
+  const { collectReviewContext, resolveReviewTarget } = await import("../plugins/antigravity/scripts/lib/git.mjs");
+  const sandbox = makeSandbox(t, { changedFiles: 0 });
+  commitFiles(sandbox.repo, { "a.txt": "one\n", "b.txt": "one\n", "c.txt": "one\n" });
+  fs.writeFileSync(path.join(sandbox.repo, "a.txt"), "staged\n");
+  fs.writeFileSync(path.join(sandbox.repo, "b.txt"), "a long staged line\n".repeat(1000));
+  gitIn(sandbox.repo, "add", ".");
+  fs.writeFileSync(path.join(sandbox.repo, "a.txt"), "unstaged\n");
+  fs.writeFileSync(path.join(sandbox.repo, "c.txt"), "unstaged\n");
+  const context = collectReviewContext(sandbox.repo, resolveReviewTarget(sandbox.repo, { scope: "working-tree" }), { maxInlineDiffBytes: 4096 });
+  assert.match(context.content, /\+staged/);
+  assert.deepEqual(context.notShown, ["c.txt"]);
+  // b.txt is where the cut fell; a.txt has one diff shown and one left out.
+  assert.deepEqual(context.partlyShown, ["b.txt", "a.txt"]);
+  assert.match(context.content, /Files shown only in part: b\.txt, a\.txt\. Files not shown: c\.txt\.\)$/);
+});
+
+test("review evidence: a file that follows one that used exactly the rest of the budget is listed as not shown", async (t) => {
+  const { collectReviewContext, resolveReviewTarget } = await import("../plugins/antigravity/scripts/lib/git.mjs");
+  for (const tracked of [true, false]) {
+    const sandbox = makeSandbox(t, { changedFiles: 0 });
+    commitFiles(sandbox.repo, tracked ? { "a.txt": "one\n", "b.txt": "one\n" } : { "keep.txt": "one\n" });
+    for (const name of ["a.txt", "b.txt"]) fs.writeFileSync(path.join(sandbox.repo, name), `two ${name}\n`);
+    const target = resolveReviewTarget(sandbox.repo, { scope: "working-tree" });
+    const whole = collectReviewContext(sandbox.repo, target).content;
+    const second = whole.search(tracked ? /^diff --git \S+\/b\.txt/m : /^### b\.txt/m);
+    assert.ok(second > 0, whole);
+    const context = collectReviewContext(sandbox.repo, target, { maxInlineDiffBytes: Buffer.byteLength(whole.slice(0, second)) });
+    assert.equal(context.truncated, true);
+    assert.deepEqual(context.notShown, ["b.txt"], String(tracked));
+    assert.deepEqual(context.partlyShown, [], String(tracked));
+  }
 });

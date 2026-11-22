@@ -262,17 +262,27 @@ function orderFiles(files) {
   return [...files].sort((a, b) => evidenceRank(a) - evidenceRank(b) || a.split("/").length - b.split("/").length || a.localeCompare(b));
 }
 
-/** The files a cut notice names, capped. Control characters are escaped, so a file name cannot add a line. */
-export function formatNotShown(notShown) {
-  const names = notShown.slice(0, NOT_SHOWN_NAME_LIMIT).join(", ").replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
-  const extra = notShown.length > NOT_SHOWN_NAME_LIMIT ? ` and ${notShown.length - NOT_SHOWN_NAME_LIMIT} more` : "";
-  return names ? ` Files not shown: ${names}${extra}.` : "";
+function capNames(label, files) {
+  const names = files.slice(0, NOT_SHOWN_NAME_LIMIT).join(", ").replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
+  const extra = files.length > NOT_SHOWN_NAME_LIMIT ? ` and ${files.length - NOT_SHOWN_NAME_LIMIT} more` : "";
+  return names ? ` ${label}: ${names}${extra}.` : "";
+}
+
+/**
+ * The files a cut notice names, each list capped: those shown only in part (the cut fell inside one, or one of
+ * its diffs was shown and another left out), then those left out entirely. Control characters are escaped, so a
+ * file name cannot add a line.
+ */
+export function formatNotShown(notShown, partlyShown = []) {
+  return capNames("Files shown only in part", partlyShown) + capNames("Files not shown", notShown);
 }
 
 /** Collects sections into a byte budget; once it is used up, later items are only named. */
 function createEvidence(maxBytes) {
   const parts = [];
-  // A set: a file that is both staged and unstaged is named once.
+  // Sets: a file that is both staged and unstaged is named once, and never as both shown in part and not shown.
+  const shown = new Set();
+  const partlyShown = new Set();
   const notShown = new Set();
   let left = maxBytes;
   let truncated = false;
@@ -280,8 +290,10 @@ function createEvidence(maxBytes) {
     get left() {
       return truncated ? 0 : left;
     },
-    add(text) {
+    /** Adds text; with a file name, records that file as shown, or as shown only in part when the text is cut. */
+    add(text, file) {
       if (truncated) return false;
+      if (file !== undefined) shown.add(file);
       const bytes = Buffer.byteLength(text, "utf8");
       if (bytes <= left) {
         parts.push(text);
@@ -291,24 +303,29 @@ function createEvidence(maxBytes) {
       parts.push(cutUtf8(text, left));
       left = 0;
       truncated = true;
+      if (file !== undefined) partlyShown.add(file);
       return false;
     },
-    cut() {
+    cut(file) {
       truncated = true;
+      if (file !== undefined) partlyShown.add(file);
     },
     skip(name) {
       truncated = true;
-      notShown.add(name);
+      (shown.has(name) ? partlyShown : notShown).add(name);
     },
     get notShown() {
       return [...notShown];
+    },
+    get partlyShown() {
+      return [...partlyShown];
     },
     get truncated() {
       return truncated;
     },
     content() {
       if (!truncated) return parts.join("");
-      return `${parts.join("")}\n\n(The evidence was cut at ${maxBytes} bytes; the rest of this change is not shown.${formatNotShown([...notShown])})`;
+      return `${parts.join("")}\n\n(The evidence was cut at ${maxBytes} bytes; the rest of this change is not shown.${formatNotShown([...notShown], [...partlyShown])})`;
     }
   };
 }
@@ -323,7 +340,8 @@ function addDiffs(evidence, cwd, title, diffArgs, changes) {
   const byFile = new Map(changes.map((change) => [change.file, change]));
   const seen = new Map();
   for (const file of orderFiles([...byFile.keys()])) {
-    if (evidence.truncated) {
+    // `left` is 0 once the evidence is cut, and also when the last file used exactly the rest of the budget.
+    if (!evidence.left) {
       evidence.skip(file);
       continue;
     }
@@ -332,12 +350,12 @@ function addDiffs(evidence, cwd, title, diffArgs, changes) {
     const key = header.some((line) => line.startsWith("index ")) ? header.join("\n") : null;
     const deletion = /^index [0-9a-f]+\.\.0+\b/m.test(text);
     if (key && !more && !deletion && seen.has(key)) {
-      evidence.add(`(${file}: identical to ${seen.get(key)}, not repeated)\n`);
+      evidence.add(`(${file}: identical to ${seen.get(key)}, not repeated)\n`, file);
       continue;
     }
     if (key && !seen.has(key)) seen.set(key, file);
-    evidence.add(text.endsWith("\n") || !text ? text : `${text}\n`);
-    if (more) evidence.cut();
+    evidence.add(text.endsWith("\n") || !text ? text : `${text}\n`, file);
+    if (more) evidence.cut(file);
   }
   evidence.add("\n");
 }
@@ -348,18 +366,18 @@ function addUntracked(evidence, cwd, files) {
   const seen = new Map();
   for (const file of orderFiles(files)) {
     // Stop reading once the budget is used: the rest are only named.
-    if (evidence.truncated) {
+    if (!evidence.left) {
       evidence.skip(file);
       continue;
     }
     const body = formatUntrackedFile(cwd, file);
     const hash = createHash("sha256").update(body.slice(body.indexOf("\n") + 1)).digest("hex");
     if (body.includes("\n```\n") && seen.has(hash)) {
-      evidence.add(`### ${file}\n(identical to ${seen.get(hash)}, not repeated)\n\n`);
+      evidence.add(`### ${file}\n(identical to ${seen.get(hash)}, not repeated)\n\n`, file);
       continue;
     }
     if (!seen.has(hash)) seen.set(hash, file);
-    evidence.add(`${body}\n\n`);
+    evidence.add(`${body}\n\n`, file);
   }
 }
 
@@ -378,6 +396,7 @@ function collectWorkingTreeContext(cwd, state, maxBytes) {
     content: evidence.content(),
     truncated: evidence.truncated,
     notShown: evidence.notShown,
+    partlyShown: evidence.partlyShown,
     changedFiles: listUniqueFiles(state.staged, state.unstaged, state.untracked)
   };
 }
@@ -399,6 +418,7 @@ function collectBranchContext(cwd, baseRef, maxBytes) {
     content: evidence.content(),
     truncated: evidence.truncated,
     notShown: evidence.notShown,
+    partlyShown: evidence.partlyShown,
     changedFiles,
     comparison
   };

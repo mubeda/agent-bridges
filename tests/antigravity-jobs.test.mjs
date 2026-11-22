@@ -113,9 +113,9 @@ for (const command of ["review", "adversarial-review"]) {
     const notice = result.stdout.split("\n").filter((line) => line.startsWith("Incomplete review:"));
     assert.equal(notice.length, 1, result.stdout);
     assert.match(notice[0], /cut at 262144 bytes/);
-    assert.match(notice[0], /Files not shown: f1\.txt, f2\.txt\./);
-    assert.match(promptTexts(sessions(sandbox)[0])[1], /Files not shown: f1\.txt, f2\.txt\./);
-    const expected = { truncated: true, maxBytes: 262144, filesNotShown: ["f1.txt", "f2.txt"] };
+    assert.match(notice[0], /Files shown only in part: f0\.txt\. Files not shown: f1\.txt, f2\.txt\.$/);
+    assert.match(promptTexts(sessions(sandbox)[0])[1], /Files shown only in part: f0\.txt\. Files not shown: f1\.txt, f2\.txt\./);
+    const expected = { truncated: true, maxBytes: 262144, filesNotShown: ["f1.txt", "f2.txt"], filesPartlyShown: ["f0.txt"] };
     assert.deepEqual(lastJob(sandbox).evidence, expected);
     // `result` replays the stored rendering, so the line survives a background run too.
     assert.match(run(sandbox, ["result"]).stdout, /^Incomplete review:/m);

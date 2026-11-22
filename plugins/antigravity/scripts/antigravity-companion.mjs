@@ -412,7 +412,7 @@ function renderExecution(request, command, parsed, evidence) {
   lines.push(`# Antigravity ${request.reviewName}`, "");
   // The model is told inside its prompt; this line tells the caller.
   if (evidence?.truncated) {
-    lines.push(`Incomplete review: the evidence was cut at ${evidence.maxBytes} bytes, so the rest of this change was not reviewed.${formatNotShown(evidence.filesNotShown ?? [])}`, "");
+    lines.push(`Incomplete review: the evidence was cut at ${evidence.maxBytes} bytes, so the rest of this change was not reviewed.${formatNotShown(evidence.filesNotShown ?? [], evidence.filesPartlyShown ?? [])}`, "");
   }
   if (parsed.structured) {
     lines.push(JSON.stringify(parsed.structured, null, 2));
@@ -598,7 +598,7 @@ async function handleReviewCommand(argv, { reviewName }) {
     summary: `${reviewName} ${target.label}`
   });
   // Kept on the job record, so `--json`, `status` and `result` show that only part of the change was reviewed.
-  if (context.truncated) job.evidence = { truncated: true, maxBytes: context.maxBytes, filesNotShown: context.notShown };
+  if (context.truncated) job.evidence = { truncated: true, maxBytes: context.maxBytes, filesNotShown: context.notShown, filesPartlyShown: context.partlyShown };
   const request = buildRequest(cwd, options, buildReviewPrompt(context, focusText, reviewName), {
     write: false,
     review: true,
