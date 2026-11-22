@@ -192,6 +192,17 @@ test("a write --resume-last after a run that failed before its prompt starts afr
   assert.match(result.stdout, /^Warning: The most recent Antigravity task failed before its prompt reached the session/);
 });
 
+test("--resume-job without new text continues the chosen job with the default prompt", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  assert.equal(run(sandbox, WRITE.concat("first"), scenario({ newSessionId: "W1" })).status, 0);
+  const writeJob = lastJob(sandbox);
+  const ok = run(sandbox, WRITE.concat("--resume-job", writeJob.id));
+  assert.equal(ok.status, 0, ok.stderr);
+  const resumed = sessions(sandbox)[1];
+  assert.deepEqual(requests(resumed, "session/resume").map((message) => message.params.sessionId), ["W1"]);
+  assert.deepEqual(requests(resumed, "session/prompt").map((message) => message.params.prompt[0].text), ["Continue the previous task."]);
+});
+
 test("--resume-job continues exactly the chosen write job, and refuses one that cannot be continued", { skip: POSIX_ONLY }, (t) => {
   const sandbox = makeSandbox(t);
   assert.equal(run(sandbox, WRITE.concat("first"), scenario({ newSessionId: "W1" })).status, 0);

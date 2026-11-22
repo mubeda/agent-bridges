@@ -670,7 +670,7 @@ async function handleTask(argv) {
     else resumeWarning = whyNotContinuable(latest);
     if (options.write && !resumeWarning) resumeSessionId = latest.agySessionId;
   }
-  if (!prompt && !resumeLatest) throw new Error("Provide a prompt, prompt file, piped stdin, or use --resume-last.");
+  if (!prompt && !resumeLatest && !resumeJob) throw new Error("Provide a prompt, prompt file, piped stdin, or use --resume-last or --resume-job.");
   const effectivePrompt = prompt || "Continue the previous task.";
   ensureAgyAvailable(cwd);
   const job = createCompanionJob({
