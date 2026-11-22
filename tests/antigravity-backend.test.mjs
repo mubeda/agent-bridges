@@ -1,88 +1,23 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import { getAgyAvailability, resolveAgyBin } from "../plugins/antigravity/scripts/lib/agy.mjs";
+import { POSIX_ONLY, jobFiles, logEntries, makeSandbox as makeAcpSandbox, run as runCompanion } from "./fixtures/acp-sandbox.mjs";
 
-const root = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
-const COMPANION = path.join(root, "plugins/antigravity/scripts/antigravity-companion.mjs");
-const POSIX_ONLY = process.platform === "win32" ? "fake agy needs a POSIX shebang" : false;
-
-// Fake agy (plan P5): logs every call, answers --version with 1.5.12, prints a canned envelope.
-const FAKE_AGY = `#!/usr/bin/env node
-const fs = require("node:fs");
-const { spawn } = require("node:child_process");
-const argv = process.argv.slice(2);
-let stdin = "";
-if (!process.stdin.isTTY) { const chunks = []; const buf = Buffer.alloc(65536); for (;;) { let n; try { n = fs.readSync(0, buf, 0, buf.length, null); } catch (e) { if (e.code === "EAGAIN") continue; break; } if (!n) break; chunks.push(Buffer.from(buf.subarray(0, n))); } stdin = Buffer.concat(chunks).toString("utf8"); }
-if (process.env.FAKE_AGY_LOG) fs.appendFileSync(process.env.FAKE_AGY_LOG, JSON.stringify({ argv, stdin, pid: process.pid }) + "\\n");
-if (argv.includes("--version")) {
-  if (process.env.FAKE_AGY_VERSION_SIGNAL) process.kill(process.pid, process.env.FAKE_AGY_VERSION_SIGNAL);
-  if (process.env.FAKE_AGY_VERSION_EXIT) process.exit(Number(process.env.FAKE_AGY_VERSION_EXIT));
-  process.stdout.write("1.5.12\\n");
-  process.exit(0);
-}
-const finish = () => {
-  process.stdout.write(process.env.FAKE_AGY_ENVELOPE ?? '{"conversation_id":"C1","status":"SUCCESS","response":"ok","num_turns":1}');
-  if (process.env.FAKE_AGY_STDERR) process.stderr.write(process.env.FAKE_AGY_STDERR);
-  process.exit(Number(process.env.FAKE_AGY_EXIT ?? 0));
-};
-const sleep = Number(process.env.FAKE_AGY_SLEEP_MS ?? 0);
-if (sleep > 0) {
-  const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, " + sleep + ")"], { stdio: "ignore" });
-  fs.writeFileSync(process.env.FAKE_AGY_PIDFILE, JSON.stringify({ pid: process.pid, childPid: child.pid }));
-  setTimeout(finish, sleep);
-} else {
-  finish();
-}
-`;
-
+// The stand-in agy answers --version with 1.5.14 and logs every start.
 function makeSandbox(t, { fakeName = "fake-agy" } = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-backend-"));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const bin = path.join(dir, "bin");
-  fs.mkdirSync(bin);
-  const fake = path.join(bin, fakeName);
-  fs.writeFileSync(fake, FAKE_AGY, { mode: 0o755 });
-  const repo = path.join(dir, "repo");
-  fs.mkdirSync(repo);
-  spawnSync("git", ["init", "-q"], { cwd: repo });
-  fs.writeFileSync(path.join(repo, "a.txt"), "a\n");
-  spawnSync("git", ["add", "."], { cwd: repo });
-  spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"], { cwd: repo });
-  fs.writeFileSync(path.join(repo, "a.txt"), "b\n");
-  const data = path.join(dir, "data");
-  const log = path.join(dir, "agy.log");
-  return { dir, bin, fake, repo, data, log };
+  return makeAcpSandbox(t, { fakeName });
 }
 
 function run(sandbox, args, extraEnv = {}) {
-  const base = { ...process.env };
-  delete base.CLAUDE_PLUGIN_DATA;
-  delete base.GEMINI_API_KEY;
-  const env = { ...base, PLUGIN_DATA: sandbox.data, ANTIGRAVITY_BIN: sandbox.fake, FAKE_AGY_LOG: sandbox.log, ...extraEnv };
-  for (const [key, value] of Object.entries(extraEnv)) if (value === undefined) delete env[key];
-  return spawnSync(process.execPath, [COMPANION, ...args], { cwd: sandbox.repo, env, encoding: "utf8" });
+  return runCompanion(sandbox, args, { GEMINI_API_KEY: undefined, ...extraEnv });
 }
 
 function logLines(sandbox) {
-  if (!fs.existsSync(sandbox.log)) return [];
-  return fs.readFileSync(sandbox.log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
-}
-
-function jobFiles(sandbox) {
-  const stateRoot = path.join(sandbox.data, "state");
-  if (!fs.existsSync(stateRoot)) return [];
-  const files = [];
-  for (const workspace of fs.readdirSync(stateRoot)) {
-    const jobs = path.join(stateRoot, workspace, "jobs");
-    if (fs.existsSync(jobs)) files.push(...fs.readdirSync(jobs));
-  }
-  return files;
+  return logEntries(sandbox).filter((entry) => entry.argv);
 }
 
 test("resolveAgyBin honours ANTIGRAVITY_BIN and defaults to agy", () => {
@@ -95,40 +30,36 @@ test("missing binary is unavailable and names agy and ANTIGRAVITY_BIN", () => {
   assert.equal(status.available, false);
   assert.match(status.detail, /agy/);
   assert.match(status.detail, /ANTIGRAVITY_BIN/);
+  assert.match(status.detail, /https:\/\/antigravity\.google\/docs\/cli\/acp\.md/);
 });
 
-test("setup --json reports the fake agy with exactly one --version call", { skip: POSIX_ONLY }, (t) => {
+test("setup --json reports the stand-in agy with exactly one --version call", { skip: POSIX_ONLY }, (t) => {
   const sandbox = makeSandbox(t);
   const result = run(sandbox, ["setup", "--json"]);
   assert.equal(result.status, 0, result.stderr);
   const report = JSON.parse(result.stdout);
   assert.equal(report.available, true);
-  assert.equal(report.version, "1.5.12");
-  assert.equal(report.apiKeySet, false);
+  assert.equal(report.version, "1.5.14");
   assert.ok(report.stateDir);
   assert.match(report.signInNote, /interactive/);
-  assert.match(report.signInNote, /agy/);
+  assert.match(report.signInNote, /agy acp --login/);
+  assert.doesNotMatch(report.signInNote, /GEMINI_API_KEY/);
+  // API keys are not supported by this bridge, so the report carries no key fact.
+  assert.equal("apiKeySet" in report, false);
   assert.equal(report.loggedIn, undefined);
   const lines = logLines(sandbox);
   assert.equal(lines.length, 1);
   assert.deepEqual(lines[0].argv, ["--version"]);
 });
 
-test("setup --json reports apiKeySet when GEMINI_API_KEY is set", { skip: POSIX_ONLY }, (t) => {
+test("plain setup shows the path, version, state dir and sign-in note, and no key line", { skip: POSIX_ONLY }, (t) => {
   const sandbox = makeSandbox(t);
-  const report = JSON.parse(run(sandbox, ["setup", "--json"], { GEMINI_API_KEY: "x" }).stdout);
-  assert.equal(report.apiKeySet, true);
-});
-
-test("plain setup shows the path, version, key state, state dir and sign-in note", { skip: POSIX_ONLY }, (t) => {
-  const sandbox = makeSandbox(t);
-  const text = run(sandbox, ["setup"]).stdout;
+  const text = run(sandbox, ["setup"], { GEMINI_API_KEY: "x" }).stdout;
   assert.ok(text.includes(sandbox.fake), text);
-  assert.match(text, /1\.5\.12/);
-  assert.match(text, /GEMINI_API_KEY not set/);
+  assert.match(text, /1\.5\.14/);
   assert.match(text, /state dir/);
   assert.match(text, /interactive `agy` session/);
-  assert.match(run(sandbox, ["setup"], { GEMINI_API_KEY: "x" }).stdout, /GEMINI_API_KEY set/);
+  assert.doesNotMatch(text, /GEMINI_API_KEY/);
 });
 
 test("a failing or signalled --version probe is unavailable", { skip: POSIX_ONLY }, (t) => {

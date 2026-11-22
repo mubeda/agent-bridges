@@ -1,7 +1,7 @@
 ---
 name: rescue
 description: Delegate investigation, an explicit fix request, or follow-up rescue work to the Antigravity rescue subagent
-argument-hint: "[--background|--wait] [--write --bypass-permissions] [--trust] [--resume|--fresh] [--model <id>] [--effort <level>] [what Antigravity should investigate, solve, or continue]"
+argument-hint: "[--background|--wait] [--write --bypass-permissions] [--trust] [--resume|--resume-job <job-id>|--fresh] [--model <id>] [--effort <level>] [what Antigravity should investigate, solve, or continue]"
 allowed-tools: Bash(node:*), AskUserQuestion, Agent
 ---
 
@@ -28,21 +28,23 @@ Execution mode:
 - If neither flag is present, omit both and let `task` default to foreground.
 - `--background` and `--wait` are companion runtime controls. Preserve them for the forwarded `task` call, but do not treat them as part of the natural-language task text.
 - `--model`, `--effort`, `--write`, `--bypass-permissions` and `--trust` are runtime-selection flags. Preserve them for the forwarded `task` call, but do not treat them as part of the natural-language task text.
-- If the request includes `--resume`, do not ask whether to continue. The user already chose.
+- If the request includes `--resume` or `--resume-job`, do not ask whether to continue. The user already chose.
 - If the request includes `--fresh`, do not ask whether to continue. The user already chose.
-- Otherwise, before starting Antigravity, check for a resumable rescue thread from this Claude session by running:
+- Otherwise, only when the request will run with `--write --bypass-permissions` (the user asked for changes), check for an Antigravity thread that run could continue:
 
 ```bash
-node "<plugin-root>/scripts/antigravity-companion.mjs" task-resume-candidate --json
+node "<plugin-root>/scripts/antigravity-companion.mjs" task-resume-candidate --for-write --json
 ```
 
-- If that helper reports `available: true`, use `AskUserQuestion` exactly once to ask whether to continue the current Antigravity thread or start a new one.
+- A read-only request never continues a thread (only a write run continues an Antigravity session, and only an earlier write session), so do not run the helper or ask; route it as a new thread.
+- If that helper reports `available: true`, use `AskUserQuestion` exactly once to ask whether to continue that thread or start a new one. Name the thread in the continue choice with the candidate's `summary` and `id`.
 - The two choices must be:
-  - `Continue current Antigravity thread`
+  - `Continue Antigravity thread: <summary> (<id>)`
   - `Start a new Antigravity thread`
-- If the user is clearly giving a follow-up instruction such as "continue", "keep going", "resume", "apply the top fix", or "dig deeper", put `Continue current Antigravity thread (Recommended)` first.
+- If the user is clearly giving a follow-up instruction such as "continue", "keep going", "resume", "apply the top fix", or "dig deeper", put the continue choice first with ` (Recommended)` added.
 - Otherwise put `Start a new Antigravity thread (Recommended)` first.
-- If the user chooses continue, add `--resume` before routing to the subagent.
+- If the user chooses continue, add `--resume-job <id>` with the candidate's `id` before routing to the subagent (not `--resume`, which would look up the latest task again and could pick a job that finished while the question was open).
+- Only a write run continues an Antigravity session, and only the most recent task, when it was a write task whose prompt reached its session. `--resume-last` without `--write` starts a new read-only session, because the restricted reader cannot be attached to an earlier one. `--write --resume-last` continues the most recent task when it can, and otherwise starts a new session; it never jumps back to an older one. The output says when a new session was started and why. `--resume-job <job-id>` (write runs only) continues exactly that job, or fails and runs nothing when it cannot be continued. Never add `--write` just to continue a session the user did not ask to change.
 - If the user chooses a new thread, add `--fresh` before routing to the subagent.
 - If the helper reports `available: false`, do not ask. Route normally.
 
@@ -54,7 +56,7 @@ Operating rules:
 - Do not ask the subagent to inspect files, monitor progress, poll `/antigravity:status`, fetch `/antigravity:result`, call `/antigravity:cancel`, summarize output, or do follow-up work of its own.
 - Default to a read-only run. Add `--write --bypass-permissions` only when the user asked for changes to be made (a fix, an implementation, "apply it"): `--write` lets the backend change files and run commands without asking, and the companion refuses it without `--bypass-permissions` (or `AGENT_BRIDGES_ALLOW_BYPASS=1`).
 - Leave the model unset unless the user explicitly asks for one. Forward whatever model string they pass verbatim.
-- Leave `--resume` and `--fresh` in the forwarded request. The subagent handles that routing when it builds the `task` command.
+- Leave `--resume`, `--resume-job <id>` and `--fresh` in the forwarded request. The subagent handles that routing when it builds the `task` command.
 - If the helper reports that Antigravity is missing or not signed in, stop and tell the user to run `/antigravity:setup`.
 - If the user did not supply a request, ask what Antigravity should investigate or fix.
 

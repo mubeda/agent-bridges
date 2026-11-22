@@ -105,19 +105,21 @@ This installer does not add entries to `opencode.json` `"plugin": []`.
 
 ## Antigravity CLI
 
-- The companion runs the `agy` CLI. Set `ANTIGRAVITY_BIN` to use a specific executable.
-- Sign in once with an interactive `agy` session; headless runs reuse those credentials. For an API key, set `GEMINI_API_KEY` and `modelProvider: "gemini"` in your own Antigravity settings (`~/.gemini/antigravity-cli/settings.json`). Setup cannot check sign-in without a model run, so it reports the binary, its version, and whether `GEMINI_API_KEY` is set.
-- Read-only runs (reviews, and rescue without `--write`) pass `--settings` with deny rules for `write_file(*)` and `command(*)`, so `agy` itself blocks file writes and shell commands. `agy --mode plan` is not used: it does not block writes. A future `agy` tool that writes files under another rule name would not be covered, and MCP tools are not denied.
-- Write runs (`--write`) use `--dangerously-skip-permissions`.
-- Prompts always go to `agy` on stdin, so they never show up in process lists.
-- Resume continues the stored conversation with `--conversation <id>`. If Antigravity no longer has it, it starts a new one; the result says so and the new id is stored.
+- The companion talks to Antigravity through its ACP server: it starts `agy acp` and speaks the Agent Client Protocol (JSON-RPC) over its stdin and stdout. Set `ANTIGRAVITY_BIN` to use a specific executable.
+- Only the Google sign-in cached by `agy` is supported: sign in once with an interactive `agy` session, or run `agy acp --login`. API keys are not supported by this bridge. Setup cannot check sign-in without a model run, so it reports the binary, its version and the state folder; a run that is not signed in fails with a message that says how to sign in.
+- Read-only runs (every review, and a task or rescue without `--write`) use a restricted reader agent. A review's reader has no tools at all; a read-only task's reader can read files by path. The companion writes the agent into a fresh folder in its own state (never in the workspace; when the state folder is inside the workspace the run fails instead), starts `agy acp --add-dir <folder> --agent <name>`, and first asks the agent for a random token written in its definition. Unless the answer is exactly the token, with no tool call and no permission request on the way, the reader was not in effect and the run stops before the real prompt. Later, permission requests are refused and any other tool stops the run.
+- So a review answers only from what the companion puts in its prompt: the git status, the diff and the contents of new files, up to 256 KiB. The budget is kept while collecting (git output and new files are read only up to it), source files come before tests and generated files, and a change identical to one already shown is only named. A larger change is cut, the files not shown are listed, and the reviewer is told to say so. A review cannot read other files, list folders, search or run commands. A read-only task may read files only inside its workspace. Antigravity does not ask before it reads, so the companion cannot refuse a read beforehand: when a read outside the workspace is reported (the path resolved through symlinks), it stops the session at once and fails the run. The file may already have been read locally; stopping at once is meant to end the session before that content is sent on, a race the bridge cannot fully close.
+- Write runs (`--write`) use Antigravity's default agent and allow every permission request it makes.
+- `--model` takes an id from `agy models`; `--effort` takes `low`, `medium`, `high` or `xhigh` (Antigravity's thinking levels).
+- Prompts travel on the protocol, never as arguments, so they never show up in process lists.
+- Only a write run continues a session, and only the most recent task, when it was a write task whose prompt reached its session. A write resume (`task --write --resume-last`) reopens that session with `session/resume`; when the most recent task was read-only or failed before its prompt, a new session starts instead (never an older one), and the result says why. `task --write --resume-job <job-id>` continues exactly that job, or fails and runs nothing when it cannot be continued. If Antigravity no longer has the session, or its ACP server cannot resume sessions, a new session starts, the result says so and the new id is stored. `session/load` is never used: it silently creates a session for an id it does not know. A read-only run never resumes an earlier session: a session keeps the agent it was made with, so the restricted reader cannot be attached to it. A read-only `--resume-last` starts a new reader session and says so.
 - Antigravity job state lives under `~/.antigravity-companion/state`.
 
 ## Gemini backends
 
 The Gemini companion prefers **`agy`** (Antigravity CLI) on PATH, then falls back to **`gemini`**.
 
-Override with `GEMINI_BACKEND=agy` or `GEMINI_BACKEND=gemini`. Optional `GEMINI_BIN` points at a specific binary. Read-only runs on the `agy` backend use the same `--settings` deny rules as the Antigravity companion.
+Override with `GEMINI_BACKEND=agy` or `GEMINI_BACKEND=gemini`. Optional `GEMINI_BIN` points at a specific binary. Read-only runs on the `agy` backend pass `--settings` with deny rules for `write_file(*)` and `command(*)`.
 
 ## Transfer
 
@@ -139,7 +141,7 @@ Implementation chunks run through the companion `task` runtime as fresh write-ca
 
 No companion bypasses a backend CLI's safety checks unless you say so.
 
-- **Write runs.** `--write` makes the backend auto-approve its tools (`--dangerously-skip-permissions` for Claude and Antigravity, `--force` for Cursor, `--approval-mode=yolo` for Gemini, `--auto` for OpenCode). The companion refuses `--write` unless the same command has `--bypass-permissions`, or `AGENT_BRIDGES_ALLOW_BYPASS=1` is set in the environment.
+- **Write runs.** `--write` makes the backend auto-approve its tools (`--dangerously-skip-permissions` for Claude, allowing every permission request for Antigravity, `--force` for Cursor, `--approval-mode=yolo` for Gemini, `--auto` for OpenCode). The companion refuses `--write` unless the same command has `--bypass-permissions`, or `AGENT_BRIDGES_ALLOW_BYPASS=1` is set in the environment.
 - **Folder trust.** Cursor's `--trust` and Gemini's `--skip-trust` are passed only with `--trust` on the companion command, or with `AGENT_BRIDGES_TRUST=1`. Without it, the backend applies its own folder-trust check, and a headless run in a folder you have not trusted can stop with the backend's error.
 - Rescue is read-only by default.
 - **OpenCode read-only runs** (reviews, and tasks without `--write`) pass a per-run configuration in `OPENCODE_CONFIG_CONTENT` that denies every tool except `read`, `glob` and `list`, MCP tools included. `grep` is denied too, because it searches file contents, so it could print secrets from files that `read` refuses. Reading `*.env` and `*.env.*` is denied, and `*.env.example` is allowed. The rest of your `OPENCODE_CONFIG_CONTENT` is kept, except its `permission` block and OpenCode 2's native `permissions` list, which would outrank the allowlist. Without this, OpenCode's defaults allow edits and shell commands even without `--auto`.

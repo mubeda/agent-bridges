@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -5,9 +6,9 @@ import { isProbablyText } from "./fs.mjs";
 import { formatCommandFailure, runCommand, runCommandChecked } from "./process.mjs";
 
 const MAX_UNTRACKED_BYTES = 24 * 1024;
-const DEFAULT_INLINE_DIFF_MAX_FILES = 2;
+// A review has no tools, so its prompt is all the evidence it gets: the diff and new files, up to this size.
 const DEFAULT_INLINE_DIFF_MAX_BYTES = 256 * 1024;
-const LIGHTWEIGHT_UNTRACKED_LIST_LIMIT = 200;
+const NOT_SHOWN_NAME_LIMIT = 100;
 
 // shell: false, so a ref such as `topic&docs` reaches git intact on Windows, where runCommand defaults to a shell.
 function git(cwd, args, options = {}) {
@@ -22,49 +23,12 @@ function listUniqueFiles(...groups) {
   return [...new Set(groups.flat().filter(Boolean))].sort();
 }
 
-function normalizeMaxInlineFiles(value) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    return DEFAULT_INLINE_DIFF_MAX_FILES;
-  }
-  return Math.floor(parsed);
-}
-
 function normalizeMaxInlineDiffBytes(value) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed < 0) {
     return DEFAULT_INLINE_DIFF_MAX_BYTES;
   }
   return Math.floor(parsed);
-}
-
-function measureGitOutputBytes(cwd, args, maxBytes) {
-  const result = git(cwd, args, { maxBuffer: maxBytes + 1 });
-  if (result.error && /** @type {NodeJS.ErrnoException} */ (result.error).code === "ENOBUFS") {
-    return maxBytes + 1;
-  }
-  if (result.error) {
-    throw result.error;
-  }
-  if (result.status !== 0) {
-    throw new Error(formatCommandFailure(result));
-  }
-  return Buffer.byteLength(result.stdout, "utf8");
-}
-
-function measureCombinedGitOutputBytes(cwd, argSets, maxBytes) {
-  let totalBytes = 0;
-  for (const args of argSets) {
-    const remainingBytes = maxBytes - totalBytes;
-    if (remainingBytes < 0) {
-      return maxBytes + 1;
-    }
-    totalBytes += measureGitOutputBytes(cwd, args, remainingBytes);
-    if (totalBytes > maxBytes) {
-      return totalBytes;
-    }
-  }
-  return totalBytes;
 }
 
 function buildBranchComparison(cwd, baseRef) {
@@ -248,147 +212,210 @@ function formatUntrackedFile(cwd, relativePath) {
   return [`### ${relativePath}`, "```", buffer.toString("utf8").trimEnd(), "```"].join("\n");
 }
 
-function collectWorkingTreeContext(cwd, state, options = {}) {
-  const includeDiff = options.includeDiff !== false;
-  const status = gitChecked(cwd, ["status", "--short", "--untracked-files=all"]).stdout.trim();
-  const changedFiles = listUniqueFiles(state.staged, state.unstaged, state.untracked);
+/** Cut a string to at most maxBytes of UTF-8 without splitting a character. */
+function cutUtf8(text, maxBytes) {
+  return Buffer.from(text, "utf8").subarray(0, Math.max(0, maxBytes)).toString("utf8").replace(/\uFFFD$/, "");
+}
 
-  let parts;
-  if (includeDiff) {
-    const stagedDiff = gitChecked(cwd, ["diff", "--cached", "--binary", "--no-ext-diff", "--submodule=diff"]).stdout;
-    const unstagedDiff = gitChecked(cwd, ["diff", "--binary", "--no-ext-diff", "--submodule=diff"]).stdout;
-    const untrackedBody = state.untracked.map((file) => formatUntrackedFile(cwd, file)).join("\n\n");
-    parts = [
-      formatSection("Git Status", status),
-      formatSection("Staged Diff", stagedDiff),
-      formatSection("Unstaged Diff", unstagedDiff),
-      formatSection("Untracked Files", untrackedBody)
-    ];
-  } else {
-    const stagedStat = gitChecked(cwd, ["diff", "--shortstat", "--cached"]).stdout.trim();
-    const unstagedStat = gitChecked(cwd, ["diff", "--shortstat"]).stdout.trim();
-    // Lightweight mode is supposed to skip large bodies so the prompt stays
-    // small; the model can read files itself if it needs to. Embed only the
-    // paths (capped), not the contents — otherwise many untracked files can
-    // produce a multi-MB prompt that bypasses the inline-diff byte budget.
-    const truncated = state.untracked.length > LIGHTWEIGHT_UNTRACKED_LIST_LIMIT;
-    const visibleUntracked = state.untracked.slice(0, LIGHTWEIGHT_UNTRACKED_LIST_LIMIT);
-    const untrackedListing = truncated
-      ? `${visibleUntracked.join("\n")}\n(... ${state.untracked.length - LIGHTWEIGHT_UNTRACKED_LIST_LIMIT} more untracked file(s) omitted)`
-      : visibleUntracked.join("\n");
-    parts = [
-      formatSection("Git Status", status),
-      formatSection("Staged Diff Stat", stagedStat),
-      formatSection("Unstaged Diff Stat", unstagedStat),
-      formatSection("Changed Files", readableFiles(cwd, changedFiles)),
-      formatSection("Untracked Files", readableFiles(cwd, untrackedListing.split("\n")))
-    ];
+/** Run git and keep at most `limit` bytes of its output; `more` says output was cut (git is stopped there). */
+function gitCapped(cwd, args, limit) {
+  const result = git(cwd, ["--literal-pathspecs", ...args], { maxBuffer: Math.max(0, limit) + 1 });
+  const overflow = /** @type {NodeJS.ErrnoException} */ (result.error)?.code === "ENOBUFS";
+  if (result.error && !overflow) throw result.error;
+  if (!overflow && result.status !== 0) throw new Error(formatCommandFailure(result));
+  const more = overflow || Buffer.byteLength(result.stdout, "utf8") > limit;
+  return { text: more ? cutUtf8(result.stdout, limit) : result.stdout, more };
+}
+
+/**
+ * Changed files with rename pairs kept: `-M --name-status -z` gives `R<score>\0old\0new` for a rename or copy
+ * and `<status>\0path` otherwise. A rename's diff needs both paths, or git shows a full addition.
+ */
+function listChanges(cwd, args) {
+  const fields = gitChecked(cwd, ["-c", "core.quotePath=false", ...args, "-M", "--name-status", "-z"]).stdout.split("\0");
+  const changes = [];
+  for (let index = 0; index < fields.length && fields[index]; ) {
+    const status = fields[index];
+    if (/^[RC]/.test(status)) {
+      changes.push({ file: fields[index + 2], paths: [fields[index + 1], fields[index + 2]] });
+      index += 3;
+    } else {
+      changes.push({ file: fields[index + 1], paths: [fields[index + 1]] });
+      index += 2;
+    }
   }
+  return changes;
+}
 
+function listPaths(cwd, args) {
+  return gitChecked(cwd, ["-c", "core.quotePath=false", ...args, "-z"]).stdout.split("\0").filter(Boolean);
+}
+
+/** Most useful first: source, then tests, then generated or vendored files; shallower paths before deeper copies. */
+function evidenceRank(file) {
+  if (/(^|\/)(dist|build|out|generated|vendor|node_modules)\//.test(file) || /(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml)$|\.min\.[^/]+$/.test(file)) return 2;
+  if (/(^|\/)(tests?|__tests__|specs?|fixtures)\//.test(file) || /\.(test|spec)\.[^/]+$/.test(file)) return 1;
+  return 0;
+}
+
+function orderFiles(files) {
+  return [...files].sort((a, b) => evidenceRank(a) - evidenceRank(b) || a.split("/").length - b.split("/").length || a.localeCompare(b));
+}
+
+/** Collects sections into a byte budget; once it is used up, later items are only named. */
+function createEvidence(maxBytes) {
+  const parts = [];
+  const notShown = [];
+  let left = maxBytes;
+  let truncated = false;
   return {
-    mode: "working-tree",
-    summary: `Reviewing ${state.staged.length} staged, ${state.unstaged.length} unstaged, and ${state.untracked.length} untracked file(s).`,
-    content: parts.join("\n"),
-    changedFiles
+    get left() {
+      return truncated ? 0 : left;
+    },
+    add(text) {
+      if (truncated) return false;
+      const bytes = Buffer.byteLength(text, "utf8");
+      if (bytes <= left) {
+        parts.push(text);
+        left -= bytes;
+        return true;
+      }
+      parts.push(cutUtf8(text, left));
+      left = 0;
+      truncated = true;
+      return false;
+    },
+    cut() {
+      truncated = true;
+    },
+    skip(name) {
+      truncated = true;
+      notShown.push(name);
+    },
+    get truncated() {
+      return truncated;
+    },
+    content() {
+      if (!truncated) return parts.join("");
+      const names = notShown.slice(0, NOT_SHOWN_NAME_LIMIT).join(", ");
+      const extra = notShown.length > NOT_SHOWN_NAME_LIMIT ? ` and ${notShown.length - NOT_SHOWN_NAME_LIMIT} more` : "";
+      return `${parts.join("")}\n\n(The evidence was cut at ${maxBytes} bytes; the rest of this change is not shown.${names ? ` Files not shown: ${names}${extra}.` : ""})`;
+    }
   };
 }
 
-function collectBranchContext(cwd, baseRef, options = {}) {
-  const includeDiff = options.includeDiff !== false;
-  const comparison = options.comparison ?? buildBranchComparison(cwd, baseRef);
-  const currentBranch = getCurrentBranch(cwd);
-  const changedFiles = gitChecked(cwd, ["diff", "--name-only", comparison.commitRange]).stdout.trim().split("\n").filter(Boolean);
-  const logOutput = gitChecked(cwd, ["log", "--oneline", "--decorate", comparison.commitRange]).stdout.trim();
-  const diffStat = gitChecked(cwd, ["diff", "--stat", comparison.commitRange]).stdout.trim();
+/**
+ * One diff per file, in evidence order. A change whose header (blob hashes and any mode, rename or copy
+ * lines) equals one already shown is only named; a different mode change keeps its own diff.
+ */
+function addDiffs(evidence, cwd, title, diffArgs, changes) {
+  evidence.add(`## ${title}\n\n`);
+  if (!changes.length) evidence.add("(none)\n\n");
+  const byFile = new Map(changes.map((change) => [change.file, change]));
+  const seen = new Map();
+  for (const file of orderFiles([...byFile.keys()])) {
+    if (evidence.truncated) {
+      evidence.skip(file);
+      continue;
+    }
+    const { text, more } = gitCapped(cwd, ["diff", "-M", ...diffArgs, "--", ...byFile.get(file).paths], evidence.left);
+    const header = text.split("\n").slice(1).filter((line) => /^(index|old mode|new mode|new file mode|deleted file mode|similarity index|rename from|rename to|copy from|copy to) /.test(line));
+    const key = header.some((line) => line.startsWith("index ")) ? header.join("\n") : null;
+    const deletion = /^index [0-9a-f]+\.\.0+\b/m.test(text);
+    if (key && !more && !deletion && seen.has(key)) {
+      evidence.add(`(${file}: identical to ${seen.get(key)}, not repeated)\n`);
+      continue;
+    }
+    if (key && !seen.has(key)) seen.set(key, file);
+    evidence.add(text.endsWith("\n") || !text ? text : `${text}\n`);
+    if (more) evidence.cut();
+  }
+  evidence.add("\n");
+}
 
+function addUntracked(evidence, cwd, files) {
+  evidence.add("## Untracked Files\n\n");
+  if (!files.length) evidence.add("(none)\n");
+  const seen = new Map();
+  for (const file of orderFiles(files)) {
+    // Stop reading once the budget is used: the rest are only named.
+    if (evidence.truncated) {
+      evidence.skip(file);
+      continue;
+    }
+    const body = formatUntrackedFile(cwd, file);
+    const hash = createHash("sha256").update(body.slice(body.indexOf("\n") + 1)).digest("hex");
+    if (body.includes("\n```\n") && seen.has(hash)) {
+      evidence.add(`### ${file}\n(identical to ${seen.get(hash)}, not repeated)\n\n`);
+      continue;
+    }
+    if (!seen.has(hash)) seen.set(hash, file);
+    evidence.add(`${body}\n\n`);
+  }
+}
+
+function collectWorkingTreeContext(cwd, state, maxBytes) {
+  const evidence = createEvidence(maxBytes);
+  const status = gitCapped(cwd, ["status", "--short", "--untracked-files=all"], evidence.left);
+  evidence.add(`${formatSection("Git Status", status.text)}\n`);
+  if (status.more) evidence.cut();
+  const diffArgs = ["--binary", "--no-ext-diff", "--submodule=diff"];
+  addDiffs(evidence, cwd, "Staged Diff", ["--cached", ...diffArgs], listChanges(cwd, ["diff", "--cached"]));
+  addDiffs(evidence, cwd, "Unstaged Diff", diffArgs, listChanges(cwd, ["diff"]));
+  addUntracked(evidence, cwd, listPaths(cwd, ["ls-files", "--others", "--exclude-standard"]));
+  return {
+    mode: "working-tree",
+    summary: `Reviewing ${state.staged.length} staged, ${state.unstaged.length} unstaged, and ${state.untracked.length} untracked file(s).`,
+    content: evidence.content(),
+    truncated: evidence.truncated,
+    changedFiles: listUniqueFiles(state.staged, state.unstaged, state.untracked)
+  };
+}
+
+function collectBranchContext(cwd, baseRef, maxBytes) {
+  const comparison = buildBranchComparison(cwd, baseRef);
+  const currentBranch = getCurrentBranch(cwd);
+  const changedFiles = listPaths(cwd, ["diff", "--name-only", comparison.commitRange]);
+  const evidence = createEvidence(maxBytes);
+  for (const [title, args] of [["Commit Log", ["log", "--oneline", "--decorate", comparison.commitRange]], ["Diff Stat", ["diff", "--stat", comparison.commitRange]]]) {
+    const { text, more } = gitCapped(cwd, args, evidence.left);
+    evidence.add(`${formatSection(title, text)}\n`);
+    if (more) evidence.cut();
+  }
+  addDiffs(evidence, cwd, "Branch Diff", ["--binary", "--no-ext-diff", "--submodule=diff", comparison.commitRange], listChanges(cwd, ["diff", comparison.commitRange]));
   return {
     mode: "branch",
     summary: `Reviewing branch ${currentBranch} against ${baseRef} from merge-base ${comparison.mergeBase}.`,
-    content: includeDiff
-      ? [
-          formatSection("Commit Log", logOutput),
-          formatSection("Diff Stat", diffStat),
-          formatSection(
-            "Branch Diff",
-            gitChecked(cwd, ["diff", "--binary", "--no-ext-diff", "--submodule=diff", comparison.commitRange]).stdout
-          )
-        ].join("\n")
-      : [
-          formatSection("Commit Log", logOutput),
-          formatSection("Diff Stat", diffStat),
-          formatSection("Changed Files", readableFiles(cwd, changedFiles))
-        ].join("\n"),
+    content: evidence.content(),
+    truncated: evidence.truncated,
     changedFiles,
     comparison
   };
 }
 
-/** Self-collected reviews tell the model to read changed files, so never list a symlink: it may point outside the repository. */
-function readableFiles(repoRoot, files) {
-  const listed = files.filter((file) => {
-    try {
-      return !fs.lstatSync(path.join(repoRoot, file)).isSymbolicLink();
-    } catch {
-      return true;
-    }
-  });
-  const skipped = files.length - listed.length;
-  return skipped ? [...listed, `(${skipped} symlink(s) not listed)`].join("\n") : listed.join("\n");
-}
-
-function buildAdversarialCollectionGuidance(options = {}) {
-  if (options.includeDiff !== false) {
-    return "Use the repository context below as primary evidence.";
-  }
-
-  return "The repository context below is a lightweight summary. Shell commands are denied in this review. Read the changed files directly, and say in the summary which changes you could not inspect. Never open a symlink.";
+function buildCollectionGuidance(truncated, maxBytes) {
+  const base = "You have no tools in this review: you cannot read files, list folders, search or run commands. Answer only from the repository context below.";
+  return truncated
+    ? `${base} The change is larger than ${maxBytes} bytes, so the context was cut; say in the summary that the rest was not reviewed.`
+    : base;
 }
 
 export function collectReviewContext(cwd, target, options = {}) {
   const repoRoot = getRepoRoot(cwd);
   const currentBranch = getCurrentBranch(repoRoot);
-  const maxInlineFiles = normalizeMaxInlineFiles(options.maxInlineFiles);
-  const maxInlineDiffBytes = normalizeMaxInlineDiffBytes(options.maxInlineDiffBytes);
-  let details;
-  let includeDiff;
-  let diffBytes;
-
-  if (target.mode === "working-tree") {
-    const state = getWorkingTreeState(repoRoot);
-    diffBytes = measureCombinedGitOutputBytes(
-      repoRoot,
-      [
-        ["diff", "--cached", "--binary", "--no-ext-diff", "--submodule=diff"],
-        ["diff", "--binary", "--no-ext-diff", "--submodule=diff"]
-      ],
-      maxInlineDiffBytes
-    );
-    includeDiff =
-      options.includeDiff ??
-      (listUniqueFiles(state.staged, state.unstaged, state.untracked).length <= maxInlineFiles &&
-        diffBytes <= maxInlineDiffBytes);
-    details = collectWorkingTreeContext(repoRoot, state, { includeDiff });
-  } else {
-    const comparison = buildBranchComparison(repoRoot, target.baseRef);
-    const fileCount = gitChecked(repoRoot, ["diff", "--name-only", comparison.commitRange]).stdout.trim().split("\n").filter(Boolean).length;
-    diffBytes = measureGitOutputBytes(
-      repoRoot,
-      ["diff", "--binary", "--no-ext-diff", "--submodule=diff", comparison.commitRange],
-      maxInlineDiffBytes
-    );
-    includeDiff = options.includeDiff ?? (fileCount <= maxInlineFiles && diffBytes <= maxInlineDiffBytes);
-    details = collectBranchContext(repoRoot, target.baseRef, { includeDiff, comparison });
-  }
-
+  const maxBytes = normalizeMaxInlineDiffBytes(options.maxInlineDiffBytes);
+  // The budget is enforced while collecting: git output and untracked files are read only up to it.
+  const details = target.mode === "working-tree"
+    ? collectWorkingTreeContext(repoRoot, getWorkingTreeState(repoRoot), maxBytes)
+    : collectBranchContext(repoRoot, target.baseRef, maxBytes);
   return {
     cwd: repoRoot,
     repoRoot,
     branch: currentBranch,
     target,
     fileCount: details.changedFiles.length,
-    diffBytes,
-    inputMode: includeDiff ? "inline-diff" : "self-collect",
-    collectionGuidance: buildAdversarialCollectionGuidance({ includeDiff }),
+    inputMode: details.truncated ? "truncated-diff" : "inline-diff",
+    collectionGuidance: buildCollectionGuidance(details.truncated, maxBytes),
     ...details
   };
 }

@@ -22,3 +22,4 @@ Run and return stdout verbatim. Pass each flag and its value as a separate shell
 node "<plugin-root>/scripts/antigravity-companion.mjs" setup <arguments>
 ```
 
+The companion talks to Antigravity through its ACP server (`agy acp`). Only the Google sign-in cached by `agy` is supported: sign in once with an interactive `agy` session or `agy acp --login`. API keys are not supported. Setup cannot check sign-in without a run; keep its sign-in note in what you show the user.

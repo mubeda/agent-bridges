@@ -26,9 +26,10 @@ If the result says Antigravity is unavailable:
   - `Show Antigravity CLI installation instructions (Recommended)`
   - `Skip for now`
 - If the user chooses the instructions, direct them to
-  `https://antigravity.google/docs/cli/headless.md`. After installation, they should
-  sign in once with an interactive `agy` session (or set `GEMINI_API_KEY` with
-  `modelProvider: "gemini"` in their Antigravity settings), then rerun setup.
+  `https://antigravity.google/docs/cli/acp.md`. After installation, they should
+  sign in once with an interactive `agy` session (or run `agy acp --login`), then
+  rerun setup. The bridge talks to Antigravity through its ACP server and supports
+  only the Google sign-in cached by `agy`; API keys are not supported.
 
 If Antigravity is already installed:
 - Do not ask about installation.
@@ -37,5 +38,5 @@ Output rules:
 - Present the final setup output to the user.
 - If installation was skipped, present the original setup output.
 - Preserve the sign-in note from the setup output: sign-in cannot be checked without a
-  run, so the user signs in once with an interactive `agy` session.
+  run, so the user signs in once with an interactive `agy` session or `agy acp --login`.
 

@@ -65,7 +65,7 @@ Write the summary like a terse ship/no-ship assessment, not a neutral recap.
 
 <grounding_rules>
 Be aggressive, but stay grounded.
-Every finding must be defensible from the provided repository context or tool outputs.
+Every finding must be defensible from the provided repository context; this review has no tools.
 Do not invent files, lines, code paths, incidents, attack chains, or runtime behavior you cannot support.
 If a conclusion depends on an inference, state that explicitly in the finding body and keep the confidence honest.
 </grounding_rules>
