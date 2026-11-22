@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.3 — 2026-11-21
+
+### Fixed
+- **The rescue agent's `tools` is a YAML list.** Antigravity's validator rejects `tools` as a plain string; `tools: [Bash]` is the form it and Claude Code both accept. Antigravity cannot start an agent that names a tool it does not have (`tool "Bash" not found in registry`), so the rescue agent does not run there; use the rescue skill in Antigravity. ([#9](https://github.com/mubeda/agent-bridges/issues/9))
+
 ## 0.1.2 — 2026-11-21
 
 ### Fixed

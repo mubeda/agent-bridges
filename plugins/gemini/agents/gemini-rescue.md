@@ -2,7 +2,7 @@
 name: gemini-rescue
 description: Proactively use when Claude Code is stuck, wants a second implementation or diagnosis pass, needs a deeper root-cause investigation, or should hand a substantial coding task to Gemini through the shared runtime
 model: sonnet
-tools: Bash
+tools: [Bash]
 skills:
   - gemini-cli-runtime
   - gemini-prompting

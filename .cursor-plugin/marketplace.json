@@ -4,32 +4,32 @@
   "owner": { "name": "mubeda" },
   "metadata": {
     "description": "OpenCode, Gemini, Claude, and Antigravity companion plugins for Cursor.",
-    "version": "0.4.2",
+    "version": "0.4.3",
     "pluginRoot": "plugins"
   },
   "plugins": [
     {
       "name": "opencode",
       "description": "Use the local OpenCode CLI to review code or delegate tasks.",
-      "version": "0.3.4",
+      "version": "0.3.5",
       "source": "opencode"
     },
     {
       "name": "gemini",
       "description": "Use the local Gemini CLI to review code or delegate tasks.",
-      "version": "0.2.4",
+      "version": "0.2.5",
       "source": "gemini"
     },
     {
       "name": "claude",
       "description": "Use the local Claude Code CLI to review code or delegate tasks.",
-      "version": "0.2.4",
+      "version": "0.2.5",
       "source": "claude"
     },
     {
       "name": "antigravity",
       "description": "Use the local Antigravity CLI (agy) to review code or delegate tasks.",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "source": "antigravity"
     }
   ]

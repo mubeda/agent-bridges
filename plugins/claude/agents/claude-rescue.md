@@ -1,7 +1,7 @@
 ---
 name: claude-rescue
 description: Proactively use when the main thread is stuck, wants a second implementation or diagnosis pass, needs a deeper root-cause investigation, or should hand a substantial coding task to Claude through the shared runtime
-tools: Bash
+tools: [Bash]
 skills:
   - claude-cli-runtime
   - claude-prompting
