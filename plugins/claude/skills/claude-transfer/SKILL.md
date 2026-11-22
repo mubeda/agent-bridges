@@ -14,6 +14,8 @@ Resolve `<plugin-root>` as the first directory that contains `scripts/claude-com
 
 If none exist, stop and print those paths, and say that an `npx skills` install also needs `claude-cli-runtime`. Do not invent a companion elsewhere.
 
+In Antigravity, do not transfer the current session: the companion reads only Claude Code, Codex and Cursor transcripts (`.jsonl`) and would otherwise pick an older conversation of another host. Transfer there only when the user gives the path of such a transcript, with `--source <path>`.
+
 Transfer source rules:
 - By default the companion auto-detects the newest workspace transcript from Claude, Codex, or Cursor Agent JSONL.
 - Pass `--source <path-to-jsonl>` to override auto-detect (supports `~`).

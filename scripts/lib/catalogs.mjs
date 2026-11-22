@@ -13,6 +13,7 @@ export const REQUIRED_CATALOG_FILES = [
 export const CLAUDE_HOST_PLUGIN_NAMES = ["opencode", "gemini", "cursor", "antigravity"];
 export const CODEX_OPENCODE_PLUGIN_NAMES = ["opencode", "gemini", "claude", "cursor", "antigravity"];
 export const CURSOR_HOST_PLUGIN_NAMES = ["opencode", "gemini", "claude", "antigravity"];
+export const ANTIGRAVITY_PLUGIN_NAMES = ["claude", "cursor"];
 export const PLUGIN_TREES = ["opencode", "gemini", "claude", "cursor", "antigravity"];
 
 function displayPath(filePath) {
@@ -160,7 +161,7 @@ export function validateMarketplaceRepo(rootDir) {
   }
 
   for (const name of PLUGIN_TREES) {
-    readJson(path.join(rootDir, "plugins", name, ".claude-plugin", "plugin.json"), errors);
+    const claudePlugin = readJson(path.join(rootDir, "plugins", name, ".claude-plugin", "plugin.json"), errors);
     const codexPlugin = readJson(
       path.join(rootDir, "plugins", name, ".codex-plugin", "plugin.json"),
       errors
@@ -169,6 +170,23 @@ export function validateMarketplaceRepo(rootDir) {
       errors.push(`plugins/${name}/.codex-plugin/plugin.json skills must be ./skills/`);
     }
     readJson(path.join(rootDir, "plugins", name, ".cursor-plugin", "plugin.json"), errors);
+
+    const agyFile = path.join(rootDir, "plugins", name, ".antigravity-plugin", "plugin.json");
+    if (!ANTIGRAVITY_PLUGIN_NAMES.includes(name) && fs.existsSync(agyFile)) {
+      errors.push(`plugins/${name}/.antigravity-plugin/plugin.json is not expected: ${name} is not an Antigravity plugin`);
+    } else if (ANTIGRAVITY_PLUGIN_NAMES.includes(name)) {
+      const agyPlugin = readJson(agyFile, errors);
+      if (agyPlugin && agyPlugin.name !== name) {
+        errors.push(`plugins/${name}/.antigravity-plugin/plugin.json name must be ${name} (got ${agyPlugin.name ?? "missing"})`);
+      }
+      if (agyPlugin && (typeof agyPlugin.version !== "string" || agyPlugin.version.trim() === "")) {
+        errors.push(`plugins/${name}/.antigravity-plugin/plugin.json version is missing`);
+      } else if (agyPlugin && claudePlugin && agyPlugin.version !== claudePlugin.version) {
+        errors.push(
+          `plugins/${name}/.antigravity-plugin/plugin.json version ${agyPlugin.version ?? "missing"} must equal .claude-plugin/plugin.json version ${claudePlugin.version ?? "missing"}`
+        );
+      }
+    }
   }
 
   return { ok: errors.length === 0, errors };

@@ -65,6 +65,15 @@ Local:
 
 Reload the window. OpenCode and Gemini commands come from their `commands/` folders; the Claude companion has no `commands/` folder and exposes skills instead.
 
+## Antigravity
+
+```bash
+agy plugin install https://github.com/mubeda/agent-bridges/tree/main/plugins/claude
+agy plugin install https://github.com/mubeda/agent-bridges/tree/main/plugins/cursor
+```
+
+The `claude` and `cursor` bridges are Antigravity plugins. `opencode` and `gemini` are not yet: their rescue agent names a model that Antigravity's loader rejects ([#9](https://github.com/mubeda/agent-bridges/issues/9)). The `antigravity` bridge is not installed inside Antigravity: it is for the other hosts. There the skills find the companion in the `<plugin>-cli-runtime` skill that comes with the plugin. `transfer` cannot send an Antigravity session: it reads only Claude Code, Codex and Cursor transcripts, so pass one with `--source <path>`. The rescue agent names the tool `Bash`, which Antigravity does not have, so Antigravity cannot start it (`tool "Bash" not found in registry`); use the `<plugin>-rescue` skill there.
+
 ## OpenCode
 
 ```bash
@@ -166,6 +175,8 @@ npx skills add mubeda/agent-bridges --list
 npx skills add mubeda/agent-bridges --skill antigravity-cli-runtime --skill antigravity-review -g -a claude-code -y
 # this project, copy
 npx skills add mubeda/agent-bridges --skill antigravity-cli-runtime --skill antigravity-review -a codex --copy -y
+# Antigravity
+npx skills add mubeda/agent-bridges --skill claude-cli-runtime --skill claude-review -a antigravity -y
 ```
 
 - A plugin's `<plugin>-cli-runtime` skill must be installed with the other skills of that plugin: it carries the companion scripts, prompts, and schemas, and the other skills look for it in the folder next to their own.

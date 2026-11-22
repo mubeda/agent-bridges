@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.5 — 2026-11-21
+
+### Added
+- **Antigravity plugin.** The plugin has an `.antigravity-plugin/plugin.json`, so `agy plugin install https://github.com/mubeda/agent-bridges/tree/main/plugins/claude` takes it as a plugin of its own, and `agy plugin validate` accepts it. The `claude-transfer` skill says that an Antigravity session cannot be transferred. ([#9](https://github.com/mubeda/agent-bridges/issues/9))
+
+### Fixed
+- **The rescue agent's `tools` is a YAML list.** Antigravity's validator rejects `tools` as a plain string; `tools: [Bash]` is the form it and Claude Code both accept. Antigravity cannot start an agent that names a tool it does not have (`tool "Bash" not found in registry`), so the rescue agent does not run there; use the rescue skill in Antigravity. ([#9](https://github.com/mubeda/agent-bridges/issues/9))
+
 ## 0.2.4 — 2026-11-21
 
 ### Fixed

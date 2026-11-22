@@ -1,6 +1,6 @@
 {
   "name": "cursor",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Use the local Cursor Agent CLI to review code or delegate tasks.",
   "author": { "name": "mubeda" }
 }

@@ -19,7 +19,8 @@ function createFixture() {
 
 function writePluginManifests(write, names) {
   for (const name of names) {
-    write(`plugins/${name}/.claude-plugin/plugin.json`, { name });
+    write(`plugins/${name}/.claude-plugin/plugin.json`, { name, version: "1.0.0" });
+    if (name === "claude" || name === "cursor") write(`plugins/${name}/.antigravity-plugin/plugin.json`, { name, version: "1.0.0" });
     write(`plugins/${name}/.codex-plugin/plugin.json`, { name, skills: "./skills/" });
     write(`plugins/${name}/.cursor-plugin/plugin.json`, { name });
   }
@@ -328,6 +329,52 @@ test("a five-plugin fixture passes", () => {
   const fixture = validFiveFixture();
   fixture.save();
   assert.deepEqual(validateMarketplaceRepo(fixture.root).errors, []);
+});
+
+test("an Antigravity manifest with the Claude manifest's version passes", () => {
+  const fixture = validFiveFixture();
+  fixture.save();
+  assert.deepEqual(validateMarketplaceRepo(fixture.root).errors, []);
+});
+
+test("an Antigravity manifest with another version fails and names the plugin", () => {
+  const fixture = validFiveFixture();
+  fixture.save();
+  const file = path.join(fixture.root, "plugins/claude/.antigravity-plugin/plugin.json");
+  fs.writeFileSync(file, JSON.stringify({ name: "claude", version: "9.9.9" }));
+  const result = validateMarketplaceRepo(fixture.root);
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((e) => e.includes("plugins/claude/.antigravity-plugin") && e.includes("9.9.9")), result.errors.join("; "));
+});
+
+test("an Antigravity manifest without a version fails", () => {
+  const fixture = validFiveFixture();
+  fixture.save();
+  const file = path.join(fixture.root, "plugins/claude/.antigravity-plugin/plugin.json");
+  fs.writeFileSync(file, JSON.stringify({ name: "claude" }));
+  const result = validateMarketplaceRepo(fixture.root);
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((e) => e.includes("plugins/claude/.antigravity-plugin") && e.includes("version is missing")), result.errors.join("; "));
+});
+
+test("an Antigravity manifest on a bridge that is not an Antigravity plugin fails", () => {
+  const fixture = validFiveFixture();
+  fixture.save();
+  const dir = path.join(fixture.root, "plugins/opencode/.antigravity-plugin");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "plugin.json"), JSON.stringify({ name: "opencode", version: "1.0.0" }));
+  const result = validateMarketplaceRepo(fixture.root);
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((e) => e.includes("plugins/opencode/.antigravity-plugin") && e.includes("not expected")), result.errors.join("; "));
+});
+
+test("a missing Antigravity manifest fails and names the plugin", () => {
+  const fixture = validFiveFixture();
+  fixture.save();
+  fs.rmSync(path.join(fixture.root, "plugins/cursor/.antigravity-plugin"), { recursive: true });
+  const result = validateMarketplaceRepo(fixture.root);
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((e) => e.includes("missing") && e.includes("plugins/cursor/.antigravity-plugin")), result.errors.join("; "));
 });
 
 test("cursor marketplace without antigravity fails and names it", () => {
