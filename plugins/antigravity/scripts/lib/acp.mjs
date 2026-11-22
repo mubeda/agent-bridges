@@ -242,7 +242,7 @@ function safeId(value) {
  * Missing folders and unreadable files are skipped, and so is a transcript last changed before `since` (this
  * run's start): a resumed session lists earlier runs' subagents, which may have been cut off.
  */
-export function subagentStates(geminiDir, sessionId, settleMs, { now = Date.now(), since = 0 } = {}) {
+export function subagentStates(geminiDir, sessionId, settleMs, { now = Date.now(), since = 0, cache = null } = {}) {
   const brain = path.join(geminiDir, "antigravity-cli", "brain");
   const session = safeId(sessionId);
   if (!session) return [];
@@ -256,34 +256,46 @@ export function subagentStates(geminiDir, sessionId, settleMs, { now = Date.now(
   return names.flatMap((name) => {
     let id;
     let role;
-    let transcript;
-    let mtime;
+    let file;
+    let stat;
     try {
       const listing = JSON.parse(fs.readFileSync(path.join(listDir, name), "utf8"));
       id = safeId(listing?.conversationId);
       if (!id) return [];
       role = isText(listing?.subagentDescriptor?.role) ? listing.subagentDescriptor.role : null;
-      const file = path.join(brain, id, ".system_generated", "logs", "transcript.jsonl");
-      mtime = fs.statSync(file).mtimeMs;
-      transcript = fs.readFileSync(file, "utf8");
+      file = path.join(brain, id, ".system_generated", "logs", "transcript.jsonl");
+      stat = fs.statSync(file);
     } catch {
       return [];
     }
+    // Checked before reading: an earlier run's transcript is never read.
+    const mtime = stat.mtimeMs;
     if (mtime < since) return [];
-    let open = 0;
-    let last = null;
-    for (const line of transcript.split("\n")) {
-      let record;
+    // An unchanged transcript (same mtime and size) is not read and parsed again.
+    let parsed = cache?.get(file);
+    if (!parsed || parsed.mtime !== mtime || parsed.size !== stat.size) {
+      let transcript;
       try {
-        record = JSON.parse(line);
+        transcript = fs.readFileSync(file, "utf8");
       } catch {
-        continue;
+        return [];
       }
-      if (!isObject(record)) continue;
-      last = record;
-      if (record.type === "SYSTEM_MESSAGE") open = Math.max(0, open - 1);
-      else if (record.status === "RUNNING") open += 1;
+      parsed = { mtime, size: stat.size, open: 0, last: null };
+      for (const line of transcript.split("\n")) {
+        let record;
+        try {
+          record = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (!isObject(record)) continue;
+        parsed.last = record;
+        if (record.type === "SYSTEM_MESSAGE") parsed.open = Math.max(0, parsed.open - 1);
+        else if (record.status === "RUNNING") parsed.open += 1;
+      }
+      cache?.set(file, parsed);
     }
+    const { open, last } = parsed;
     const running = open > 0;
     const stuck = !running && Array.isArray(last?.tool_calls) && last.tool_calls.some((call) => call?.name === "run_command");
     return [{ id, role, busy: running || now - mtime < settleMs, running, stuck }];
@@ -321,6 +333,7 @@ export function startAcpRun(options) {
   let lastUpdate = runStarted;
   // Subagents left unfinished when the last wait ended: { id, role, reason }.
   let unfinished = [];
+  const transcriptCache = new Map();
   let sessionId = null;
   let turn = null;
   let stopped = null;
@@ -331,6 +344,12 @@ export function startAcpRun(options) {
 
   // afterReply: mark the run stopped now, but let a reply that is being sent reach the server first.
   const stop = (error, { afterReply = false, security = false } = {}) => {
+    // A security stop after another stop (the wait's bound) still wins: the run's answer must be discarded.
+    if (stopped && security && !securityStop) {
+      stopped = error;
+      securityStop = true;
+      return;
+    }
     if (stopped) return;
     stopped = error;
     securityStop = security;
@@ -350,9 +369,10 @@ export function startAcpRun(options) {
       lastUpdate = Date.now();
       if ((update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") && update.toolCallId !== undefined) {
         const call = toolCalls.get(update.toolCallId) ?? { name: "", title: null, status: "pending" };
-        if (typeof update.name === "string") call.name = update.name;
-        if (typeof update.title === "string") call.title = update.title;
-        if (typeof update.status === "string") call.status = update.status;
+        // Only non-empty values: a later record with an empty field must not erase what an earlier one said.
+        if (isText(update.name)) call.name = update.name;
+        if (isText(update.title)) call.title = update.title;
+        if (isText(update.status)) call.status = update.status;
         // An ask_question carries its questions in rawInput (or args) .questions[].question.
         const asked = [update.rawInput, update.args].find((input) => Array.isArray(input?.questions))?.questions
           .map((entry) => entry?.question).filter(isText);
@@ -362,10 +382,15 @@ export function startAcpRun(options) {
       // Text counts only inside an open turn (a task's stays open until its session is quiet); a read-only
       // session's tool rule holds at every moment.
       if (update.sessionUpdate === "agent_message_chunk" && typeof update.content?.text === "string") {
-        if (turn) turn.text += update.content.text;
+        // Only this session's text: an update of another session on the connection is not part of the answer.
+        const own = message.params?.sessionId === undefined || sessionId === null || String(message.params.sessionId) === sessionId;
+        if (turn && own) turn.text += update.content.text;
       } else if (update.sessionUpdate === "tool_call_update" && readOnly && !review) {
-        // A later record of a read can carry the path too: the same confinement applies.
-        if (toolCalls.get(update.toolCallId)?.name === "read_file" && readPath(update) !== null) confineRead(update);
+        // A later record of a read can carry the path too: the same confinement applies. The record's own name
+        // first, then the tracked one; a record that names neither is confined too, because a read-only task's
+        // only other tool (manage_task) is the one exception.
+        const name = isText(update.name) ? update.name : toolCalls.get(update.toolCallId)?.name;
+        if (name !== "manage_task" && readPath(update) !== null) confineRead(update);
       } else if (update.sessionUpdate === "tool_call" && readOnly) {
         const name = typeof update.name === "string" ? update.name : "";
         // The real reader has the token in its instructions: a tool used to answer the check proves nothing.
@@ -478,7 +503,7 @@ export function startAcpRun(options) {
       const now = Date.now();
       const quietSoFar = !openCalls(false).length && now - lastUpdate >= settleMs;
       const timedOut = now - started >= quietTimeoutMs;
-      const states = quietSoFar || timedOut ? subagentStates(geminiDir, sessionId, settleMs, { now, since: runStarted }) : [];
+      const states = quietSoFar || timedOut ? subagentStates(geminiDir, sessionId, settleMs, { now, since: runStarted, cache: transcriptCache }) : [];
       if (quietSoFar && !states.some((state) => state.busy)) {
         unfinished = states.filter((state) => state.stuck).map(({ id, role }) => ({ id, role, reason: "stuck on a command" }));
         return;
@@ -626,6 +651,6 @@ export function startAcpRun(options) {
     /** True when a read-only security rule stopped the run: end the tree at once. */
     securityStopped: () => securityStop,
     /** Re-check after the output closed: a violation that came after the final answer still fails the run. */
-    settle: (parsed) => (parsed.ok && stopped ? failure(stopped) : parsed),
+    settle: (parsed) => ((parsed.ok || securityStop) && stopped ? failure(stopped) : parsed),
   };
 }

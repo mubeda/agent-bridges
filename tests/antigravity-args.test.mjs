@@ -155,8 +155,10 @@ test("text sent right after a task's turn ended is part of its answer", { skip: 
 
 test("text sent after a review's turn ended is not added to its answer", { skip: POSIX_ONLY }, (t) => {
   const sandbox = makeSandbox(t);
-  const result = run(sandbox, ["review", "--wait"], scenario({ turns: [{ chunks: ["prose answer"], trailingChunk: " LATE" }, { chunks: ["still prose"] }] }));
+  // On the retry, whose text is the one rendered.
+  const result = run(sandbox, ["review", "--wait"], scenario({ turns: [{ chunks: ["prose answer"] }, { chunks: ["still prose"], trailingChunk: " LATE" }] }));
   assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /still prose/);
   assert.doesNotMatch(result.stdout, /LATE/);
 });
 
@@ -279,6 +281,10 @@ test("a read-only task that reads outside its workspace is stopped at once", { s
     [{ toolPath: secret, toolPathVia: "locations" }, secret],
     [{ toolPath: "$READER/.agents/plugins/x.md" }, ".agents/plugins/x.md"],
     [{ toolPath: path.join(sandbox.repo, "f0.txt"), toolUpdatePath: secret }, secret],
+    // A later record of the read with an empty name, with its name but no toolCallId, or with neither.
+    [{ toolPath: path.join(sandbox.repo, "f0.txt"), toolUpdatePath: secret, toolUpdateName: "" }, secret],
+    [{ toolPath: path.join(sandbox.repo, "f0.txt"), toolUpdatePath: secret, toolUpdateName: "read_file", toolUpdateNoId: true }, secret],
+    [{ toolPath: path.join(sandbox.repo, "f0.txt"), toolUpdatePath: secret, toolUpdateNoId: true }, secret],
     [{}, "no path"]
   ];
   for (const [turn, named] of cases) {

@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { formatDeniedActions } from "../plugins/antigravity/scripts/lib/agy.mjs";
-import { QUIET_SETTLE_MS, subagentBusy } from "../plugins/antigravity/scripts/lib/acp.mjs";
+import { QUIET_SETTLE_MS, subagentBusy, subagentStates } from "../plugins/antigravity/scripts/lib/acp.mjs";
 import { spawn } from "node:child_process";
 
 import {
@@ -610,6 +610,52 @@ test("a subagent still running when the wait's bound hits is named", { skip: POS
   const job = lastJob(sandbox);
   assert.equal(job.status, "failed");
   assert.deepEqual(job.unfinishedSubagents, [{ id: "sub1", role: "tester", reason: "still running" }]);
+});
+
+test("text of another session on the connection is not added to the task's answer", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const after = [{ chunk: " finished.", sessionId: "SUB1" }, { chunk: " finished." }];
+  const result = run(sandbox, WRITE.concat("go"), scenario({ turns: [{ chunks: ["Waiting."], after }] }));
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "Waiting. finished.\n");
+});
+
+test("an empty title on a later record keeps an ask_question's name, so it neither blocks nor loses its text", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const after = [{ toolCall: "ask_question", id: "q", title: "Which file?" }, { toolCall: "", id: "q", title: "" }];
+  const result = run(sandbox, WRITE.concat("go"), { ...scenario({ turns: [{ chunks: ["need input"], after }] }), AGENT_BRIDGES_ACP_QUIET_TIMEOUT_MS: "3000" });
+  assert.equal(result.status, 0, result.stdout);
+  assert.equal(result.stdout, "need input\nUnanswered questions: Which file?\n");
+});
+
+test("a read-only violation after the wait's bound hit still discards the partial answer", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const inside = path.join(sandbox.repo, "f0.txt");
+  const after = [{ toolCall: "read_file", id: "r", path: inside }, { delayMs: 1150, toolCall: "write_file", id: "w" }];
+  const result = run(sandbox, ["task", "--wait", "look"], { ...scenario({ exitDelayMs: 1000, turns: [{ chunks: ["PARTIAL"], after }] }), AGENT_BRIDGES_ACP_QUIET_TIMEOUT_MS: "1000" });
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stdout, /write_file/);
+  assert.doesNotMatch(result.stdout, /PARTIAL/);
+  assert.doesNotMatch(lastJob(sandbox).rendered ?? "", /PARTIAL/);
+});
+
+test("subagentStates re-reads a transcript that changed and skips one that predates the run", (t) => {
+  const gemini = fs.mkdtempSync(path.join(os.tmpdir(), "agy-brain-"));
+  t.after(() => fs.rmSync(gemini, { recursive: true, force: true }));
+  const brain = path.join(gemini, "antigravity-cli", "brain");
+  fs.mkdirSync(path.join(brain, "S1", ".system_generated", "subagents"), { recursive: true });
+  fs.writeFileSync(path.join(brain, "S1", ".system_generated", "subagents", "sub1.json"), JSON.stringify({ conversationId: "sub1" }));
+  const logs = path.join(brain, "sub1", ".system_generated", "logs");
+  fs.mkdirSync(logs, { recursive: true });
+  const transcript = path.join(logs, "transcript.jsonl");
+  fs.writeFileSync(transcript, `${JSON.stringify({ type: "TOOL_CALL", status: "RUNNING" })}\n`);
+  const cache = new Map();
+  const at = () => ({ now: fs.statSync(transcript).mtimeMs + 60_000, cache });
+  assert.equal(subagentStates(gemini, "S1", 1000, at())[0].running, true);
+  assert.equal(subagentStates(gemini, "S1", 1000, at())[0].running, true, "from the cache");
+  fs.appendFileSync(transcript, `${JSON.stringify({ type: "SYSTEM_MESSAGE" })}\n`);
+  assert.equal(subagentStates(gemini, "S1", 1000, at())[0].running, false, "re-read after the change");
+  assert.deepEqual(subagentStates(gemini, "S1", 1000, { ...at(), since: Date.now() + 60_000 }), []);
 });
 
 test("a pending ask_question does not keep the task open and its question is named in the result", { skip: POSIX_ONLY }, (t) => {

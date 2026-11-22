@@ -97,9 +97,16 @@ async function prompt(id, params) {
       ...(input && script.toolPathVia === "locations" ? { locations: [{ path: input.Path }] } : {})
     });
   }
-  // The tool call completes within the turn (with a path when toolUpdatePath is set).
+  // The tool call completes within the turn (with a path when toolUpdatePath is set; toolUpdateName and
+  // toolUpdateNoId shape that record the way a server might: an empty or repeated name, no toolCallId).
   if (script.toolCall || script.toolUpdatePath) {
-    update(sessionId, { sessionUpdate: "tool_call_update", toolCallId: "t0", status: "completed", ...(script.toolUpdatePath ? { rawInput: { Path: fill(script.toolUpdatePath) } } : {}) });
+    update(sessionId, {
+      sessionUpdate: "tool_call_update",
+      ...(script.toolUpdateNoId ? {} : { toolCallId: "t0" }),
+      ...(script.toolUpdateName === undefined ? {} : { name: script.toolUpdateName }),
+      status: "completed",
+      ...(script.toolUpdatePath ? { rawInput: { Path: fill(script.toolUpdatePath) } } : {})
+    });
   }
   if (script.permission) await askPermission(sessionId, { toolCallId: "t1", name: "run_command", title: "echo hi" });
   const sleep = Number(process.env.FAKE_AGY_SLEEP_MS ?? 0);
@@ -142,24 +149,26 @@ async function prompt(id, params) {
 }
 
 // What the session does after its turn ended, one step after another, each after its delayMs:
-// { toolCall, id, title, question, questionVia } opens a tool call, { toolDone: id } completes it, { chunk } adds text,
+// { toolCall, id, title, question, questionVia, path } opens a tool call, { chunk, sessionId } adds text (to
+// another session when sessionId is set), { toolDone: id } completes it, { chunk } adds text,
 // { permission: true } asks and waits for the answer, { exit } exits, { subagent: id } lists a subagent with a RUNNING
 // record in its transcript under scenario.brain ({ stuck: true }: a run_command model turn instead, { role }),
 // { subagentDone: id } adds its SYSTEM_MESSAGE record.
 async function afterTurn(sessionId, steps) {
   for (const step of steps) {
     await new Promise((resolve) => setTimeout(resolve, step.delayMs ?? 0));
-    if (step.toolCall) {
+    if (step.toolCall !== undefined) {
       // A real ask_question: title "Run ask_question", the question in rawInput (or args) .questions[].question.
       const input = step.question ? { questions: [{ is_multi_select: false, options: ["Red", "Blue"], question: step.question }] } : undefined;
       update(sessionId, {
         sessionUpdate: "tool_call", toolCallId: step.id, name: step.toolCall, title: step.title ?? `Run ${step.toolCall}`, kind: "execute", status: "in_progress",
-        ...(input ? { [step.questionVia ?? "rawInput"]: input } : {})
+        ...(input ? { [step.questionVia ?? "rawInput"]: input } : {}),
+        ...(step.path ? { rawInput: { Path: step.path } } : {})
       });
     }
     if (step.toolDone) update(sessionId, { sessionUpdate: "tool_call_update", toolCallId: step.toolDone, status: "completed" });
     if (step.exit) process.exit(Number(step.exit));
-    if (step.chunk) update(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: step.chunk } });
+    if (step.chunk) update(step.sessionId ?? sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: step.chunk } });
     if (step.permission) await askPermission(sessionId, { toolCallId: "t2", name: "run_command", title: "echo later" });
     if (step.subagent) {
       const list = path.join(scenario.brain, sessionId, ".system_generated", "subagents");
