@@ -96,8 +96,9 @@ async function prompt(id, params) {
       ...(input && script.toolPathVia === "locations" ? { locations: [{ path: input.Path }] } : {})
     });
   }
-  if (script.toolUpdatePath) {
-    update(sessionId, { sessionUpdate: "tool_call_update", toolCallId: "t0", status: "completed", rawInput: { Path: fill(script.toolUpdatePath) } });
+  // The tool call completes within the turn (with a path when toolUpdatePath is set).
+  if (script.toolCall || script.toolUpdatePath) {
+    update(sessionId, { sessionUpdate: "tool_call_update", toolCallId: "t0", status: "completed", ...(script.toolUpdatePath ? { rawInput: { Path: fill(script.toolUpdatePath) } } : {}) });
   }
   if (script.permission) await askPermission(sessionId, { toolCallId: "t1", name: "run_command", title: "echo hi" });
   const sleep = Number(process.env.FAKE_AGY_SLEEP_MS ?? 0);
@@ -136,6 +137,33 @@ async function prompt(id, params) {
       ? line({ method: "session/update", params: { sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: script.trailingChunk } } } })
       : "";
   process.stdout.write(done + trailing);
+  if (script.after) afterTurn(sessionId, script.after);
+}
+
+// What the session does after its turn ended, one step after another, each after its delayMs:
+// { toolCall, id, title } opens a tool call, { toolDone: id } completes it, { chunk } adds text,
+// { permission: true } asks and waits for the answer, { exit } exits, { subagent: id } lists a subagent with a RUNNING
+// record in its transcript under scenario.brain, { subagentDone: id } adds its SYSTEM_MESSAGE record.
+async function afterTurn(sessionId, steps) {
+  for (const step of steps) {
+    await new Promise((resolve) => setTimeout(resolve, step.delayMs ?? 0));
+    if (step.toolCall) update(sessionId, { sessionUpdate: "tool_call", toolCallId: step.id, name: step.toolCall, title: step.title, kind: "execute", status: "in_progress" });
+    if (step.toolDone) update(sessionId, { sessionUpdate: "tool_call_update", toolCallId: step.toolDone, status: "completed" });
+    if (step.exit) process.exit(Number(step.exit));
+    if (step.chunk) update(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: step.chunk } });
+    if (step.permission) await askPermission(sessionId, { toolCallId: "t2", name: "run_command", title: "echo later" });
+    if (step.subagent) {
+      const list = path.join(scenario.brain, sessionId, ".system_generated", "subagents");
+      const logs = path.join(scenario.brain, step.subagent, ".system_generated", "logs");
+      fs.mkdirSync(list, { recursive: true });
+      fs.mkdirSync(logs, { recursive: true });
+      fs.writeFileSync(path.join(list, `${step.subagent}.json`), JSON.stringify({ conversationId: step.subagent }));
+      fs.writeFileSync(path.join(logs, "transcript.jsonl"), JSON.stringify({ type: "TOOL_CALL", status: "RUNNING" }) + "\n");
+    }
+    if (step.subagentDone) {
+      fs.appendFileSync(path.join(scenario.brain, step.subagentDone, ".system_generated", "logs", "transcript.jsonl"), JSON.stringify({ type: "SYSTEM_MESSAGE" }) + "\n");
+    }
+  }
 }
 
 function handle(message) {

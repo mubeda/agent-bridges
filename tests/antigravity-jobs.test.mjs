@@ -467,6 +467,85 @@ test("a forbidden tool call that arrives in a later write after the final answer
   assert.equal(jobStatus(sandbox, lastJob(sandbox).id).status, "failed");
 });
 
+test("a task waits for a tool call that completes after its turn ended, and keeps the text after it", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const after = [{ toolCall: "run_command", id: "bg" }, { delayMs: 800, toolDone: "bg" }, { chunk: " second step done" }];
+  const started = Date.now();
+  const result = run(sandbox, WRITE.concat("go"), scenario({ turns: [{ chunks: ["started in the background"], after }] }));
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(Date.now() - started >= 800);
+  assert.equal(result.stdout, "started in the background second step done\n");
+  assert.equal(requests(sessions(sandbox)[0], "session/cancel").length, 0);
+});
+
+test("a permission request after the turn ended is allowed once in a write task and refused in a read-only task", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const after = [{ delayMs: 300, permission: true }, { chunk: " after the permission" }];
+  // The settle time outlasts the gap before the request: an update within it keeps the session open.
+  const turns = { ...scenario({ turns: [{ chunks: ["first"], after }] }), AGENT_BRIDGES_ACP_SETTLE_MS: "1000" };
+  const write = run(sandbox, WRITE.concat("go"), turns);
+  assert.equal(write.status, 0, write.stderr);
+  assert.equal(write.stdout, "first after the permission\n");
+  const replies = (session) => session.received.filter((message) => !message.method && message.result?.outcome);
+  assert.deepEqual(replies(sessions(sandbox).at(-1)).map((reply) => reply.result.outcome), [{ outcome: "selected", optionId: "allow" }]);
+  const readOnly = run(sandbox, ["task", "--wait", "look"], turns);
+  assert.equal(readOnly.status, 0, readOnly.stderr);
+  assert.equal(readOnly.stdout, "first after the permission\nDenied: run_command (echo later)\n");
+  assert.deepEqual(replies(sessions(sandbox).at(-1)).map((reply) => reply.result.outcome), [{ outcome: "selected", optionId: "deny" }]);
+});
+
+test("a busy subagent keeps the task open until its transcript has a SYSTEM_MESSAGE after the RUNNING record", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  // HOME is the sandbox folder, so the client reads ~/.gemini from there.
+  const brain = path.join(sandbox.dir, ".gemini", "antigravity-cli", "brain");
+  const after = [{ subagent: "sub1" }, { delayMs: 1500, subagentDone: "sub1" }];
+  const started = Date.now();
+  const result = run(sandbox, WRITE.concat("go"), scenario({ brain, turns: [{ chunks: ["asked a subagent"], after }] }));
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(Date.now() - started >= 1500, "the run ended while the subagent was still RUNNING");
+  assert.equal(result.stdout, "asked a subagent\n");
+});
+
+test("a pending ask_question does not keep the task open and is named in the result", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const after = [{ toolCall: "ask_question", id: "q", title: "Which file?" }];
+  const result = run(sandbox, WRITE.concat("go"), scenario({ turns: [{ chunks: ["need input"], after }] }));
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "need input\nUnanswered questions: Which file?\n");
+});
+
+test("a session that never goes quiet is stopped by the bound on the wait, with the text it wrote", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const after = [{ toolCall: "run_command", id: "bg" }];
+  const started = Date.now();
+  const result = run(sandbox, WRITE.concat("go"), { ...scenario({ turns: [{ chunks: ["still going"], after }] }), AGENT_BRIDGES_ACP_QUIET_TIMEOUT_MS: "1000" });
+  assert.equal(result.status, 1, result.stdout);
+  assert.ok(Date.now() - started < 15000);
+  assert.match(result.stdout, /still working 1 s after its turn ended/);
+  assert.match(result.stdout, /still going/);
+  assert.equal(requests(sessions(sandbox)[0], "session/cancel").length, 1);
+  assert.equal(jobStatus(sandbox, lastJob(sandbox).id).status, "failed");
+});
+
+test("agy exiting while a task waits for its session to go quiet fails the run", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const after = [{ toolCall: "run_command", id: "bg" }, { delayMs: 300, exit: 3 }];
+  const started = Date.now();
+  const result = run(sandbox, WRITE.concat("go"), scenario({ turns: [{ chunks: ["waiting"], after }] }));
+  assert.equal(result.status, 1, result.stdout);
+  assert.ok(Date.now() - started < 15000);
+  assert.match(result.stdout, /agy exited/);
+});
+
+test("a review ends at its first end_turn and does not wait for the session to go quiet", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const started = Date.now();
+  const result = run(sandbox, ["review", "--wait"], { ...scenario({ turns: [{ chunks: [JSON.stringify(FINDINGS)], after: [{ delayMs: 5000, chunk: "late" }] }] }), AGENT_BRIDGES_ACP_SETTLE_MS: "20000" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(Date.now() - started < 10000);
+  assert.match(result.stdout, /a\.js/);
+});
+
 test("a bookkeeping failure after spawn fails the run and ends agy", { skip: POSIX_ONLY }, (t) => {
   const sandbox = makeSandbox(t);
   const result = run(sandbox, WRITE.concat("go"), { AGENT_BRIDGES_TEST_THROW_ON_SPAWN: "1" });

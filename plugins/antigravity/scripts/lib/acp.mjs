@@ -1,6 +1,7 @@
 // A small Agent Client Protocol client for `agy acp`: newline-delimited JSON-RPC 2.0 on stdio.
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import { formatDeniedActions, parseStructuredResult } from "./agy.mjs";
@@ -20,7 +21,12 @@ const READER_PLUGIN = "agent-bridges-reader";
 export const READER_MARKER = ".agent-bridges-reader";
 export const NO_RESUME_WARNING =
   "This Antigravity version cannot continue sessions (its ACP server offers no session/resume); this started a new session.";
-export const CLIENT_INFO = { name: "agent-bridges-antigravity", version: "0.2.1" };
+export const CLIENT_INFO = { name: "agent-bridges-antigravity", version: "0.2.2" };
+/** A task's session goes on after its turn ends: it is done once nothing changed for this long. */
+export const QUIET_SETTLE_MS = 20_000;
+/** The wait after a task's turn ended is bounded by this, so a session that never goes quiet ends. */
+export const QUIET_TIMEOUT_MS = 30 * 60_000;
+const TOOL_DONE = new Set(["completed", "failed"]);
 
 /** realpath of the nearest existing ancestor, with the rest of the path appended: works before the folder exists. */
 export function canonicalPath(target) {
@@ -181,6 +187,8 @@ export function createAcpClient({ write, onRequest = () => undefined, onNotifica
       else entry.resolve(message.result ?? {});
       return undefined;
     },
+    /** The error that closed the client, or null while it is open. */
+    closedError: () => closedError,
     fail(error) {
       closedError = closedError ?? error;
       for (const entry of [...pending.values()]) entry.reject(closedError);
@@ -217,6 +225,58 @@ function toolName(toolCall) {
   return String(toolCall?.name ?? toolCall?.kind ?? "unknown");
 }
 
+/** A session or subagent id used as one path component: no separators, never "." or "..". */
+function safeId(value) {
+  const text = typeof value === "string" || typeof value === "number" ? String(value) : "";
+  return /^[\w.-]+$/.test(text) && !/^\.+$/.test(text) ? text : null;
+}
+
+/**
+ * True when a subagent of the session is still working (read only, never written): its transcript changed
+ * within settleMs, or its latest tool record is RUNNING with no SYSTEM_MESSAGE record after it.
+ * Missing folders and unreadable files count as not busy.
+ */
+export function subagentBusy(geminiDir, sessionId, settleMs, now = Date.now()) {
+  const brain = path.join(geminiDir, "antigravity-cli", "brain");
+  const session = safeId(sessionId);
+  if (!session) return false;
+  const listDir = path.join(brain, session, ".system_generated", "subagents");
+  let names;
+  try {
+    names = fs.readdirSync(listDir).filter((name) => name.endsWith(".json"));
+  } catch {
+    return false;
+  }
+  return names.some((name) => {
+    let id;
+    let transcript;
+    let mtime;
+    try {
+      id = safeId(JSON.parse(fs.readFileSync(path.join(listDir, name), "utf8"))?.conversationId);
+      if (!id) return false;
+      const file = path.join(brain, id, ".system_generated", "logs", "transcript.jsonl");
+      mtime = fs.statSync(file).mtimeMs;
+      transcript = fs.readFileSync(file, "utf8");
+    } catch {
+      return false;
+    }
+    if (now - mtime < settleMs) return true;
+    let running = false;
+    for (const line of transcript.split("\n")) {
+      let record;
+      try {
+        record = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!isObject(record)) continue;
+      if (record.type === "SYSTEM_MESSAGE") running = false;
+      else if ("status" in record) running = record.status === "RUNNING";
+    }
+    return running;
+  });
+}
+
 /**
  * One run: initialize, open or resume a session, set model and thinking level, prove the reader in a
  * read-only run, send the prompt(s). Returns { handle, fail, cancel, result }; result never rejects and
@@ -225,9 +285,15 @@ function toolName(toolCall) {
 export function startAcpRun(options) {
   const { write, cwd, prompt, readOnly, token, model, effort, resumeSessionId, review } = options;
   const workspaceRoot = options.workspaceRoot ?? cwd;
-  const toolNames = new Map();
+  // Every tool call of the session by id: { name, title, status }.
+  const toolCalls = new Map();
   // Setup requests and the token check are bounded; the real prompt is not (jobs may run long; cancel ends them).
+  // Only the wait for a quiet session after a task's turn ended is bounded, by quietTimeoutMs.
   const setup = { timeoutMs: options.setupTimeoutMs ?? 60_000 };
+  const settleMs = options.quietSettleMs ?? QUIET_SETTLE_MS;
+  const quietTimeoutMs = options.quietTimeoutMs ?? QUIET_TIMEOUT_MS;
+  const geminiDir = options.geminiDir ?? path.join(os.homedir(), ".gemini");
+  let lastUpdate = Date.now();
   let sessionId = null;
   let turn = null;
   let stopped = null;
@@ -254,15 +320,23 @@ export function startAcpRun(options) {
     onNotification(message) {
       if (message.method !== "session/update") return;
       const update = message.params?.update ?? {};
-      // Text counts only inside an open turn; a read-only session's tool rule holds at every moment.
+      lastUpdate = Date.now();
+      if ((update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") && update.toolCallId !== undefined) {
+        const call = toolCalls.get(update.toolCallId) ?? { name: "", title: null, status: "pending" };
+        if (typeof update.name === "string") call.name = update.name;
+        if (typeof update.title === "string") call.title = update.title;
+        if (typeof update.status === "string") call.status = update.status;
+        toolCalls.set(update.toolCallId, call);
+      }
+      // Text counts only inside an open turn (a task's stays open until its session is quiet); a read-only
+      // session's tool rule holds at every moment.
       if (update.sessionUpdate === "agent_message_chunk" && typeof update.content?.text === "string") {
         if (turn) turn.text += update.content.text;
       } else if (update.sessionUpdate === "tool_call_update" && readOnly && !review) {
         // A later record of a read can carry the path too: the same confinement applies.
-        if ((update.name ?? toolNames.get(update.toolCallId)) === "read_file" && readPath(update) !== null) confineRead(update);
+        if (toolCalls.get(update.toolCallId)?.name === "read_file" && readPath(update) !== null) confineRead(update);
       } else if (update.sessionUpdate === "tool_call" && readOnly) {
         const name = typeof update.name === "string" ? update.name : "";
-        if (update.toolCallId !== undefined) toolNames.set(update.toolCallId, name);
         // The real reader has the token in its instructions: a tool used to answer the check proves nothing.
         if (turn?.verifying) {
           stop(new Error(`${readerMissing()} A tool (${name || "unnamed"}) was used during the token check.`), { security: true });
@@ -276,6 +350,7 @@ export function startAcpRun(options) {
     onRequest(message) {
       if (message.method !== "session/request_permission") return undefined;
       const params = message.params ?? {};
+      lastUpdate = Date.now();
       if (turn?.verifying) stop(new Error(`${readerMissing()} A permission request came during the token check.`), { security: true });
       const choices = Array.isArray(params.options) ? params.options : [];
       // Exact one-time kinds only: an *_always choice could save a rule in the user's Antigravity settings.
@@ -329,20 +404,57 @@ export function startAcpRun(options) {
   const readerMissing = () =>
     `Antigravity's restricted reader was not in effect (its token check failed), so the run was stopped and nothing was ${review ? "reviewed" : "run"}.`;
 
-  async function sendPrompt(text, verifying = false) {
+  /**
+   * keepOpen (a task's prompts): the session goes on after end_turn (a backgrounded command completes, a
+   * subagent answers), so the turn's text keeps growing until the session is quiet.
+   */
+  async function sendPrompt(text, { verifying = false, keepOpen = false } = {}) {
     const current = { text: "", verifying };
     turn = current;
-    // Close the turn the moment its response arrives, so a later line of the same chunk cannot add to it.
+    // Otherwise close the turn the moment its response arrives, so a later line of the same chunk cannot add to it.
+    const close = () => { if (turn === current) turn = null; };
     const response = await client.request(
       "session/prompt",
       { sessionId, prompt: [{ type: "text", text }] },
-      { onSettle: () => { if (turn === current) turn = null; }, ...(verifying ? { ...setup, label: "the token check" } : {}) }
+      { onSettle: keepOpen ? null : close, ...(verifying ? { ...setup, label: "the token check" } : {}) }
     );
     if (stopped) throw stopped;
     if (response?.stopReason !== "end_turn") {
+      close();
       throw new Error(`Antigravity ended the turn with stop reason "${response?.stopReason ?? "none"}".`);
     }
+    if (keepOpen) {
+      await waitQuiet(current);
+      close();
+    }
     return current.text;
+  }
+
+  const openCalls = (questions) =>
+    [...toolCalls.values()].filter((call) => !TOOL_DONE.has(call.status) && (call.name === "ask_question") === questions);
+
+  /**
+   * Quiet: no tool call open (a pending ask_question has no one to answer it, so it does not count), no
+   * update for settleMs, and no subagent of the session busy. Bounded by quietTimeoutMs; cancel, a closed
+   * server or a security stop end it at once.
+   */
+  async function waitQuiet(current) {
+    const started = Date.now();
+    lastUpdate = Math.max(lastUpdate, started);
+    for (;;) {
+      const error = stopped ?? client.closedError();
+      if (error) throw error;
+      const now = Date.now();
+      if (!openCalls(false).length && now - lastUpdate >= settleMs && !subagentBusy(geminiDir, sessionId, settleMs, now)) return;
+      if (now - started >= quietTimeoutMs) {
+        stop(Object.assign(
+          new Error(`Antigravity's session was still working ${Math.round(quietTimeoutMs / 1000)} s after its turn ended, so the run was stopped.`),
+          { partialText: current.text.trim() }
+        ));
+        throw stopped;
+      }
+      await new Promise((resolve) => setTimeout(resolve, Math.min(250, settleMs)));
+    }
   }
 
   async function main() {
@@ -381,15 +493,15 @@ export function startAcpRun(options) {
     }
     if (effort) await client.request("session/set_config_option", { sessionId, configId: "thought_level", value: effort }, setup);
     if (readOnly) {
-      const answer = await sendPrompt(TOKEN_PROMPT, true);
+      const answer = await sendPrompt(TOKEN_PROMPT, { verifying: true });
       if (!token || answer.trim() !== token) {
         stop(new Error(readerMissing()), { security: true });
         throw stopped;
       }
     }
     promptSent = true;
-    let text = await sendPrompt(prompt);
-    if (readOnly && !text.trim() && deniedActions.length) text = await sendPrompt(REFUSED_PROMPT);
+    let text = await sendPrompt(prompt, { keepOpen: !review });
+    if (readOnly && !text.trim() && deniedActions.length) text = await sendPrompt(REFUSED_PROMPT, { keepOpen: !review });
     let structured = null;
     if (review) {
       structured = isReviewResult(parseStructuredResult(text)) ? parseStructuredResult(text) : null;
@@ -406,13 +518,15 @@ export function startAcpRun(options) {
       const denied = formatDeniedActions(deniedActions);
       resultText = response ? `${response}\nDenied: ${denied}` : `no answer; denied: ${denied}`;
     }
+    const questions = openCalls(true).map((call) => call.title ?? "ask_question");
+    if (questions.length) resultText = `${resultText ? `${resultText}\n` : ""}Unanswered questions: ${questions.join("; ")}`;
     if (stopped) throw stopped;
     return { sessionId, resultText, structured, status: "end_turn", ok: true, error: null, deniedActions, warning, promptSent, raw: null };
   }
 
   const failure = (error) => ({
     sessionId,
-    resultText: "",
+    resultText: error?.partialText ?? "",
     structured: null,
     status: null,
     ok: false,

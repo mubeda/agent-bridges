@@ -333,7 +333,10 @@ async function executeAcpRun(request, hooks = {}) {
       warning: request.resumeWarning ?? null,
       review: request.review === true,
       // Test hook: the tests shorten the 60 s setup timeout.
-      setupTimeoutMs: Number(process.env.AGENT_BRIDGES_ACP_SETUP_TIMEOUT_MS) || undefined
+      setupTimeoutMs: Number(process.env.AGENT_BRIDGES_ACP_SETUP_TIMEOUT_MS) || undefined,
+      // Test hooks: the tests shorten the 20 s settle time and the 30 min bound of the wait after a task's turn.
+      quietSettleMs: Number(process.env.AGENT_BRIDGES_ACP_SETTLE_MS) || undefined,
+      quietTimeoutMs: Number(process.env.AGENT_BRIDGES_ACP_QUIET_TIMEOUT_MS) || undefined
     });
     let stderr = "";
     const keep = (text) => {

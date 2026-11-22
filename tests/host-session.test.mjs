@@ -287,7 +287,7 @@ function codexRollout(home, cwd, text, name = "rollout-2026-11-19T10-00-00-a.jso
 }
 
 function runAgy(sandbox, args) {
-  const env = { ...process.env, HOME: sandbox.home, USERPROFILE: sandbox.home, PLUGIN_DATA: sandbox.data, ANTIGRAVITY_BIN: sandbox.fake, FAKE_AGY_LOG: sandbox.log };
+  const env = { ...process.env, HOME: sandbox.home, USERPROFILE: sandbox.home, PLUGIN_DATA: sandbox.data, ANTIGRAVITY_BIN: sandbox.fake, FAKE_AGY_LOG: sandbox.log, AGENT_BRIDGES_ACP_SETTLE_MS: "100" };
   delete env.CLAUDE_PLUGIN_DATA;
   delete env.CODEX_HOME;
   delete env.ANTIGRAVITY_COMPANION_TRANSCRIPT_PATH;

@@ -146,11 +146,18 @@ test("a disallowed tool call sent right after the final answer still fails the r
   assert.match(result.stdout, /write_file/);
 });
 
-test("text sent after a turn ended is not added to its answer", { skip: POSIX_ONLY }, (t) => {
+test("text sent right after a task's turn ended is part of its answer", { skip: POSIX_ONLY }, (t) => {
   const sandbox = makeSandbox(t);
   const result = run(sandbox, ["task", "--wait", "--write", "--bypass-permissions", "go"], scenario({ turns: [{ chunks: ["answer"], trailingChunk: " LATE" }] }));
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, "answer\n");
+  assert.equal(result.stdout, "answer LATE\n");
+});
+
+test("text sent after a review's turn ended is not added to its answer", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const result = run(sandbox, ["review", "--wait"], scenario({ turns: [{ chunks: ["prose answer"], trailingChunk: " LATE" }, { chunks: ["still prose"] }] }));
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stdout, /LATE/);
 });
 
 test("a missing token stops the run before the review prompt", { skip: POSIX_ONLY }, (t) => {
