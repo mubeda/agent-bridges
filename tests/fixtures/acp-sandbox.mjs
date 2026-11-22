@@ -31,7 +31,8 @@ export function makeSandbox(t, { changedFiles = 1, fakeName = "fake-agy", git = 
 }
 
 export function companionEnv(sandbox, extraEnv = {}) {
-  const env = { ...process.env, PLUGIN_DATA: sandbox.data, ANTIGRAVITY_BIN: sandbox.fake, FAKE_AGY_LOG: sandbox.log, FAKE_AGY_PIDFILE: sandbox.pidfile };
+  // A short settle time, so a task does not wait 20 s for its session to go quiet; and never the real ~/.gemini.
+  const env = { ...process.env, PLUGIN_DATA: sandbox.data, ANTIGRAVITY_BIN: sandbox.fake, FAKE_AGY_LOG: sandbox.log, FAKE_AGY_PIDFILE: sandbox.pidfile, AGENT_BRIDGES_ACP_SETTLE_MS: "100", HOME: sandbox.dir };
   delete env.CLAUDE_PLUGIN_DATA;
   delete env.FAKE_ACP;
   Object.assign(env, extraEnv);

@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { formatDeniedActions } from "../plugins/antigravity/scripts/lib/agy.mjs";
+import { QUIET_SETTLE_MS, TOKEN_PROMPT, finishAgyRun, startAcpRun, subagentBusy, subagentStates } from "../plugins/antigravity/scripts/lib/acp.mjs";
 import { spawn } from "node:child_process";
 
 import {
@@ -29,6 +31,24 @@ const FINDINGS = {
   findings: [{ severity: "high", title: "t", body: "b", file: "a.js", line_start: 3, line_end: 4, confidence: 0.9, recommendation: "r" }]
 };
 const WRITE = ["task", "--wait", "--write", "--bypass-permissions"];
+
+/** Alive and not a zombie: an orphan whose parent never reaps it still answers signal 0, but cannot write anything. */
+function processAlive(pid) {
+  if (process.platform === "linux") {
+    try {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+      return stat.slice(stat.lastIndexOf(")") + 2)[0] !== "Z";
+    } catch {
+      return false;
+    }
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 test("denied actions format as tool (title)", () => {
   assert.equal(formatDeniedActions([{ action: "run_command", display_name: "echo hi" }]), "run_command (echo hi)");
@@ -312,6 +332,44 @@ function stripReadOnlyField(dir) {
   }
 }
 
+test("a write task sets the session mode auto before its prompt; a read-only task and a review keep the default", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  assert.equal(run(sandbox, WRITE.concat("go")).status, 0);
+  const [write] = sessions(sandbox);
+  assert.deepEqual(requests(write, "session/set_mode").map((message) => message.params), [{ sessionId: "S1", modeId: "auto" }]);
+  const methods = write.received.map((message) => message.method);
+  assert.ok(methods.indexOf("session/new") < methods.indexOf("session/set_mode") && methods.indexOf("session/set_mode") < methods.indexOf("session/prompt"));
+  assert.equal(run(sandbox, ["task", "--wait", "look"]).status, 0);
+  assert.equal(run(sandbox, ["review", "--wait"], scenario({ turns: [{ chunks: [JSON.stringify(FINDINGS)] }] })).status, 0);
+  for (const session of sessions(sandbox).slice(1)) assert.equal(requests(session, "session/set_mode").length, 0);
+});
+
+test("a resumed write session sets the mode auto again", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  assert.equal(run(sandbox, WRITE.concat("start")).status, 0);
+  assert.equal(run(sandbox, WRITE.concat("--resume-last", "more")).status, 0);
+  const resumed = sessions(sandbox)[1];
+  assert.equal(requests(resumed, "session/resume").length, 1);
+  assert.deepEqual(requests(resumed, "session/set_mode").map((message) => message.params), [{ sessionId: "S1", modeId: "auto" }]);
+});
+
+test("without the auto mode, or when setting it fails, a write task goes on in the session's mode and says which in one line", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  for (const [env, sent] of [[{ noAutoMode: true }, 0], [{ setModeError: "mode boom" }, 1]]) {
+    const result = run(sandbox, WRITE.concat("go"), scenario({ ...env, turns: [{ chunks: ["done anyway"] }] }));
+    assert.equal(result.status, 0, result.stderr);
+    const lines = result.stdout.split("\n").filter((line) => /auto mode/.test(line));
+    assert.equal(lines.length, 1, result.stdout);
+    assert.match(lines[0], /^Warning: .*the session stayed in mode "default"/);
+    assert.match(result.stdout, /done anyway/);
+    assert.equal(requests(sessions(sandbox).at(-1), "session/set_mode").length, sent);
+  }
+  // A resumed session lists no modes, so its current mode is not known.
+  const resumed = run(sandbox, WRITE.concat("--resume-last", "more"), scenario({ setModeError: "mode boom" }));
+  assert.equal(resumed.status, 0, resumed.stderr);
+  assert.match(resumed.stdout, /^Warning: .*auto mode.*the mode was left unchanged/m);
+});
+
 test("a job record without the read-only field counts as a write session", { skip: POSIX_ONLY }, (t) => {
   const sandbox = makeSandbox(t);
   assert.equal(run(sandbox, ["task", "--wait", "old"], scenario({ newSessionId: "OLD1" })).status, 0);
@@ -465,6 +523,405 @@ test("a forbidden tool call that arrives in a later write after the final answer
   assert.match(result.stdout, /write_file/);
   assert.doesNotMatch(result.stdout, /looks fine/);
   assert.equal(jobStatus(sandbox, lastJob(sandbox).id).status, "failed");
+});
+
+test("a task waits for a tool call that completes after its turn ended, and keeps the text after it", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const after = [{ toolCall: "run_command", id: "bg" }, { delayMs: 800, toolDone: "bg" }, { chunk: " second step done" }];
+  const started = Date.now();
+  const result = run(sandbox, WRITE.concat("go"), scenario({ turns: [{ chunks: ["started in the background"], after }] }));
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(Date.now() - started >= 800);
+  assert.equal(result.stdout, "started in the background second step done\n");
+  assert.equal(requests(sessions(sandbox)[0], "session/cancel").length, 0);
+});
+
+test("a permission request after the turn ended is allowed once in a write task and refused in a read-only task", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const after = [{ delayMs: 300, permission: true }, { chunk: " after the permission" }];
+  // The settle time outlasts the gap before the request: an update within it keeps the session open.
+  const turns = { ...scenario({ turns: [{ chunks: ["first"], after }] }), AGENT_BRIDGES_ACP_SETTLE_MS: "1000" };
+  const write = run(sandbox, WRITE.concat("go"), turns);
+  assert.equal(write.status, 0, write.stderr);
+  assert.equal(write.stdout, "first after the permission\n");
+  const replies = (session) => session.received.filter((message) => !message.method && message.result?.outcome);
+  assert.deepEqual(replies(sessions(sandbox).at(-1)).map((reply) => reply.result.outcome), [{ outcome: "selected", optionId: "allow" }]);
+  const readOnly = run(sandbox, ["task", "--wait", "look"], turns);
+  assert.equal(readOnly.status, 0, readOnly.stderr);
+  assert.equal(readOnly.stdout, "first after the permission\nDenied: run_command (echo later)\n");
+  assert.deepEqual(replies(sessions(sandbox).at(-1)).map((reply) => reply.result.outcome), [{ outcome: "selected", optionId: "deny" }]);
+});
+
+test("a busy subagent keeps the task open until its transcript has a SYSTEM_MESSAGE after the RUNNING record", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  // HOME is the sandbox folder, so the client reads ~/.gemini from there.
+  const brain = path.join(sandbox.dir, ".gemini", "antigravity-cli", "brain");
+  const after = [{ subagent: "sub1" }, { delayMs: 1500, subagentDone: "sub1" }];
+  const started = Date.now();
+  const result = run(sandbox, WRITE.concat("go"), scenario({ brain, turns: [{ chunks: ["asked a subagent"], after }] }));
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(Date.now() - started >= 1500, "the run ended while the subagent was still RUNNING");
+  assert.equal(result.stdout, "asked a subagent\n");
+});
+
+test("subagentBusy: RUNNING without a later SYSTEM_MESSAGE is busy, unless the transcript predates the run", (t) => {
+  const gemini = fs.mkdtempSync(path.join(os.tmpdir(), "agy-brain-"));
+  t.after(() => fs.rmSync(gemini, { recursive: true, force: true }));
+  const brain = path.join(gemini, "antigravity-cli", "brain");
+  const list = path.join(brain, "S1", ".system_generated", "subagents");
+  const logs = path.join(brain, "sub1", ".system_generated", "logs");
+  fs.mkdirSync(list, { recursive: true });
+  fs.mkdirSync(logs, { recursive: true });
+  fs.writeFileSync(path.join(list, "sub1.json"), JSON.stringify({ conversationId: "sub1" }));
+  const transcript = path.join(logs, "transcript.jsonl");
+  fs.writeFileSync(transcript, `${JSON.stringify({ type: "TOOL_CALL", status: "RUNNING" })}\nnot json\n`);
+  const mtime = fs.statSync(transcript).mtimeMs;
+  const later = mtime + 60_000;
+  assert.equal(subagentBusy(gemini, "S1", 1000, { now: mtime + 10 }), true, "changed within the settle time");
+  assert.equal(subagentBusy(gemini, "S1", 1000, { now: later }), true, "RUNNING");
+  assert.equal(subagentBusy(gemini, "S1", 1000, { now: later, since: mtime + 1 }), false, "left by an earlier run");
+  assert.equal(subagentBusy(gemini, "../S1", 1000, { now: later }), false, "an id with a separator");
+  assert.equal(subagentBusy(gemini, "S2", 1000, { now: later }), false, "no subagents");
+  fs.appendFileSync(transcript, `${JSON.stringify({ type: "SYSTEM_MESSAGE" })}\n`);
+  assert.equal(subagentBusy(gemini, "S1", 1000, { now: fs.statSync(transcript).mtimeMs + 60_000 }), false, "SYSTEM_MESSAGE after RUNNING");
+});
+
+test("the default settle time is 30 s: a thinking model can be silent for 17 s", () => {
+  assert.equal(QUIET_SETTLE_MS, 30_000);
+});
+
+test("subagentBusy: two background commands and one SYSTEM_MESSAGE are still busy", (t) => {
+  const gemini = fs.mkdtempSync(path.join(os.tmpdir(), "agy-brain-"));
+  t.after(() => fs.rmSync(gemini, { recursive: true, force: true }));
+  const brain = path.join(gemini, "antigravity-cli", "brain");
+  fs.mkdirSync(path.join(brain, "S1", ".system_generated", "subagents"), { recursive: true });
+  fs.writeFileSync(path.join(brain, "S1", ".system_generated", "subagents", "sub1.json"), JSON.stringify({ conversationId: "sub1" }));
+  const logs = path.join(brain, "sub1", ".system_generated", "logs");
+  fs.mkdirSync(logs, { recursive: true });
+  const transcript = path.join(logs, "transcript.jsonl");
+  const running = JSON.stringify({ type: "TOOL_CALL", status: "RUNNING" });
+  const done = JSON.stringify({ type: "SYSTEM_MESSAGE" });
+  fs.writeFileSync(transcript, `${running}\n${running}\n${done}\n`);
+  const later = () => fs.statSync(transcript).mtimeMs + 60_000;
+  assert.equal(subagentBusy(gemini, "S1", 1000, { now: later() }), true, "one of two commands ended");
+  fs.appendFileSync(transcript, `${done}\n`);
+  assert.equal(subagentBusy(gemini, "S1", 1000, { now: later() }), false, "both ended");
+});
+
+test("a subagent stuck on a command it never ran is named, and the task is not a plain success", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const brain = path.join(sandbox.dir, ".gemini", "antigravity-cli", "brain");
+  const after = [{ subagent: "sub1", role: "implementer", stuck: true }];
+  const result = run(sandbox, WRITE.concat("go"), scenario({ brain, turns: [{ chunks: ["Waiting for its report."], after }] }));
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stdout, /Waiting for its report\./);
+  assert.match(result.stdout, /^Unfinished subagents: implementer \(sub1\): stuck on a command$/m);
+  const job = lastJob(sandbox);
+  assert.equal(job.status, "failed");
+  assert.deepEqual(job.unfinishedSubagents, [{ id: "sub1", role: "implementer", reason: "stuck on a command" }]);
+});
+
+test("a subagent still running when the wait's bound hits is named", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const brain = path.join(sandbox.dir, ".gemini", "antigravity-cli", "brain");
+  const after = [{ subagent: "sub1", role: "tester" }];
+  const result = run(sandbox, WRITE.concat("go"), { ...scenario({ brain, turns: [{ chunks: ["asked a subagent"], after }] }), AGENT_BRIDGES_ACP_QUIET_TIMEOUT_MS: "1500" });
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stdout, /still working 2 s after its turn ended/);
+  assert.match(result.stdout, /^Unfinished subagents: tester \(sub1\): still running$/m);
+  const job = lastJob(sandbox);
+  assert.equal(job.status, "failed");
+  assert.deepEqual(job.unfinishedSubagents, [{ id: "sub1", role: "tester", reason: "still running" }]);
+});
+
+test("text of another session on the connection is not added to the task's answer", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const after = [{ chunk: " finished.", sessionId: "SUB1" }, { chunk: " finished." }];
+  const result = run(sandbox, WRITE.concat("go"), scenario({ turns: [{ chunks: ["Waiting."], after }] }));
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "Waiting. finished.\n");
+});
+
+test("an empty title on a later record keeps an ask_question's name, so it neither blocks nor loses its text", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const after = [{ toolCall: "ask_question", id: "q", title: "Which file?" }, { toolCall: "", id: "q", title: "" }];
+  const result = run(sandbox, WRITE.concat("go"), { ...scenario({ turns: [{ chunks: ["need input"], after }] }), AGENT_BRIDGES_ACP_QUIET_TIMEOUT_MS: "3000" });
+  assert.equal(result.status, 0, result.stdout);
+  assert.equal(result.stdout, "need input\nUnanswered questions: Which file?\n");
+});
+
+test("a read-only violation after the wait's bound hit still discards the partial answer", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const inside = path.join(sandbox.repo, "f0.txt");
+  const after = [{ toolCall: "read_file", id: "r", path: inside }, { delayMs: 1150, toolCall: "write_file", id: "w" }];
+  // agy ignores SIGTERM, so the violation arrives while its tree is being ended.
+  const result = run(sandbox, ["task", "--wait", "look"], { ...scenario({ ignoreTerm: true, exitDelayMs: 1000, turns: [{ chunks: ["PARTIAL"], after }] }), AGENT_BRIDGES_ACP_QUIET_TIMEOUT_MS: "1000" });
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stdout, /write_file/);
+  assert.doesNotMatch(result.stdout, /PARTIAL/);
+  assert.doesNotMatch(lastJob(sandbox).rendered ?? "", /PARTIAL/);
+});
+
+test("subagentStates re-reads a transcript that changed and skips one that predates the run", (t) => {
+  const gemini = fs.mkdtempSync(path.join(os.tmpdir(), "agy-brain-"));
+  t.after(() => fs.rmSync(gemini, { recursive: true, force: true }));
+  const brain = path.join(gemini, "antigravity-cli", "brain");
+  fs.mkdirSync(path.join(brain, "S1", ".system_generated", "subagents"), { recursive: true });
+  fs.writeFileSync(path.join(brain, "S1", ".system_generated", "subagents", "sub1.json"), JSON.stringify({ conversationId: "sub1" }));
+  const logs = path.join(brain, "sub1", ".system_generated", "logs");
+  fs.mkdirSync(logs, { recursive: true });
+  const transcript = path.join(logs, "transcript.jsonl");
+  fs.writeFileSync(transcript, `${JSON.stringify({ type: "TOOL_CALL", status: "RUNNING" })}\n`);
+  const cache = new Map();
+  const at = () => ({ now: fs.statSync(transcript).mtimeMs + 60_000, cache });
+  assert.equal(subagentStates(gemini, "S1", 1000, at())[0].running, true);
+  assert.equal(subagentStates(gemini, "S1", 1000, at())[0].running, true, "from the cache");
+  fs.appendFileSync(transcript, `${JSON.stringify({ type: "SYSTEM_MESSAGE" })}\n`);
+  assert.equal(subagentStates(gemini, "S1", 1000, at())[0].running, false, "re-read after the change");
+  assert.deepEqual(subagentStates(gemini, "S1", 1000, { ...at(), since: Date.now() + 60_000 }), []);
+});
+
+test("another session's tool calls neither hold the wait, add questions, nor close this session's call with the same id", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const after = [
+    { toolCall: "run_command", id: "never", sessionId: "SUB1" },
+    { toolCall: "ask_question", id: "q", question: "Theirs?", sessionId: "SUB1" },
+    { toolCall: "run_command", id: "x" },
+    { toolDone: "x", sessionId: "SUB1" },
+    { delayMs: 600, toolDone: "x" },
+    { chunk: " done" }
+  ];
+  const started = Date.now();
+  const result = run(sandbox, WRITE.concat("go"), { ...scenario({ turns: [{ chunks: ["working"], after }] }), AGENT_BRIDGES_ACP_QUIET_TIMEOUT_MS: "5000" });
+  assert.equal(result.status, 0, result.stdout);
+  assert.ok(Date.now() - started < 5000);
+  assert.equal(result.stdout, "working done\n");
+});
+
+test("another session's forbidden tool call still stops a read-only task", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const result = run(sandbox, ["task", "--wait", "look"], scenario({ turns: [{ chunks: ["SECRET ANSWER"], after: [{ toolCall: "write_file", id: "w", sessionId: "SUB1" }] }] }));
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stdout, /write_file/);
+  assert.doesNotMatch(result.stdout, /SECRET ANSWER/);
+});
+
+test("a completion without a call id closes the one open call, and is reported at once when it matches several", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const env = (after) => ({ ...scenario({ turns: [{ chunks: ["go"], after }] }), AGENT_BRIDGES_ACP_QUIET_TIMEOUT_MS: "5000" });
+  let started = Date.now();
+  const one = run(sandbox, WRITE.concat("go"), env([{ toolCall: "run_command", id: "bg" }, { delayMs: 300, toolDoneNoId: true }, { chunk: " closed" }]));
+  assert.equal(one.status, 0, one.stdout);
+  assert.ok(Date.now() - started < 5000);
+  assert.equal(one.stdout, "go closed\n");
+  // A pending ask_question waits for an answer nobody sends: the completion closes the command, not the question.
+  const withQuestion = run(sandbox, WRITE.concat("go"), env([{ toolCall: "ask_question", id: "q", question: "Which?" }, { toolCall: "run_command", id: "bg" }, { delayMs: 300, toolDoneNoId: true }, { chunk: " closed" }]));
+  assert.equal(withQuestion.status, 0, withQuestion.stdout);
+  assert.equal(withQuestion.stdout, "go closed\nUnanswered questions: Which?\n");
+  started = Date.now();
+  const two = run(sandbox, WRITE.concat("go"), env([{ toolCall: "run_command", id: "a" }, { toolCall: "run_command", id: "b" }, { delayMs: 300, toolDoneNoId: true }]));
+  assert.ok(Date.now() - started < 5000, "waited for the bound");
+  assert.match(two.stdout, /^Unmatched tool updates: 1 completion without a call id could not be matched to one open tool call \(2 open\), so the open calls were not waited for\.$/m);
+});
+
+test("on the wait's bound, a subagent that is only recently active is named as such", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const brain = path.join(sandbox.dir, ".gemini", "antigravity-cli", "brain");
+  const after = [{ subagent: "sub1", role: "explorer", plain: true }, ...Array.from({ length: 10 }, () => ({ delayMs: 200, subagentTouch: "sub1" }))];
+  const result = run(sandbox, WRITE.concat("go"), { ...scenario({ brain, turns: [{ chunks: ["asked"], after }] }), AGENT_BRIDGES_ACP_SETTLE_MS: "600", AGENT_BRIDGES_ACP_QUIET_TIMEOUT_MS: "1000" });
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stdout, /^Unfinished subagents: explorer \(sub1\): recently active$/m);
+  assert.deepEqual(lastJob(sandbox).unfinishedSubagents, [{ id: "sub1", role: "explorer", reason: "recently active" }]);
+});
+
+test("on the wait's bound the result keeps its Unanswered questions and Denied lines", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const bound = { AGENT_BRIDGES_ACP_QUIET_TIMEOUT_MS: "1000" };
+  const write = run(sandbox, WRITE.concat("go"), { ...scenario({ turns: [{ chunks: ["partial"], after: [{ toolCall: "ask_question", id: "q", question: "Which?" }, { toolCall: "run_command", id: "bg" }] }] }), ...bound });
+  assert.equal(write.status, 1, write.stdout);
+  assert.match(write.stdout, /^partial\nUnanswered questions: Which\?$/m);
+  const inside = path.join(sandbox.repo, "f0.txt");
+  const readOnly = run(sandbox, ["task", "--wait", "look"], { ...scenario({ turns: [{ chunks: ["partial"], after: [{ permission: true }, { toolCall: "read_file", id: "r", path: inside }] }] }), ...bound });
+  assert.equal(readOnly.status, 1, readOnly.stdout);
+  assert.match(readOnly.stdout, /^partial\nDenied: run_command \(echo later\)$/m);
+});
+
+test("subagentStates does not parse a transcript still changing within the settle time, unless asked to diagnose", (t) => {
+  const gemini = fs.mkdtempSync(path.join(os.tmpdir(), "agy-brain-"));
+  t.after(() => fs.rmSync(gemini, { recursive: true, force: true }));
+  const brain = path.join(gemini, "antigravity-cli", "brain");
+  fs.mkdirSync(path.join(brain, "S1", ".system_generated", "subagents"), { recursive: true });
+  fs.writeFileSync(path.join(brain, "S1", ".system_generated", "subagents", "sub1.json"), JSON.stringify({ conversationId: "sub1" }));
+  const logs = path.join(brain, "sub1", ".system_generated", "logs");
+  fs.mkdirSync(logs, { recursive: true });
+  const transcript = path.join(logs, "transcript.jsonl");
+  fs.writeFileSync(transcript, `${JSON.stringify({ type: "TOOL_CALL", status: "RUNNING" })}\n`);
+  const now = fs.statSync(transcript).mtimeMs + 10;
+  assert.deepEqual(subagentStates(gemini, "S1", 1000, { now }), [{ id: "sub1", role: null, busy: true, running: false, stuck: false, recent: true }]);
+  assert.deepEqual(subagentStates(gemini, "S1", 1000, { now, diagnose: true }), [{ id: "sub1", role: null, busy: true, running: true, stuck: false, recent: true }]);
+});
+
+test("the wait's bound ends agy's whole process group, even after agy itself exited", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const after = [{ toolCall: "run_command", id: "bg" }, { background: true }];
+  const result = run(sandbox, WRITE.concat("go"), { ...scenario({ turns: [{ chunks: ["started"], after }] }), AGENT_BRIDGES_ACP_QUIET_TIMEOUT_MS: "1000" });
+  assert.equal(result.status, 1, result.stdout);
+  const { bgPid } = JSON.parse(fs.readFileSync(sandbox.pidfile, "utf8"));
+  t.after(() => { try { process.kill(bgPid, "SIGKILL"); } catch {} });
+  assert.equal(processAlive(bgPid), false, "the background command outlived the run");
+});
+
+test("an unexpected agy exit during the wait ends the background command agy left behind", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const after = [{ toolCall: "run_command", id: "bg" }, { background: true }, { delayMs: 300, exit: 3 }];
+  const result = run(sandbox, WRITE.concat("go"), scenario({ turns: [{ chunks: ["started"], after }] }));
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stdout, /agy exited/);
+  const { bgPid } = JSON.parse(fs.readFileSync(sandbox.pidfile, "utf8"));
+  t.after(() => { try { process.kill(bgPid, "SIGKILL"); } catch {} });
+  assert.equal(processAlive(bgPid), false, "the background command outlived the run");
+});
+
+test("finishAgyRun: a run that did not complete cleanly ends the tree before agy's input closes; a clean one gets its grace first", async () => {
+  const order = (clean, exits) => {
+    const calls = [];
+    return finishAgyRun({
+      clean,
+      endTree: async () => { calls.push("endTree"); },
+      closeInput: () => { calls.push("closeInput"); },
+      waitExit: async () => { calls.push("waitExit"); return exits; }
+    }).then(() => calls);
+  };
+  // Windows: taskkill /T reaches the tree only while agy's PID still addresses it, so it comes before EOF.
+  assert.deepEqual(await order(false, true), ["endTree", "closeInput"]);
+  assert.deepEqual(await order(true, true), ["closeInput", "waitExit"]);
+  assert.deepEqual(await order(true, false), ["closeInput", "waitExit", "endTree"]);
+});
+
+test("call ids that are absent, null or empty are one case: anonymous starts are waited for and closed", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const env = (after, extra = {}) => ({ ...scenario({ turns: [{ chunks: ["go"], after }] }), AGENT_BRIDGES_ACP_QUIET_TIMEOUT_MS: "5000", ...extra });
+  let started = Date.now();
+  const anonymous = run(sandbox, WRITE.concat("go"), env([{ toolCall: "run_command", noId: true }, { delayMs: 600, toolDoneNoId: true }, { chunk: " done" }]));
+  assert.equal(anonymous.status, 0, anonymous.stdout);
+  assert.ok(Date.now() - started >= 600, "an anonymous command was not waited for");
+  assert.equal(anonymous.stdout, "go done\n");
+  for (const value of [null, ""]) {
+    started = Date.now();
+    const closed = run(sandbox, WRITE.concat("go"), env([{ toolCall: "run_command", id: "bg" }, { delayMs: 300, toolDoneWithId: value }, { chunk: " closed" }]));
+    assert.equal(closed.status, 0, `${value}: ${closed.stdout}`);
+    assert.ok(Date.now() - started < 5000, `${value}: waited for the bound`);
+    assert.equal(closed.stdout, "go closed\n");
+  }
+  const question = run(sandbox, WRITE.concat("go"), env([{ toolCall: "ask_question", noId: true, question: "Which?" }]));
+  assert.equal(question.stdout, "go\nUnanswered questions: Which?\n");
+});
+
+test("a call reported active again after an ambiguous completion is waited for again", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const after = [
+    { toolCall: "run_command", id: "a" },
+    { toolCall: "run_command", id: "b" },
+    { delayMs: 50, toolDoneNoId: true },
+    { delayMs: 50, toolActive: "a" },
+    { delayMs: 800, toolDone: "a" },
+    { chunk: " a done" }
+  ];
+  const result = run(sandbox, WRITE.concat("go"), { ...scenario({ turns: [{ chunks: ["go"], after }] }), AGENT_BRIDGES_ACP_SETTLE_MS: "300" });
+  assert.equal(result.status, 0, result.stdout);
+  assert.match(result.stdout, /^go a done$/m);
+});
+
+test("a tool call before the session id is known: another session's does not hold the wait; a forbidden one still stops a read-only run", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const started = Date.now();
+  const write = run(sandbox, WRITE.concat("go"), { ...scenario({ preSessionToolCall: { name: "run_command", sessionId: "SUB1" } }), AGENT_BRIDGES_ACP_QUIET_TIMEOUT_MS: "5000" });
+  assert.equal(write.status, 0, write.stdout);
+  assert.ok(Date.now() - started < 5000);
+  const readOnly = run(sandbox, ["task", "--wait", "look"], scenario({ preSessionToolCall: { name: "write_file", sessionId: "SUB1" } }));
+  assert.equal(readOnly.status, 1, readOnly.stdout);
+  assert.match(readOnly.stdout, /write_file/);
+});
+
+test("a read-only violation during the quiet wait ends the run at once, not at the next poll", async () => {
+  const token = "tok";
+  let run;
+  const reply = (message) => setImmediate(() => run.handle(message));
+  run = startAcpRun({
+    cwd: process.cwd(),
+    prompt: "look",
+    readOnly: true,
+    token,
+    quietSettleMs: 10_000,
+    geminiDir: path.join(os.tmpdir(), "agy-no-gemini"),
+    write(line) {
+      const message = JSON.parse(line);
+      if (message.method === "initialize") reply({ id: message.id, result: { agentCapabilities: {} } });
+      else if (message.method === "session/new") reply({ id: message.id, result: { sessionId: "S1" } });
+      else if (message.method === "session/prompt" && message.params.prompt[0].text === TOKEN_PROMPT) {
+        reply({ method: "session/update", params: { sessionId: "S1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: token } } } });
+        reply({ id: message.id, result: { stopReason: "end_turn" } });
+      } else if (message.method === "session/prompt") {
+        reply({ id: message.id, result: { stopReason: "end_turn" } });
+        setTimeout(() => {
+          run.violationAt = Date.now();
+          run.handle({ method: "session/update", params: { sessionId: "S1", update: { sessionUpdate: "tool_call", toolCallId: "w", name: "write_file", status: "pending" } } });
+        }, 30);
+      }
+    }
+  });
+  const parsed = await run.result;
+  const delay = Date.now() - run.violationAt;
+  assert.equal(parsed.ok, false);
+  assert.match(parsed.error, /write_file/);
+  assert.ok(delay < 100, `the wait noticed the stop after ${delay} ms`);
+});
+
+test("a pending ask_question does not keep the task open and its question is named in the result", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  for (const [step, named] of [
+    [{ question: "Do you prefer red or blue?" }, "Do you prefer red or blue?"],
+    [{ question: "Do you prefer red or blue?", questionVia: "args" }, "Do you prefer red or blue?"],
+    [{}, "Run ask_question"]
+  ]) {
+    const after = [{ toolCall: "ask_question", id: "q", ...step }];
+    const result = run(sandbox, WRITE.concat("go"), scenario({ turns: [{ chunks: ["need input"], after }] }));
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, `need input\nUnanswered questions: ${named}\n`, JSON.stringify(step));
+  }
+});
+
+test("a session that never goes quiet is stopped by the bound on the wait, with the text it wrote", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const after = [{ toolCall: "run_command", id: "bg" }];
+  const started = Date.now();
+  // agy ignores SIGTERM, so it lives long enough to log the session/cancel sent before the tree is ended.
+  const result = run(sandbox, WRITE.concat("go"), { ...scenario({ ignoreTerm: true, turns: [{ chunks: ["still going"], after }] }), AGENT_BRIDGES_ACP_QUIET_TIMEOUT_MS: "1000" });
+  assert.equal(result.status, 1, result.stdout);
+  assert.ok(Date.now() - started < 15000);
+  assert.match(result.stdout, /still working 1 s after its turn ended/);
+  assert.match(result.stdout, /still going/);
+  assert.equal(requests(sessions(sandbox)[0], "session/cancel").length, 1);
+  assert.equal(jobStatus(sandbox, lastJob(sandbox).id).status, "failed");
+});
+
+test("agy exiting while a task waits for its session to go quiet fails the run", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const after = [{ toolCall: "run_command", id: "bg" }, { delayMs: 300, exit: 3 }];
+  const started = Date.now();
+  const result = run(sandbox, WRITE.concat("go"), scenario({ turns: [{ chunks: ["waiting"], after }] }));
+  assert.equal(result.status, 1, result.stdout);
+  assert.ok(Date.now() - started < 15000);
+  assert.match(result.stdout, /agy exited/);
+});
+
+test("a review ends at its first end_turn and does not wait for the session to go quiet", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const started = Date.now();
+  const result = run(sandbox, ["review", "--wait"], { ...scenario({ turns: [{ chunks: [JSON.stringify(FINDINGS)], after: [{ delayMs: 5000, chunk: "late" }] }] }), AGENT_BRIDGES_ACP_SETTLE_MS: "20000" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(Date.now() - started < 10000);
+  assert.match(result.stdout, /a\.js/);
 });
 
 test("a bookkeeping failure after spawn fails the run and ends agy", { skip: POSIX_ONLY }, (t) => {

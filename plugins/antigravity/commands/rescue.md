@@ -54,7 +54,7 @@ Operating rules:
 - Return the Antigravity companion stdout verbatim to the user.
 - Do not paraphrase, summarize, rewrite, or add commentary before or after it.
 - Do not ask the subagent to inspect files, monitor progress, poll `/antigravity:status`, fetch `/antigravity:result`, call `/antigravity:cancel`, summarize output, or do follow-up work of its own.
-- Default to a read-only run. Add `--write --bypass-permissions` only when the user asked for changes to be made (a fix, an implementation, "apply it"): `--write` lets the backend change files and run commands without asking, and the companion refuses it without `--bypass-permissions` (or `AGENT_BRIDGES_ALLOW_BYPASS=1`).
+- Default to a read-only run. Add `--write --bypass-permissions` only when the user asked for changes to be made (a fix, an implementation, "apply it"): `--write` lets the backend change files and run commands without asking, and the companion refuses it without `--bypass-permissions` (or `AGENT_BRIDGES_ALLOW_BYPASS=1`). A write run also sets the session mode `auto`, so subagents of the session can run commands that Antigravity counts as safe; Antigravity still asks before irreversible ones, and the companion answers each such request once.
 - Leave the model unset unless the user explicitly asks for one. Forward whatever model string they pass verbatim.
 - Leave `--resume`, `--resume-job <id>` and `--fresh` in the forwarded request. The subagent handles that routing when it builds the `task` command.
 - If the helper reports that Antigravity is missing or not signed in, stop and tell the user to run `/antigravity:setup`.

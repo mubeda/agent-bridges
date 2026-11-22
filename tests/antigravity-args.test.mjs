@@ -146,11 +146,20 @@ test("a disallowed tool call sent right after the final answer still fails the r
   assert.match(result.stdout, /write_file/);
 });
 
-test("text sent after a turn ended is not added to its answer", { skip: POSIX_ONLY }, (t) => {
+test("text sent right after a task's turn ended is part of its answer", { skip: POSIX_ONLY }, (t) => {
   const sandbox = makeSandbox(t);
   const result = run(sandbox, ["task", "--wait", "--write", "--bypass-permissions", "go"], scenario({ turns: [{ chunks: ["answer"], trailingChunk: " LATE" }] }));
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, "answer\n");
+  assert.equal(result.stdout, "answer LATE\n");
+});
+
+test("text sent after a review's turn ended is not added to its answer", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  // On the retry, whose text is the one rendered.
+  const result = run(sandbox, ["review", "--wait"], scenario({ turns: [{ chunks: ["prose answer"] }, { chunks: ["still prose"], trailingChunk: " LATE" }] }));
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /still prose/);
+  assert.doesNotMatch(result.stdout, /LATE/);
 });
 
 test("a missing token stops the run before the review prompt", { skip: POSIX_ONLY }, (t) => {
@@ -272,6 +281,10 @@ test("a read-only task that reads outside its workspace is stopped at once", { s
     [{ toolPath: secret, toolPathVia: "locations" }, secret],
     [{ toolPath: "$READER/.agents/plugins/x.md" }, ".agents/plugins/x.md"],
     [{ toolPath: path.join(sandbox.repo, "f0.txt"), toolUpdatePath: secret }, secret],
+    // A later record of the read with an empty name, with its name but no toolCallId, or with neither.
+    [{ toolPath: path.join(sandbox.repo, "f0.txt"), toolUpdatePath: secret, toolUpdateName: "" }, secret],
+    [{ toolPath: path.join(sandbox.repo, "f0.txt"), toolUpdatePath: secret, toolUpdateName: "read_file", toolUpdateNoId: true }, secret],
+    [{ toolPath: path.join(sandbox.repo, "f0.txt"), toolUpdatePath: secret, toolUpdateNoId: true }, secret],
     [{}, "no path"]
   ];
   for (const [turn, named] of cases) {
@@ -285,13 +298,13 @@ test("a read-only task that reads outside its workspace is stopped at once", { s
   }
 });
 
-test("model and thinking level are set before the prompt", { skip: POSIX_ONLY }, (t) => {
+test("mode, model and thinking level are set before the prompt", { skip: POSIX_ONLY }, (t) => {
   const sandbox = makeSandbox(t);
   const result = run(sandbox, ["task", "--wait", "--write", "--bypass-permissions", "--model", "gemini-3.8-flash-medium", "--effort", "high", "go"]);
   assert.equal(result.status, 0, result.stderr);
   const [session] = sessions(sandbox);
   const methods = session.received.filter((message) => message.method).map((message) => message.method);
-  assert.deepEqual(methods, ["initialize", "session/new", "session/set_model", "session/set_config_option", "session/prompt"]);
+  assert.deepEqual(methods, ["initialize", "session/new", "session/set_mode", "session/set_model", "session/set_config_option", "session/prompt"]);
   assert.deepEqual(requests(session, "session/set_model")[0].params, { sessionId: "S1", modelId: "gemini-3.8-flash-medium" });
   assert.deepEqual(requests(session, "session/set_config_option")[0].params, { sessionId: "S1", configId: "thought_level", value: "high" });
 });

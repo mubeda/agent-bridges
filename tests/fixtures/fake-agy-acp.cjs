@@ -17,6 +17,8 @@ if (argv.includes("--version")) {
 }
 
 const scenario = JSON.parse(process.env.FAKE_ACP || "{}");
+// A server slow to stop: SIGTERM is ignored, so only the SIGKILL that follows ends it.
+if (scenario.ignoreTerm) process.on("SIGTERM", () => {});
 const line = (message) => JSON.stringify({ jsonrpc: "2.0", ...message, ...(scenario.stringIds && message.id !== undefined && !message.method ? { id: String(message.id) } : {}) }) + "\n";
 const send = (message) => process.stdout.write(line(message));
 const flag = (name) => { const i = argv.indexOf(name); return i === -1 ? null : argv[i + 1]; };
@@ -45,6 +47,7 @@ function readerFiles() {
 }
 log({ argv, pid: process.pid, readerFiles: readerFiles() });
 
+const MODES = [{ id: "default", name: "Default" }, { id: "auto", name: "Auto" }];
 const MODELS = [{ modelId: "gemini-4-neon-high", name: "Gemini 4 Neon (High)" }, { modelId: "gemini-3.8-flash-medium", name: "Flash" }];
 let turn = 0;
 let onCancel = null;
@@ -96,8 +99,16 @@ async function prompt(id, params) {
       ...(input && script.toolPathVia === "locations" ? { locations: [{ path: input.Path }] } : {})
     });
   }
-  if (script.toolUpdatePath) {
-    update(sessionId, { sessionUpdate: "tool_call_update", toolCallId: "t0", status: "completed", rawInput: { Path: fill(script.toolUpdatePath) } });
+  // The tool call completes within the turn (with a path when toolUpdatePath is set; toolUpdateName and
+  // toolUpdateNoId shape that record the way a server might: an empty or repeated name, no toolCallId).
+  if (script.toolCall || script.toolUpdatePath) {
+    update(sessionId, {
+      sessionUpdate: "tool_call_update",
+      ...(script.toolUpdateNoId ? {} : { toolCallId: "t0" }),
+      ...(script.toolUpdateName === undefined ? {} : { name: script.toolUpdateName }),
+      status: "completed",
+      ...(script.toolUpdatePath ? { rawInput: { Path: fill(script.toolUpdatePath) } } : {})
+    });
   }
   if (script.permission) await askPermission(sessionId, { toolCallId: "t1", name: "run_command", title: "echo hi" });
   const sleep = Number(process.env.FAKE_AGY_SLEEP_MS ?? 0);
@@ -136,6 +147,63 @@ async function prompt(id, params) {
       ? line({ method: "session/update", params: { sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: script.trailingChunk } } } })
       : "";
   process.stdout.write(done + trailing);
+  if (script.after) afterTurn(sessionId, script.after);
+}
+
+// What the session does after its turn ended, one step after another, each after its delayMs. A step's
+// sessionId sends its tool call, completion or text as another session's update on the same connection.
+// { toolCall, id, title, question, questionVia, path } opens a tool call, { toolDone: id } completes it,
+// { toolDoneNoId: true } sends a completion without a call id, { chunk } adds text,
+// { permission: true } asks and waits for the answer, { exit } exits, { subagent: id } lists a subagent with a RUNNING
+// record in its transcript under scenario.brain ({ stuck: true }: a run_command model turn instead; { plain: true }:
+// a model turn that asked for read_file; { role }), { subagentDone: id } adds its SYSTEM_MESSAGE record,
+// { subagentTouch: id } adds another plain model turn. { noId: true } on a toolCall sends it without a call id,
+// { toolDoneWithId: value } completes with that exact toolCallId (null, ""), { toolActive: id } reports the call
+// in_progress again, { background: true } starts a long command in agy's process group (pid in FAKE_AGY_PIDFILE).
+const PLAIN_TURN = { type: "PLANNER_RESPONSE", tool_calls: [{ name: "read_file", args: { Path: "a.txt" } }] };
+async function afterTurn(sessionId, steps) {
+  for (const step of steps) {
+    await new Promise((resolve) => setTimeout(resolve, step.delayMs ?? 0));
+    if (step.toolCall !== undefined) {
+      // A real ask_question: title "Run ask_question", the question in rawInput (or args) .questions[].question.
+      const input = step.question ? { questions: [{ is_multi_select: false, options: ["Red", "Blue"], question: step.question }] } : undefined;
+      update(step.sessionId ?? sessionId, {
+        sessionUpdate: "tool_call", ...(step.noId ? {} : { toolCallId: step.id }), name: step.toolCall, title: step.title ?? `Run ${step.toolCall}`, kind: "execute", status: "in_progress",
+        ...(input ? { [step.questionVia ?? "rawInput"]: input } : {}),
+        ...(step.path ? { rawInput: { Path: step.path } } : {})
+      });
+    }
+    if (step.toolDone) update(step.sessionId ?? sessionId, { sessionUpdate: "tool_call_update", toolCallId: step.toolDone, status: "completed" });
+    if (step.toolDoneNoId) update(sessionId, { sessionUpdate: "tool_call_update", status: "completed" });
+    if ("toolDoneWithId" in step) update(sessionId, { sessionUpdate: "tool_call_update", toolCallId: step.toolDoneWithId, status: "completed" });
+    if (step.toolActive) update(sessionId, { sessionUpdate: "tool_call_update", toolCallId: step.toolActive, status: "in_progress" });
+    if (step.background) {
+      // A command with its own stdio, in agy's process group: it outlives agy unless the group is ended.
+      const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore" });
+      fs.writeFileSync(process.env.FAKE_AGY_PIDFILE, JSON.stringify({ bgPid: child.pid }));
+    }
+    if (step.exit) process.exit(Number(step.exit));
+    if (step.chunk) update(step.sessionId ?? sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: step.chunk } });
+    if (step.permission) await askPermission(sessionId, { toolCallId: "t2", name: "run_command", title: "echo later" });
+    if (step.subagent) {
+      const list = path.join(scenario.brain, sessionId, ".system_generated", "subagents");
+      const logs = path.join(scenario.brain, step.subagent, ".system_generated", "logs");
+      fs.mkdirSync(list, { recursive: true });
+      fs.mkdirSync(logs, { recursive: true });
+      fs.writeFileSync(path.join(list, `${step.subagent}.json`), JSON.stringify({ conversationId: step.subagent, subagentDescriptor: { role: step.role ?? "worker" } }));
+      // stuck: the model asked for run_command and nothing followed (the command was never asked of the client).
+      const record = step.stuck
+        ? { type: "PLANNER_RESPONSE", tool_calls: [{ name: "run_command", args: { CommandLine: "npm test" } }] }
+        : step.plain ? PLAIN_TURN : { type: "TOOL_CALL", status: "RUNNING" };
+      fs.writeFileSync(path.join(logs, "transcript.jsonl"), JSON.stringify(record) + "\n");
+    }
+    if (step.subagentTouch) {
+      fs.appendFileSync(path.join(scenario.brain, step.subagentTouch, ".system_generated", "logs", "transcript.jsonl"), JSON.stringify(PLAIN_TURN) + "\n");
+    }
+    if (step.subagentDone) {
+      fs.appendFileSync(path.join(scenario.brain, step.subagentDone, ".system_generated", "logs", "transcript.jsonl"), JSON.stringify({ type: "SYSTEM_MESSAGE" }) + "\n");
+    }
+  }
 }
 
 function handle(message) {
@@ -169,7 +237,9 @@ function handle(message) {
       } });
       return;
     case "session/new":
-      send({ id, result: { sessionId: scenario.newSessionId ?? "S1", models: { availableModels: MODELS, currentModelId: MODELS[0].modelId }, modes: {}, configOptions: [] } });
+      // A tool call sent before the session id is known (scenario.preSessionToolCall: { name, sessionId }).
+      if (scenario.preSessionToolCall) update(scenario.preSessionToolCall.sessionId, { sessionUpdate: "tool_call", toolCallId: "pre", name: scenario.preSessionToolCall.name, kind: "execute", status: "in_progress" });
+      send({ id, result: { sessionId: scenario.newSessionId ?? "S1", models: { availableModels: MODELS, currentModelId: MODELS[0].modelId }, modes: { currentModeId: "default", availableModes: MODES.filter((mode) => !(scenario.noAutoMode && mode.id === "auto")) }, configOptions: [] } });
       return;
     case "session/resume":
       // The error agy 1.5.14 gives for an id it does not have.
@@ -180,6 +250,10 @@ function handle(message) {
     case "session/load":
       // agy 1.5.14 silently creates a session for an unknown id here, which is why the client never calls it.
       send({ id, result: {} });
+      return;
+    case "session/set_mode":
+      if (scenario.setModeError) send({ id, error: { code: -32603, message: scenario.setModeError } });
+      else send({ id, result: {} });
       return;
     case "session/set_model":
       send({ id, result: {} });
