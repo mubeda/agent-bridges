@@ -26,7 +26,7 @@ import {
 } from "./lib/agy.mjs";
 import { buildDetachedWorkerOptions, mergeSpawnedPid } from "./lib/detach.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
-import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
+import { collectReviewContext, ensureGitRepository, formatNotShown, resolveReviewTarget } from "./lib/git.mjs";
 import { capTranscriptMessages, packTranscript, parseTranscriptJsonl, resolveTransferSource } from "./lib/host-session.mjs";
 import { binaryAvailable, runCommand, terminateProcessTree } from "./lib/process.mjs";
 import { interpolateTemplate, loadPromptTemplate } from "./lib/prompts.mjs";
@@ -397,7 +397,7 @@ async function executeAcpRun(request, hooks = {}) {
   }
 }
 
-function renderExecution(request, command, parsed) {
+function renderExecution(request, command, parsed, evidence) {
   const lines = [];
   if (parsed.warning) lines.push(`Warning: ${parsed.warning}`, "");
   if (!parsed.ok) {
@@ -410,6 +410,10 @@ function renderExecution(request, command, parsed) {
     return `${lines.join("\n")}\n`;
   }
   lines.push(`# Antigravity ${request.reviewName}`, "");
+  // The model is told inside its prompt; this line tells the caller.
+  if (evidence?.truncated) {
+    lines.push(`Incomplete review: the evidence was cut at ${evidence.maxBytes} bytes, so the rest of this change was not reviewed.${formatNotShown(evidence.filesNotShown ?? [])}`, "");
+  }
   if (parsed.structured) {
     lines.push(JSON.stringify(parsed.structured, null, 2));
     if (parsed.deniedActions.length) lines.push("", `Denied: ${formatDeniedActions(parsed.deniedActions)}`);
@@ -459,7 +463,7 @@ async function runAcpJob(job, request) {
     // cancel may have run while agy was stopping; never overwrite it.
     if (isCancelled()) return cancelledResult();
     const status = parsed.ok ? "completed" : "failed";
-    const rendered = renderExecution(request, command, parsed);
+    const rendered = renderExecution(request, command, parsed, job.evidence);
     const completed = save({
       ...running,
       status,
@@ -593,6 +597,8 @@ async function handleReviewCommand(argv, { reviewName }) {
     jobClass: "review",
     summary: `${reviewName} ${target.label}`
   });
+  // Kept on the job record, so `--json`, `status` and `result` show that only part of the change was reviewed.
+  if (context.truncated) job.evidence = { truncated: true, maxBytes: context.maxBytes, filesNotShown: context.notShown };
   const request = buildRequest(cwd, options, buildReviewPrompt(context, focusText, reviewName), {
     write: false,
     review: true,

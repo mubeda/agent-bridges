@@ -498,3 +498,11 @@ test("cancel leaves a stored reader folder alone unless the bridge owns it", { s
     assert.ok(fs.existsSync(path.join(target, "keep.txt")), placement);
   }
 });
+
+test("the cut notice names at most 100 files, then a count, and escapes control characters", async () => {
+  const { formatNotShown } = await import("../plugins/antigravity/scripts/lib/git.mjs");
+  const names = Array.from({ length: 101 }, (_, i) => `f${i}.txt`);
+  assert.match(formatNotShown(names), /f99\.txt and 1 more\.$/);
+  assert.equal(formatNotShown(["a\nb"]), " Files not shown: a\\u000ab.");
+  assert.equal(formatNotShown([]), "");
+});

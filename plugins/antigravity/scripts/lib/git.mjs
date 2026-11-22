@@ -262,10 +262,18 @@ function orderFiles(files) {
   return [...files].sort((a, b) => evidenceRank(a) - evidenceRank(b) || a.split("/").length - b.split("/").length || a.localeCompare(b));
 }
 
+/** The files a cut notice names, capped. Control characters are escaped, so a file name cannot add a line. */
+export function formatNotShown(notShown) {
+  const names = notShown.slice(0, NOT_SHOWN_NAME_LIMIT).join(", ").replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
+  const extra = notShown.length > NOT_SHOWN_NAME_LIMIT ? ` and ${notShown.length - NOT_SHOWN_NAME_LIMIT} more` : "";
+  return names ? ` Files not shown: ${names}${extra}.` : "";
+}
+
 /** Collects sections into a byte budget; once it is used up, later items are only named. */
 function createEvidence(maxBytes) {
   const parts = [];
-  const notShown = [];
+  // A set: a file that is both staged and unstaged is named once.
+  const notShown = new Set();
   let left = maxBytes;
   let truncated = false;
   return {
@@ -290,16 +298,17 @@ function createEvidence(maxBytes) {
     },
     skip(name) {
       truncated = true;
-      notShown.push(name);
+      notShown.add(name);
+    },
+    get notShown() {
+      return [...notShown];
     },
     get truncated() {
       return truncated;
     },
     content() {
       if (!truncated) return parts.join("");
-      const names = notShown.slice(0, NOT_SHOWN_NAME_LIMIT).join(", ");
-      const extra = notShown.length > NOT_SHOWN_NAME_LIMIT ? ` and ${notShown.length - NOT_SHOWN_NAME_LIMIT} more` : "";
-      return `${parts.join("")}\n\n(The evidence was cut at ${maxBytes} bytes; the rest of this change is not shown.${names ? ` Files not shown: ${names}${extra}.` : ""})`;
+      return `${parts.join("")}\n\n(The evidence was cut at ${maxBytes} bytes; the rest of this change is not shown.${formatNotShown([...notShown])})`;
     }
   };
 }
@@ -368,6 +377,7 @@ function collectWorkingTreeContext(cwd, state, maxBytes) {
     summary: `Reviewing ${state.staged.length} staged, ${state.unstaged.length} unstaged, and ${state.untracked.length} untracked file(s).`,
     content: evidence.content(),
     truncated: evidence.truncated,
+    notShown: evidence.notShown,
     changedFiles: listUniqueFiles(state.staged, state.unstaged, state.untracked)
   };
 }
@@ -388,6 +398,7 @@ function collectBranchContext(cwd, baseRef, maxBytes) {
     summary: `Reviewing branch ${currentBranch} against ${baseRef} from merge-base ${comparison.mergeBase}.`,
     content: evidence.content(),
     truncated: evidence.truncated,
+    notShown: evidence.notShown,
     changedFiles,
     comparison
   };
@@ -414,6 +425,7 @@ export function collectReviewContext(cwd, target, options = {}) {
     branch: currentBranch,
     target,
     fileCount: details.changedFiles.length,
+    maxBytes,
     inputMode: details.truncated ? "truncated-diff" : "inline-diff",
     collectionGuidance: buildCollectionGuidance(details.truncated, maxBytes),
     ...details
