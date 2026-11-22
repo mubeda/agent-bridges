@@ -233,16 +233,18 @@ function safeId(value) {
 }
 
 /**
- * The subagents this run's session started, read only (never written), each { id, role, busy, running, stuck }:
+ * The subagents this run's session started, read only (never written), each { id, role, busy, running, stuck, recent }:
  * - running: a background command is still open. RUNNING tool records are counted against the SYSTEM_MESSAGE
  *   records after them, because the transcript does not say which command a SYSTEM_MESSAGE ends.
  * - stuck: the latest record is a model turn with run_command in its tool_calls and nothing followed (in the
  *   default mode such a command is never asked of the client and never runs).
- * - busy: running, or the transcript changed within settleMs.
+ * - recent: the transcript changed within settleMs. Such a transcript is busy by that alone and is not parsed
+ *   (running and stuck stay false) unless `diagnose` asks for the reasons at the wait's bound.
+ * - busy: running, or recent.
  * Missing folders and unreadable files are skipped, and so is a transcript last changed before `since` (this
  * run's start): a resumed session lists earlier runs' subagents, which may have been cut off.
  */
-export function subagentStates(geminiDir, sessionId, settleMs, { now = Date.now(), since = 0, cache = null } = {}) {
+export function subagentStates(geminiDir, sessionId, settleMs, { now = Date.now(), since = 0, cache = null, diagnose = false } = {}) {
   const brain = path.join(geminiDir, "antigravity-cli", "brain");
   const session = safeId(sessionId);
   if (!session) return [];
@@ -271,6 +273,9 @@ export function subagentStates(geminiDir, sessionId, settleMs, { now = Date.now(
     // Checked before reading: an earlier run's transcript is never read.
     const mtime = stat.mtimeMs;
     if (mtime < since) return [];
+    const recent = now - mtime < settleMs;
+    // Still changing: busy by its mtime alone, so it is parsed only for the diagnostics at the wait's bound.
+    if (recent && !diagnose) return [{ id, role, busy: true, running: false, stuck: false, recent }];
     // An unchanged transcript (same mtime and size) is not read and parsed again.
     let parsed = cache?.get(file);
     if (!parsed || parsed.mtime !== mtime || parsed.size !== stat.size) {
@@ -298,7 +303,7 @@ export function subagentStates(geminiDir, sessionId, settleMs, { now = Date.now(
     const { open, last } = parsed;
     const running = open > 0;
     const stuck = !running && Array.isArray(last?.tool_calls) && last.tool_calls.some((call) => call?.name === "run_command");
-    return [{ id, role, busy: running || now - mtime < settleMs, running, stuck }];
+    return [{ id, role, busy: running || recent, running, stuck, recent }];
   });
 }
 
@@ -366,8 +371,13 @@ export function startAcpRun(options) {
     onNotification(message) {
       if (message.method !== "session/update") return;
       const update = message.params?.update ?? {};
-      lastUpdate = Date.now();
-      if ((update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") && update.toolCallId !== undefined) {
+      // Another session's updates (a subagent's, on the same connection) never hold the wait open and never add
+      // text or questions; the read-only rules below still check every session's tool calls.
+      const own = isOwn(message.params);
+      if (own) lastUpdate = Date.now();
+      if (own && (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") && update.toolCallId === undefined) {
+        closeWithoutId(update);
+      } else if (own && (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update")) {
         const call = toolCalls.get(update.toolCallId) ?? { name: "", title: null, status: "pending" };
         // Only non-empty values: a later record with an empty field must not erase what an earlier one said.
         if (isText(update.name)) call.name = update.name;
@@ -382,14 +392,13 @@ export function startAcpRun(options) {
       // Text counts only inside an open turn (a task's stays open until its session is quiet); a read-only
       // session's tool rule holds at every moment.
       if (update.sessionUpdate === "agent_message_chunk" && typeof update.content?.text === "string") {
-        // Only this session's text: an update of another session on the connection is not part of the answer.
-        const own = message.params?.sessionId === undefined || sessionId === null || String(message.params.sessionId) === sessionId;
         if (turn && own) turn.text += update.content.text;
       } else if (update.sessionUpdate === "tool_call_update" && readOnly && !review) {
         // A later record of a read can carry the path too: the same confinement applies. The record's own name
         // first, then the tracked one; a record that names neither is confined too, because a read-only task's
         // only other tool (manage_task) is the one exception.
-        const name = isText(update.name) ? update.name : toolCalls.get(update.toolCallId)?.name;
+        // The tool map holds only this session's calls, so another session's record is looked up by its own name.
+        const name = isText(update.name) ? update.name : own ? toolCalls.get(update.toolCallId)?.name : undefined;
         if (name !== "manage_task" && readPath(update) !== null) confineRead(update);
       } else if (update.sessionUpdate === "tool_call" && readOnly) {
         const name = typeof update.name === "string" ? update.name : "";
@@ -406,7 +415,7 @@ export function startAcpRun(options) {
     onRequest(message) {
       if (message.method !== "session/request_permission") return undefined;
       const params = message.params ?? {};
-      lastUpdate = Date.now();
+      if (isOwn(params)) lastUpdate = Date.now();
       if (turn?.verifying) stop(new Error(`${readerMissing()} A permission request came during the token check.`), { security: true });
       const choices = Array.isArray(params.options) ? params.options : [];
       // Exact one-time kinds only: an *_always choice could save a rule in the user's Antigravity settings.
@@ -486,8 +495,43 @@ export function startAcpRun(options) {
     return current.text;
   }
 
-  const openCalls = (questions) =>
-    [...toolCalls.values()].filter((call) => !TOOL_DONE.has(call.status) && (call.name === "ask_question") === questions);
+  /** An update of this run's session (one with no session id counts as this session's). */
+  function isOwn(params) {
+    return params?.sessionId === undefined || sessionId === null || String(params.sessionId) === sessionId;
+  }
+
+  // Open calls that a completion without a call id may have closed: no longer waited for, and reported.
+  const isOpen = (call) => !TOOL_DONE.has(call.status) && !call.untracked;
+  const openCalls = (questions) => [...toolCalls.values()].filter((call) => isOpen(call) && (call.name === "ask_question") === questions);
+  const unmatched = [];
+
+  /** A terminal record without a call id closes the one open call; with several open, none can be trusted. */
+  function closeWithoutId(update) {
+    if (update.sessionUpdate !== "tool_call_update" || !TOOL_DONE.has(update.status)) return;
+    const open = [...toolCalls.values()].filter(isOpen);
+    if (open.length === 1) open[0].status = update.status;
+    else if (open.length > 1) {
+      unmatched.push(open.length);
+      for (const call of open) call.untracked = true;
+    }
+  }
+
+  /** The answer with the lines every result carries: denials, unanswered questions, unmatched updates, unfinished subagents. */
+  function resultLines(text) {
+    const response = text.trim();
+    let resultText = response;
+    if (deniedActions.length) {
+      const denied = formatDeniedActions(deniedActions);
+      resultText = response ? `${response}\nDenied: ${denied}` : `no answer; denied: ${denied}`;
+    }
+    const questions = openCalls(true).flatMap((call) => call.questions ?? [call.title ?? "ask_question"]);
+    const unmatchedLine = unmatched.length
+      ? `Unmatched tool updates: ${unmatched.length} completion${unmatched.length === 1 ? "" : "s"} without a call id could not be matched to one open tool call (${unmatched.join(", ")} open), so the open calls were not waited for.`
+      : "";
+    return [resultText, questions.length ? `Unanswered questions: ${questions.join("; ")}` : "", unmatchedLine, unfinishedLine(unfinished)]
+      .filter(Boolean)
+      .join("\n");
+  }
 
   /**
    * Quiet: no tool call open (a pending ask_question has no one to answer it, so it does not count), no
@@ -501,20 +545,22 @@ export function startAcpRun(options) {
       const error = stopped ?? client.closedError();
       if (error) throw error;
       const now = Date.now();
-      const quietSoFar = !openCalls(false).length && now - lastUpdate >= settleMs;
-      const timedOut = now - started >= quietTimeoutMs;
-      const states = quietSoFar || timedOut ? subagentStates(geminiDir, sessionId, settleMs, { now, since: runStarted, cache: transcriptCache }) : [];
-      if (quietSoFar && !states.some((state) => state.busy)) {
-        unfinished = states.filter((state) => state.stuck).map(({ id, role }) => ({ id, role, reason: "stuck on a command" }));
-        return;
+      const options = { now, since: runStarted, cache: transcriptCache };
+      if (!openCalls(false).length && now - lastUpdate >= settleMs) {
+        const states = subagentStates(geminiDir, sessionId, settleMs, options);
+        if (!states.some((state) => state.busy)) {
+          unfinished = states.filter((state) => state.stuck).map(({ id, role }) => ({ id, role, reason: "stuck on a command" }));
+          return;
+        }
       }
-      if (timedOut) {
-        unfinished = states
-          .filter((state) => state.running || state.stuck)
-          .map(({ id, role, running }) => ({ id, role, reason: running ? "still running" : "stuck on a command" }));
+      if (now - started >= quietTimeoutMs) {
+        // The diagnostics read every transcript of this run, the ones still changing too.
+        unfinished = subagentStates(geminiDir, sessionId, settleMs, { ...options, diagnose: true })
+          .filter((state) => state.running || state.stuck || state.recent)
+          .map(({ id, role, running, stuck }) => ({ id, role, reason: running ? "still running" : stuck ? "stuck on a command" : "recently active" }));
         stop(Object.assign(
           new Error(`Antigravity's session was still working ${Math.round(quietTimeoutMs / 1000)} s after its turn ended, so the run was stopped.`),
-          { partialText: [current.text.trim(), unfinishedLine(unfinished)].filter(Boolean).join("\n") }
+          { partialText: resultLines(current.text) }
         ));
         throw stopped;
       }
@@ -596,20 +642,13 @@ export function startAcpRun(options) {
         if (retry.trim()) text = retry;
       }
     }
-    const response = text.trim();
-    let resultText = response;
-    if (deniedActions.length) {
-      const denied = formatDeniedActions(deniedActions);
-      resultText = response ? `${response}\nDenied: ${denied}` : `no answer; denied: ${denied}`;
-    }
-    const questions = openCalls(true).flatMap((call) => call.questions ?? [call.title ?? "ask_question"]);
-    if (questions.length) resultText = `${resultText ? `${resultText}\n` : ""}Unanswered questions: ${questions.join("; ")}`;
+    const resultText = resultLines(text);
     if (stopped) throw stopped;
     if (unfinished.length) {
       // Work the session handed to a subagent did not happen: not a plain success.
       return {
         sessionId,
-        resultText: [resultText, unfinishedLine(unfinished)].filter(Boolean).join("\n"),
+        resultText,
         structured,
         status: "end_turn",
         ok: false,

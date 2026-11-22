@@ -148,25 +148,29 @@ async function prompt(id, params) {
   if (script.after) afterTurn(sessionId, script.after);
 }
 
-// What the session does after its turn ended, one step after another, each after its delayMs:
-// { toolCall, id, title, question, questionVia, path } opens a tool call, { chunk, sessionId } adds text (to
-// another session when sessionId is set), { toolDone: id } completes it, { chunk } adds text,
+// What the session does after its turn ended, one step after another, each after its delayMs. A step's
+// sessionId sends its tool call, completion or text as another session's update on the same connection.
+// { toolCall, id, title, question, questionVia, path } opens a tool call, { toolDone: id } completes it,
+// { toolDoneNoId: true } sends a completion without a call id, { chunk } adds text,
 // { permission: true } asks and waits for the answer, { exit } exits, { subagent: id } lists a subagent with a RUNNING
-// record in its transcript under scenario.brain ({ stuck: true }: a run_command model turn instead, { role }),
-// { subagentDone: id } adds its SYSTEM_MESSAGE record.
+// record in its transcript under scenario.brain ({ stuck: true }: a run_command model turn instead; { plain: true }:
+// a model turn that asked for read_file; { role }), { subagentDone: id } adds its SYSTEM_MESSAGE record,
+// { subagentTouch: id } adds another plain model turn.
+const PLAIN_TURN = { type: "PLANNER_RESPONSE", tool_calls: [{ name: "read_file", args: { Path: "a.txt" } }] };
 async function afterTurn(sessionId, steps) {
   for (const step of steps) {
     await new Promise((resolve) => setTimeout(resolve, step.delayMs ?? 0));
     if (step.toolCall !== undefined) {
       // A real ask_question: title "Run ask_question", the question in rawInput (or args) .questions[].question.
       const input = step.question ? { questions: [{ is_multi_select: false, options: ["Red", "Blue"], question: step.question }] } : undefined;
-      update(sessionId, {
+      update(step.sessionId ?? sessionId, {
         sessionUpdate: "tool_call", toolCallId: step.id, name: step.toolCall, title: step.title ?? `Run ${step.toolCall}`, kind: "execute", status: "in_progress",
         ...(input ? { [step.questionVia ?? "rawInput"]: input } : {}),
         ...(step.path ? { rawInput: { Path: step.path } } : {})
       });
     }
-    if (step.toolDone) update(sessionId, { sessionUpdate: "tool_call_update", toolCallId: step.toolDone, status: "completed" });
+    if (step.toolDone) update(step.sessionId ?? sessionId, { sessionUpdate: "tool_call_update", toolCallId: step.toolDone, status: "completed" });
+    if (step.toolDoneNoId) update(sessionId, { sessionUpdate: "tool_call_update", status: "completed" });
     if (step.exit) process.exit(Number(step.exit));
     if (step.chunk) update(step.sessionId ?? sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: step.chunk } });
     if (step.permission) await askPermission(sessionId, { toolCallId: "t2", name: "run_command", title: "echo later" });
@@ -179,8 +183,11 @@ async function afterTurn(sessionId, steps) {
       // stuck: the model asked for run_command and nothing followed (the command was never asked of the client).
       const record = step.stuck
         ? { type: "PLANNER_RESPONSE", tool_calls: [{ name: "run_command", args: { CommandLine: "npm test" } }] }
-        : { type: "TOOL_CALL", status: "RUNNING" };
+        : step.plain ? PLAIN_TURN : { type: "TOOL_CALL", status: "RUNNING" };
       fs.writeFileSync(path.join(logs, "transcript.jsonl"), JSON.stringify(record) + "\n");
+    }
+    if (step.subagentTouch) {
+      fs.appendFileSync(path.join(scenario.brain, step.subagentTouch, ".system_generated", "logs", "transcript.jsonl"), JSON.stringify(PLAIN_TURN) + "\n");
     }
     if (step.subagentDone) {
       fs.appendFileSync(path.join(scenario.brain, step.subagentDone, ".system_generated", "logs", "transcript.jsonl"), JSON.stringify({ type: "SYSTEM_MESSAGE" }) + "\n");

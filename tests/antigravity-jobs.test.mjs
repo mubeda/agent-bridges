@@ -658,6 +658,82 @@ test("subagentStates re-reads a transcript that changed and skips one that preda
   assert.deepEqual(subagentStates(gemini, "S1", 1000, { ...at(), since: Date.now() + 60_000 }), []);
 });
 
+test("another session's tool calls neither hold the wait, add questions, nor close this session's call with the same id", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const after = [
+    { toolCall: "run_command", id: "never", sessionId: "SUB1" },
+    { toolCall: "ask_question", id: "q", question: "Theirs?", sessionId: "SUB1" },
+    { toolCall: "run_command", id: "x" },
+    { toolDone: "x", sessionId: "SUB1" },
+    { delayMs: 600, toolDone: "x" },
+    { chunk: " done" }
+  ];
+  const started = Date.now();
+  const result = run(sandbox, WRITE.concat("go"), { ...scenario({ turns: [{ chunks: ["working"], after }] }), AGENT_BRIDGES_ACP_QUIET_TIMEOUT_MS: "5000" });
+  assert.equal(result.status, 0, result.stdout);
+  assert.ok(Date.now() - started < 5000);
+  assert.equal(result.stdout, "working done\n");
+});
+
+test("another session's forbidden tool call still stops a read-only task", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const result = run(sandbox, ["task", "--wait", "look"], scenario({ turns: [{ chunks: ["SECRET ANSWER"], after: [{ toolCall: "write_file", id: "w", sessionId: "SUB1" }] }] }));
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stdout, /write_file/);
+  assert.doesNotMatch(result.stdout, /SECRET ANSWER/);
+});
+
+test("a completion without a call id closes the one open call, and is reported at once when it matches several", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const env = (after) => ({ ...scenario({ turns: [{ chunks: ["go"], after }] }), AGENT_BRIDGES_ACP_QUIET_TIMEOUT_MS: "5000" });
+  let started = Date.now();
+  const one = run(sandbox, WRITE.concat("go"), env([{ toolCall: "run_command", id: "bg" }, { delayMs: 300, toolDoneNoId: true }, { chunk: " closed" }]));
+  assert.equal(one.status, 0, one.stdout);
+  assert.ok(Date.now() - started < 5000);
+  assert.equal(one.stdout, "go closed\n");
+  started = Date.now();
+  const two = run(sandbox, WRITE.concat("go"), env([{ toolCall: "run_command", id: "a" }, { toolCall: "run_command", id: "b" }, { delayMs: 300, toolDoneNoId: true }]));
+  assert.ok(Date.now() - started < 5000, "waited for the bound");
+  assert.match(two.stdout, /^Unmatched tool updates: 1 completion without a call id could not be matched to one open tool call \(2 open\), so the open calls were not waited for\.$/m);
+});
+
+test("on the wait's bound, a subagent that is only recently active is named as such", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const brain = path.join(sandbox.dir, ".gemini", "antigravity-cli", "brain");
+  const after = [{ subagent: "sub1", role: "explorer", plain: true }, ...Array.from({ length: 10 }, () => ({ delayMs: 200, subagentTouch: "sub1" }))];
+  const result = run(sandbox, WRITE.concat("go"), { ...scenario({ brain, turns: [{ chunks: ["asked"], after }] }), AGENT_BRIDGES_ACP_SETTLE_MS: "600", AGENT_BRIDGES_ACP_QUIET_TIMEOUT_MS: "1000" });
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stdout, /^Unfinished subagents: explorer \(sub1\): recently active$/m);
+  assert.deepEqual(lastJob(sandbox).unfinishedSubagents, [{ id: "sub1", role: "explorer", reason: "recently active" }]);
+});
+
+test("on the wait's bound the result keeps its Unanswered questions and Denied lines", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const bound = { AGENT_BRIDGES_ACP_QUIET_TIMEOUT_MS: "1000" };
+  const write = run(sandbox, WRITE.concat("go"), { ...scenario({ turns: [{ chunks: ["partial"], after: [{ toolCall: "ask_question", id: "q", question: "Which?" }, { toolCall: "run_command", id: "bg" }] }] }), ...bound });
+  assert.equal(write.status, 1, write.stdout);
+  assert.match(write.stdout, /^partial\nUnanswered questions: Which\?$/m);
+  const inside = path.join(sandbox.repo, "f0.txt");
+  const readOnly = run(sandbox, ["task", "--wait", "look"], { ...scenario({ turns: [{ chunks: ["partial"], after: [{ permission: true }, { toolCall: "read_file", id: "r", path: inside }] }] }), ...bound });
+  assert.equal(readOnly.status, 1, readOnly.stdout);
+  assert.match(readOnly.stdout, /^partial\nDenied: run_command \(echo later\)$/m);
+});
+
+test("subagentStates does not parse a transcript still changing within the settle time, unless asked to diagnose", (t) => {
+  const gemini = fs.mkdtempSync(path.join(os.tmpdir(), "agy-brain-"));
+  t.after(() => fs.rmSync(gemini, { recursive: true, force: true }));
+  const brain = path.join(gemini, "antigravity-cli", "brain");
+  fs.mkdirSync(path.join(brain, "S1", ".system_generated", "subagents"), { recursive: true });
+  fs.writeFileSync(path.join(brain, "S1", ".system_generated", "subagents", "sub1.json"), JSON.stringify({ conversationId: "sub1" }));
+  const logs = path.join(brain, "sub1", ".system_generated", "logs");
+  fs.mkdirSync(logs, { recursive: true });
+  const transcript = path.join(logs, "transcript.jsonl");
+  fs.writeFileSync(transcript, `${JSON.stringify({ type: "TOOL_CALL", status: "RUNNING" })}\n`);
+  const now = fs.statSync(transcript).mtimeMs + 10;
+  assert.deepEqual(subagentStates(gemini, "S1", 1000, { now }), [{ id: "sub1", role: null, busy: true, running: false, stuck: false, recent: true }]);
+  assert.deepEqual(subagentStates(gemini, "S1", 1000, { now, diagnose: true }), [{ id: "sub1", role: null, busy: true, running: true, stuck: false, recent: true }]);
+});
+
 test("a pending ask_question does not keep the task open and its question is named in the result", { skip: POSIX_ONLY }, (t) => {
   const sandbox = makeSandbox(t);
   for (const [step, named] of [
