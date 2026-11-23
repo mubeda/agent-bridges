@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.6 — 2026-11-23
+
+### Fixed
+- **A job whose worker died is shown as `unresolved`, not left running.** When a queued or running job's recorded worker process is gone (signal 0 gives `ESRCH`, or on Linux `/proc` shows a zombie), `status`, `status --wait`, `status --all` and `result` show it as `unresolved`, with the worker's and agy's pids and what to check. The state is computed for the output and never stored: these commands only read, and write neither the job file nor `state.json`. Nothing is signalled or removed, and no restart is advised. A worker that was alive after all shows its real state on the next read. Before it shows `unresolved`, the record is read again, and only a job still active with the same worker pid is shown that way. The plain-text `status` and `status --all` listings print the pids and what to check under each such job. `status --wait` returns at once on `unresolved`, and `result` exits with the reason. `cancel` is unchanged. A reused pid makes a dead worker look alive; the skills' 10-wait rule reports such a job as stuck. ([#23](https://github.com/mubeda/agent-bridges/issues/23))
+- **A job record that is missing, cannot be read or is not a job record** (for example `null`) is shown by `status` from its index entry with a note that names the job and the problem but none of the file's content, for finished jobs too; `status --all` lists the other jobs, `status --wait` returns with the note, and `result` stops with it. A read never creates a state folder or changes its mode.
+- **`--json` output leaves out a job's stored request** (the prompt, included files or a packed transcript, kept for its worker), and a task's summary is neutral until it has a result, also for index entries written by 0.2.5. Every write of `state.json` drops the request from all its entries, the old ones included.
+- **A relative `PLUGIN_DATA` reaches a background worker as an absolute path**, so the worker, which runs in the workspace, keeps its state where the launch meant it.
+- **Job files and `state.json` are written atomically** (a temporary file in the same folder, renamed into place).
+
+### Changed
+- The skills report an `unresolved` job instead of polling it, and the delegate skill never relaunches a chunk that `status` reports as `unresolved`; it escalates instead.
+
 ## 0.2.5 — 2026-11-23
 
 ### Added

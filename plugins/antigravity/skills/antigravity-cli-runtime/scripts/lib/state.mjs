@@ -109,7 +109,8 @@ function removeFileIfExists(filePath) {
 export function saveState(cwd, state) {
   const previousJobs = loadState(cwd).jobs;
   ensureStateDir(cwd);
-  const nextJobs = pruneJobs(state.jobs ?? []);
+  // The index never keeps a job's request, also not one a 0.2.5 entry still holds: it stays in the job file only.
+  const nextJobs = pruneJobs(state.jobs ?? []).map(({ request: _request, ...entry }) => entry);
   const nextState = {
     version: STATE_VERSION,
     config: {
@@ -128,7 +129,7 @@ export function saveState(cwd, state) {
     removeFileIfExists(job.logFile);
   }
 
-  fs.writeFileSync(resolveStateFile(cwd), `${JSON.stringify(nextState, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  writeFileAtomic(resolveStateFile(cwd), `${JSON.stringify(nextState, null, 2)}\n`);
   return nextState;
 }
 
@@ -180,10 +181,22 @@ export function getConfig(cwd) {
   return loadState(cwd).config;
 }
 
+/** A temporary file in the same folder, renamed into place: a reader sees the old record or the new one, never half. */
+function writeFileAtomic(file, text) {
+  const temp = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`);
+  try {
+    fs.writeFileSync(temp, text, { encoding: "utf8", mode: 0o600 });
+    fs.renameSync(temp, file);
+  } catch (error) {
+    fs.rmSync(temp, { force: true });
+    throw error;
+  }
+}
+
 export function writeJobFile(cwd, jobId, payload) {
   ensureStateDir(cwd);
   const jobFile = resolveJobFile(cwd, jobId);
-  fs.writeFileSync(jobFile, `${JSON.stringify(payload, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  writeFileAtomic(jobFile, `${JSON.stringify(payload, null, 2)}\n`);
   return jobFile;
 }
 

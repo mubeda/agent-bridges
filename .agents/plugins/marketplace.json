@@ -1,6 +1,6 @@
 {
   "name": "agent-bridges",
-  "version": "0.4.9",
+  "version": "0.4.10",
   "interface": { "displayName": "Agent Bridges" },
   "plugins": [
     {
