@@ -70,9 +70,10 @@ Reload the window. OpenCode and Gemini commands come from their `commands/` fold
 ```bash
 agy plugin install https://github.com/mubeda/agent-bridges/tree/main/plugins/claude
 agy plugin install https://github.com/mubeda/agent-bridges/tree/main/plugins/cursor
+agy plugin install https://github.com/mubeda/agent-bridges/tree/main/plugins/antigravity
 ```
 
-The `claude` and `cursor` bridges are Antigravity plugins. `opencode` and `gemini` are not yet: their rescue agent names a model that Antigravity's loader rejects ([#9](https://github.com/mubeda/agent-bridges/issues/9)). The `antigravity` bridge is not installed inside Antigravity: it is for the other hosts. There the skills find the companion in the `<plugin>-cli-runtime` skill that comes with the plugin. `transfer` cannot send an Antigravity session: it reads only Claude Code, Codex and Cursor transcripts, so pass one with `--source <path>`. The rescue agent names the tool `Bash`, which Antigravity does not have, so Antigravity cannot start it (`tool "Bash" not found in registry`); use the `<plugin>-rescue` skill there.
+The `claude`, `cursor` and `antigravity` bridges are Antigravity plugins. `opencode` and `gemini` are not yet: their rescue agent names a model that Antigravity's loader rejects ([#9](https://github.com/mubeda/agent-bridges/issues/9)). Inside Antigravity, the `antigravity` bridge starts a separate session of the same client (a second ACP session, on the model the caller names), for example a Gemini review for a session on another provider's model; its skills start every call with `--background`, then wait with `status <job-id> --wait` and read `result <job-id>`, because a call left in the foreground can be cut off when the outer session ends. There the skills find the companion in the `<plugin>-cli-runtime` skill that comes with the plugin. `transfer` cannot send an Antigravity session: it reads only Claude Code, Codex and Cursor transcripts, so pass one with `--source <path>`. The rescue agent names the tool `Bash`, which Antigravity does not have, so Antigravity cannot start it (`tool "Bash" not found in registry`); use the `<plugin>-rescue` skill there.
 
 ## OpenCode
 

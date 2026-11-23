@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { CATALOG_NAME, validateMarketplaceRepo } from "../scripts/lib/catalogs.mjs";
+import { ANTIGRAVITY_PLUGIN_NAMES, CATALOG_NAME, validateMarketplaceRepo } from "../scripts/lib/catalogs.mjs";
 
 function createFixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridges-catalog-"));
@@ -20,7 +20,7 @@ function createFixture() {
 function writePluginManifests(write, names) {
   for (const name of names) {
     write(`plugins/${name}/.claude-plugin/plugin.json`, { name, version: "1.0.0" });
-    if (name === "claude" || name === "cursor") write(`plugins/${name}/.antigravity-plugin/plugin.json`, { name, version: "1.0.0" });
+    if (ANTIGRAVITY_PLUGIN_NAMES.includes(name)) write(`plugins/${name}/.antigravity-plugin/plugin.json`, { name, version: "1.0.0" });
     write(`plugins/${name}/.codex-plugin/plugin.json`, { name, skills: "./skills/" });
     write(`plugins/${name}/.cursor-plugin/plugin.json`, { name });
   }
@@ -368,13 +368,29 @@ test("an Antigravity manifest on a bridge that is not an Antigravity plugin fail
   assert.ok(result.errors.some((e) => e.includes("plugins/opencode/.antigravity-plugin") && e.includes("not expected")), result.errors.join("; "));
 });
 
+test("the claude, cursor and antigravity bridges are Antigravity plugins", () => {
+  assert.deepEqual(ANTIGRAVITY_PLUGIN_NAMES, ["claude", "cursor", "antigravity"]);
+});
+
 test("a missing Antigravity manifest fails and names the plugin", () => {
+  for (const name of ANTIGRAVITY_PLUGIN_NAMES) {
+    const fixture = validFiveFixture();
+    fixture.save();
+    fs.rmSync(path.join(fixture.root, `plugins/${name}/.antigravity-plugin`), { recursive: true });
+    const result = validateMarketplaceRepo(fixture.root);
+    assert.equal(result.ok, false, name);
+    assert.ok(result.errors.some((e) => e.includes("missing") && e.includes(`plugins/${name}/.antigravity-plugin`)), result.errors.join("; "));
+  }
+});
+
+test("the antigravity bridge's Antigravity manifest with another version fails", () => {
   const fixture = validFiveFixture();
   fixture.save();
-  fs.rmSync(path.join(fixture.root, "plugins/cursor/.antigravity-plugin"), { recursive: true });
+  const file = path.join(fixture.root, "plugins/antigravity/.antigravity-plugin/plugin.json");
+  fs.writeFileSync(file, JSON.stringify({ name: "antigravity", version: "9.9.9" }));
   const result = validateMarketplaceRepo(fixture.root);
   assert.equal(result.ok, false);
-  assert.ok(result.errors.some((e) => e.includes("missing") && e.includes("plugins/cursor/.antigravity-plugin")), result.errors.join("; "));
+  assert.ok(result.errors.some((e) => e.includes("plugins/antigravity/.antigravity-plugin") && e.includes("9.9.9")), result.errors.join("; "));
 });
 
 test("cursor marketplace without antigravity fails and names it", () => {

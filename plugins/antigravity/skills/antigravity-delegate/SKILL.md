@@ -148,6 +148,8 @@ utility (stock macOS has no `timeout`). Read `job.status` from the JSON:
 `completed`, `failed`, or `cancelled` means the chunk finished; anything
 else means the 10 minutes lapsed.
 
+In Antigravity, the chunks run in separate sessions of the same client (a second Antigravity session over ACP each, on the model you name with `--model`). Launch them only with `--background` as above, never in the foreground: the session's shell moves a long command to the background, and a call left in the foreground can be cut off when the outer session ends. Do not finish while a chunk is `queued`, `running` or `cancelling`, and read each finished chunk with `result <job-id>` before you review it. Give `status` and `result` the same `--cwd <dir>` (or `-C <dir>`) the launch had, if it had one, or the job is not found. When a chunk's poll has returned a state other than `completed`, `failed` or `cancelled` 10 times in a row, stop polling it and do not fetch its result: report its job id to the user as stuck, or, when that state is `cancelling`, as a cancellation that was interrupted; do not relaunch it.
+
 Every time a poll returns — chunk finished or the 10 minutes lapsed — run
 one **health pass** over ALL in-flight chunks, then re-arm a capped poll
 for each chunk still running. Re-arm only while any chunk is queued or

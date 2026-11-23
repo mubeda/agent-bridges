@@ -468,7 +468,7 @@ async function runAcpJob(job, request) {
       onSpawn: (agyPid) => {
         save({ agyPid });
         // Test hook: simulates a failed bookkeeping write after spawn.
-        if (process.env.AGENT_BRIDGES_TEST_THROW_ON_SPAWN) throw new Error("test hook: recording the agy pid failed");
+        if (process.env.AGENT_BRIDGES_TEST_THROW_ON_SPAWN) throw new Error(`test hook: recording the agy pid ${agyPid} failed`);
       },
       isCancelled,
       onSignal: (signal) => {
