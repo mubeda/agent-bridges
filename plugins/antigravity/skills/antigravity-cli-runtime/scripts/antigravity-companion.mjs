@@ -67,8 +67,9 @@ function printUsage() {
 }
 
 function normalizeArgv(argv) {
-  // A lone `--option=value` argument is one option whose value may hold spaces (`--include=docs/task plan.txt`), not a raw string to split.
-  if (argv.length === 1 && /^--[^=\s]+=/.test(argv[0])) return argv;
+  // A lone `--include=value` is one option whose path may hold spaces (`--include=docs/task plan.txt`). Any other
+  // lone argument is a raw string (`/antigravity:review --base=main --background`) and is split.
+  if (argv.length === 1 && argv[0].startsWith("--include=")) return argv;
   return argv.length === 1 && argv[0]?.trim() ? splitRawArgumentString(argv[0]) : argv;
 }
 
@@ -600,6 +601,8 @@ async function handleReviewCommand(argv, { reviewName }) {
   // --focus-stdin: the focus arrives on stdin, so it never sits in this process's argv.
   const focusText = (options["focus-stdin"] ? readStdinIfPiped() : positionals.join(" ")).trim();
   if (reviewName === "Review" && focusText) throw new Error("`review` does not accept focus text. Use `adversarial-review`.");
+  // Before the evidence is collected or a job is written: a state folder inside the workspace would hold copies of it.
+  readerBaseDir(cwd);
   const context = collectReviewContext(cwd, target);
   ensureAgyAvailable(cwd);
   const workspaceRoot = resolveWorkspaceRoot(cwd);
@@ -749,6 +752,9 @@ async function handleTask(argv) {
   }
   if (!prompt && !resumeLatest && !resumeJob) throw new Error("Provide a prompt, prompt file, piped stdin, or use --resume-last or --resume-job.");
   const effectivePrompt = prompt || "Continue the previous task.";
+  // A read-only run's state folder must be outside the workspace; checked before anything is read or written, so a
+  // job file with the prompt (and copies of the included files) never lands in the worktree.
+  if (!options.write) readerBaseDir(cwd);
   // Checked and read before agy is looked for and before any job exists: a refused file starts nothing.
   const included = includes.length ? buildIncludedPrompt(effectivePrompt, resolveIncludes(cwd, workspaceRoot, includes)) : null;
   ensureAgyAvailable(cwd);
@@ -898,6 +904,8 @@ async function handleTransfer(argv) {
   validateEffort(options.effort);
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveWorkspaceRoot(cwd);
+  // As for a task: a read-only run's job (with the transcript in its prompt) is never written inside the workspace.
+  if (!options.write) readerBaseDir(cwd);
   const source = resolveTransferSource(cwd, { source: options.source });
   const prompt = buildHandoffPrompt(packTranscript(capTranscriptMessages(parseTranscriptJsonl(source.path))));
   ensureAgyAvailable(cwd);

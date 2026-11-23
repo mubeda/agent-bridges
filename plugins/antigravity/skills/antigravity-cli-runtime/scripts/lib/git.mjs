@@ -521,8 +521,9 @@ function openedRealPath(fd, real, platform) {
   if (platform === "linux") return fs.readlinkSync(`/proc/self/fd/${fd}`);
   // Accepted window (see the ACP transport note): a folder swapped between this realpath and the open goes unseen; only a hostile local process could do it, and it already has the user's file access.
   const now = fs.realpathSync.native(real);
-  const opened = fs.fstatSync(fd);
-  const named = fs.statSync(now);
+  // BigInt: an inode past 2^53 would round to another file's as a Number.
+  const opened = fs.fstatSync(fd, { bigint: true });
+  const named = fs.statSync(now, { bigint: true });
   if (opened.dev !== named.dev || opened.ino !== named.ino) throw Object.assign(new Error("changed while it was opened"), { code: "ECHANGED" });
   return now;
 }

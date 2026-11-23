@@ -855,3 +855,47 @@ test("an unnamed later record is judged by its first non-empty path, so an empty
   }
 });
 
+test("a state folder inside the workspace is refused before any job or prompt is written, in the foreground and in the background", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  fs.writeFileSync(path.join(sandbox.repo, "notes.txt"), "NOTES-TEXT\n");
+  const data = path.join(sandbox.repo, "data");
+  for (const args of [
+    ["task", "--background", "--include", "notes.txt", "look"],
+    ["task", "--wait", "--include", "notes.txt", "look"],
+    ["task", "--background", "look"],
+    ["review", "--background"],
+    ["review", "--wait"],
+    ["transfer", "--background", "--source", path.join(sandbox.dir, "missing.jsonl")]
+  ]) {
+    const result = run(sandbox, args, { PLUGIN_DATA: data });
+    assert.equal(result.status, 1, `${args.join(" ")}: ${result.stdout}`);
+    assert.match(result.stderr + result.stdout, /inside the workspace/, args.join(" "));
+    assert.equal(fs.existsSync(data), false, `${args.join(" ")} wrote ${data}`);
+  }
+  assert.deepEqual(sessions(sandbox), []);
+});
+
+test("a lone raw argument string is split, except a lone --include=value", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  // `/antigravity:review --scope=working-tree --json` arrives as one raw string: it is two options.
+  const review = run(sandbox, ["review", "--scope=working-tree --json"]);
+  assert.equal(review.status, 0, review.stdout + review.stderr);
+  assert.equal(JSON.parse(review.stdout).job.status, "completed");
+  const task = run(sandbox, ["task", "--model=gemini-3.8-flash-medium --json"], {}, { input: "look" });
+  assert.equal(task.status, 0, task.stdout + task.stderr);
+  assert.equal(JSON.parse(task.stdout).job.status, "completed");
+});
+
+test("outside Linux the opened include is matched by device and inode as BigInt, so inodes past 2^53 are told apart", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const root = fs.realpathSync.native(sandbox.repo);
+  // Two inodes that are equal once rounded to a Number.
+  const big = 2n ** 60n;
+  const fake = (ino) => (fd, options) => (options?.bigint ? { dev: 1n, ino, isFile: () => true } : { dev: 1, ino: Number(ino), isFile: () => true });
+  const { fstatSync, statSync } = fs;
+  fs.fstatSync = fake(big + 1n);
+  fs.statSync = fake(big);
+  t.after(() => Object.assign(fs, { fstatSync, statSync }));
+  assert.throws(() => collectIncludedFiles([{ name: "f0.txt", real: path.join(root, "f0.txt") }], { root, platform: "darwin" }), /could not be confirmed inside the workspace/);
+});
+
