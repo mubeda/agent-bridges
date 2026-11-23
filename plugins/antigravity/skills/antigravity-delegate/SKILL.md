@@ -148,7 +148,7 @@ utility (stock macOS has no `timeout`). Read `job.status` from the JSON:
 `completed`, `failed`, or `cancelled` means the chunk finished; anything
 else means the 10 minutes lapsed.
 
-In Antigravity, the chunks run in separate sessions of the same client (a second Antigravity session over ACP each, on the model you name with `--model`). Launch them only with `--background` as above, never in the foreground: the session's shell moves a long command to the background, and a call left in the foreground can be cut off when the outer session ends. Do not finish while a chunk is `queued`, `running` or `cancelling`, and read each finished chunk with `result <job-id>` before you review it. Give `status` and `result` the same `--cwd <dir>` (or `-C <dir>`) the launch had, if it had one, or the job is not found. When a chunk's job is `unresolved` (its worker is gone, and its agy or the commands agy started may still run), never relaunch it: stop polling it and escalate to the user with the job id and the reason `status` gives. When a chunk's poll has returned a state other than `completed`, `failed` or `cancelled` 10 times in a row, stop polling it and do not fetch its result: report its job id to the user as stuck, or, when that state is `cancelling`, as a cancellation that was interrupted; do not relaunch it.
+In Antigravity, the chunks run in separate sessions of the same client (a second Antigravity session over ACP each, on the model you name with `--model`). Launch them only with `--background` as above, never in the foreground: the session's shell moves a long command to the background, and a call left in the foreground can be cut off when the outer session ends. Do not finish while a chunk is `queued`, `running` or `cancelling`, and read each finished chunk with `result <job-id>` before you review it. Give `status` and `result` the same `--cwd <dir>` (or `-C <dir>`) the launch had, if it had one, or the job is not found. When `status` reports a chunk's job as `unresolved` (its worker is gone, and its agy or the commands agy started may still run), never relaunch it: stop polling it and escalate to the user with the job id and the reason `status` gives. When a chunk's poll has returned a state other than `completed`, `failed` or `cancelled` 10 times in a row, stop polling it and do not fetch its result: report its job id to the user as stuck, or, when that state is `cancelling`, as a cancellation that was interrupted; do not relaunch it.
 
 Every time a poll returns — chunk finished or the 10 minutes lapsed — run
 one **health pass** over ALL in-flight chunks, then re-arm a capped poll
@@ -179,7 +179,7 @@ running; the loop ends when every chunk is committed or escalated.
      and confirm `status <job-id>` reports `cancelled` before
      relaunching — two implementers must never edit the same owned
      files at once.
-   - A chunk whose job is `unresolved` is not dead: never relaunch it;
+   - A chunk that `status` reports as `unresolved` is not dead: never relaunch it;
      escalate to the user with the job id and the reason `status` gives.
    - A **dead** restart is environmental — it does NOT count against the
      re-feed budget.

@@ -29,15 +29,7 @@ function describe(job) {
   return `The companion process that ran this job (pid ${job.pid}) is no longer running, and the job recorded no result. ${agy} Check whether these processes still run and end them if they belong to this job. The bridge did not stop or remove anything.`;
 }
 
-/**
- * Writes the unresolved report only over the very record that was read: reread() is called right before the write, and
- * any change (the worker recorded its end state or a handle, a cancel started) skips it. The worker's later writes
- * always win, because they merge onto whatever is stored.
- */
-export function markUnresolvedIfUnchanged(read, reread, write) {
-  const current = reread();
-  if (!current || JSON.stringify(current) !== JSON.stringify(read)) return null;
-  const marked = { ...current, status: "unresolved", phase: "unresolved", errorMessage: describe(current) };
-  write(marked);
-  return marked;
+/** The job as status and result show it when its worker is gone: computed for the output, never stored. */
+export function unresolvedView(job) {
+  return { ...job, status: "unresolved", phase: "unresolved", errorMessage: describe(job) };
 }

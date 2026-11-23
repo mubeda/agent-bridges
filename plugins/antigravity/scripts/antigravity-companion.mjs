@@ -25,7 +25,7 @@ import {
   resolveAgySpawnCommand,
   validateEffort
 } from "./lib/agy.mjs";
-import { markUnresolvedIfUnchanged, workerGone } from "./lib/dead-worker.mjs";
+import { unresolvedView, workerGone } from "./lib/dead-worker.mjs";
 import { buildDetachedWorkerOptions, mergeSpawnedPid } from "./lib/detach.mjs";
 import { isWithin, readStdinIfPiped } from "./lib/fs.mjs";
 import { collectIncludedFiles, collectReviewContext, ensureGitRepository, formatIncomplete, resolveReviewTarget } from "./lib/git.mjs";
@@ -131,30 +131,31 @@ function sleep(ms) {
 
 /** cancelling: a cancel whose teardown has not finished yet; a second cancel retries it. */
 function isActive(job) {
-  return job.status === "queued" || job.status === "running" || job.status === "cancelling" || job.status === "unresolved";
-}
-
-/** Destructive and result paths read the job file strictly: an unreadable record stops them with the error. */
-function readJobStrict(workspaceRoot, jobId) {
-  const jobFile = resolveJobFile(workspaceRoot, jobId);
-  if (!fs.existsSync(jobFile)) return null;
-  try {
-    return readJobFile(jobFile);
-  } catch (error) {
-    throw new Error(`Job ${jobId}'s record could not be read (${error.message}); it was left as it is.`);
-  }
+  return job.status === "queued" || job.status === "running" || job.status === "cancelling";
 }
 
 /**
- * status and result only report: a queued or running job whose recorded worker is gone becomes unresolved, with its
- * pids and what to check. Nothing is signalled, removed, or called safe to start again.
+ * The job as status and result show it, read only: nothing here writes the job file or state.json. The job file wins
+ * over the index entry. A missing or unreadable file is shown with a note that names no content. A queued or running
+ * job whose recorded worker is not alive is shown as unresolved, with its pids and what to check: computed for this
+ * output, never stored, so a worker that was alive after all shows its real state on the next read.
  */
-function reportDeadWorker(workspaceRoot, indexed) {
-  if (!isActive(indexed)) return indexed;
-  const stored = readJobStrict(workspaceRoot, indexed.id) ?? indexed;
-  if ((stored.status !== "queued" && stored.status !== "running") || !workerGone(stored.pid)) return stored;
-  return markUnresolvedIfUnchanged(stored, () => readJobStrict(workspaceRoot, indexed.id), (job) => persistJob(workspaceRoot, job))
-    ?? readJobStrict(workspaceRoot, indexed.id) ?? stored;
+function viewJob(workspaceRoot, indexed) {
+  const jobFile = resolveJobFile(workspaceRoot, indexed.id);
+  if (!fs.existsSync(jobFile)) {
+    return { job: indexed, note: `Job ${indexed.id}'s record is missing; the index entry is shown.` };
+  }
+  let stored;
+  try {
+    stored = readJobFile(jobFile);
+  } catch (error) {
+    const why = error instanceof SyntaxError ? "invalid JSON" : `not readable (${error?.code ?? "error"})`;
+    return { job: indexed, note: `Job ${indexed.id}'s record is ${why}; the index entry is shown.` };
+  }
+  if ((stored.status === "queued" || stored.status === "running") && workerGone(stored.pid)) {
+    return { job: unresolvedView(stored), note: null };
+  }
+  return { job: stored, note: null };
 }
 
 /** Created by cancel before it reads or signals anything; no job update can overwrite a file. */
@@ -813,11 +814,11 @@ async function handleTask(argv) {
   if (execution.exitStatus !== 0) process.exitCode = execution.exitStatus;
 }
 
-function buildStatusSnapshot(cwd, all = false) {
+function buildStatusSnapshot(cwd, all = false, listed = null) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const jobs = sortJobs(listJobs(workspaceRoot));
-  const running = jobs.filter(isActive);
-  const finished = jobs.filter((job) => !isActive(job));
+  const jobs = sortJobs(listed ?? listJobs(workspaceRoot));
+  const running = jobs.filter((job) => isActive(job) || job.status === "unresolved");
+  const finished = jobs.filter((job) => !isActive(job) && job.status !== "unresolved");
   return { workspaceRoot, running, latestFinished: finished[0] ?? null, recent: all ? finished.slice(1) : finished.slice(1, 9) };
 }
 
@@ -840,17 +841,16 @@ async function handleStatus(argv) {
   const reference = positionals[0] ?? "";
   if (!reference) {
     if (options.wait) throw new Error("`status --wait` requires a job id.");
+    // Built from the records just read and checked, for display only.
     const workspaceRoot = resolveWorkspaceRoot(cwd);
     const notes = [];
-    for (const job of listJobs(workspaceRoot).filter(isActive)) {
-      try {
-        reportDeadWorker(workspaceRoot, job);
-      } catch (error) {
-        // One job that cannot be read must not hide the others.
-        notes.push(`${job.id}: ${error.message}`);
-      }
-    }
-    const report = { ...buildStatusSnapshot(cwd, options.all), notes };
+    const jobs = listJobs(workspaceRoot).map((indexed) => {
+      if (!isActive(indexed)) return indexed;
+      const view = viewJob(workspaceRoot, indexed);
+      if (view.note) notes.push(view.note);
+      return view.job;
+    });
+    const report = { ...buildStatusSnapshot(cwd, options.all, jobs), notes };
     outputResult(options.json ? report : renderStatusReport(report), options.json);
     return;
   }
@@ -859,18 +859,12 @@ async function handleStatus(argv) {
   const find = () => {
     const found = findJob(cwd, reference);
     if (!found.job) throw new Error(`No job found for "${reference}".`);
-    let job = found.job;
-    let note = null;
-    try {
-      job = reportDeadWorker(found.workspaceRoot, found.job);
-    } catch (error) {
-      note = error.message;
-    }
-    return { workspaceRoot: found.workspaceRoot, job, note };
+    const view = isActive(found.job) ? viewJob(found.workspaceRoot, found.job) : { job: found.job, note: null };
+    return { workspaceRoot: found.workspaceRoot, ...view };
   };
   let selected = find();
-  // unresolved is reported, not polled: nothing will change it but the user's check (or the worker after all).
-  while (options.wait && isActive(selected.job) && selected.job.status !== "unresolved" && Date.now() < deadline) {
+  // unresolved and a record that cannot be read are reported, not polled.
+  while (options.wait && isActive(selected.job) && !selected.note && Date.now() < deadline) {
     await sleep(pollInterval);
     selected = find();
   }
@@ -886,10 +880,12 @@ function handleResult(argv) {
   const { options, positionals } = parseCommandInput(argv, { valueOptions: ["cwd"], booleanOptions: ["json"] });
   const selected = findJob(resolveCommandCwd(options), positionals[0] ?? "");
   if (!selected.job) throw new Error("No Antigravity job found for this repository.");
-  selected.job = reportDeadWorker(selected.workspaceRoot, selected.job);
+  const view = viewJob(selected.workspaceRoot, selected.job);
+  if (view.note) throw new Error(view.note);
+  selected.job = view.job;
   if (selected.job.status === "unresolved") throw new Error(`Job ${selected.job.id} is unresolved. ${selected.job.errorMessage}`);
   if (isActive(selected.job)) throw new Error(`Job ${selected.job.id} is still ${selected.job.status}.`);
-  const storedJob = readJobStrict(selected.workspaceRoot, selected.job.id);
+  const storedJob = selected.job;
   const stored = storedJob?.rendered ?? storedJob?.result?.rawOutput ?? null;
   const error = selected.job.status === "failed" ? (storedJob?.errorMessage ?? selected.job.errorMessage ?? null) : null;
   const rendered = error && !String(stored ?? "").includes(error)
@@ -929,11 +925,9 @@ async function handleCancel(argv) {
   if (!selected.job) throw new Error("No active Antigravity job found.");
   const { workspaceRoot } = selected;
   const id = selected.job.id;
-  // Read first: an unreadable record stops the cancel with the read error and is left as it is.
-  const record = readJobStrict(workspaceRoot, id);
   // The marker comes first: from here on no worker, finishing run or signal handler can undo the cancellation.
   fs.writeFileSync(cancelMarkerFile(workspaceRoot, id), `${nowIso()}\n`, { mode: 0o600 });
-  const stored = { ...selected.job, ...(record ?? {}) };
+  const stored = { ...selected.job, ...(readStoredJob(workspaceRoot, id) ?? {}) };
   // cancelling keeps the handles, so an interrupted teardown can be retried by another cancel.
   persistJob(workspaceRoot, { ...stored, status: "cancelling", phase: "cancelling", errorMessage: "Cancelled by user." });
   // End the agy tree first: it no longer shares the companion's process group.

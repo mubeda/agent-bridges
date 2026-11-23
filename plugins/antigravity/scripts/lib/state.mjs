@@ -109,7 +109,8 @@ function removeFileIfExists(filePath) {
 export function saveState(cwd, state) {
   const previousJobs = loadState(cwd).jobs;
   ensureStateDir(cwd);
-  const nextJobs = pruneJobs(state.jobs ?? []);
+  // The index never keeps a job's request, also not one a 0.2.5 entry still holds: it stays in the job file only.
+  const nextJobs = pruneJobs(state.jobs ?? []).map(({ request: _request, ...entry }) => entry);
   const nextState = {
     version: STATE_VERSION,
     config: {
@@ -148,11 +149,10 @@ export function upsertJob(cwd, jobPatch) {
     const timestamp = nowIso();
     const existingIndex = state.jobs.findIndex((job) => job.id === jobPatch.id);
     if (existingIndex === -1) {
-      const { request: _request, ...entry } = jobPatch;
       state.jobs.unshift({
         createdAt: timestamp,
         updatedAt: timestamp,
-        ...entry
+        ...jobPatch
       });
       return;
     }
@@ -161,8 +161,6 @@ export function upsertJob(cwd, jobPatch) {
       ...jobPatch,
       updatedAt: timestamp
     };
-    // The index never keeps a job's request, also one a 0.2.5 entry still holds: it stays in the job file only.
-    delete state.jobs[existingIndex].request;
   });
 }
 
