@@ -13,7 +13,7 @@ export const REQUIRED_CATALOG_FILES = [
 export const CLAUDE_HOST_PLUGIN_NAMES = ["opencode", "gemini", "cursor", "antigravity"];
 export const CODEX_OPENCODE_PLUGIN_NAMES = ["opencode", "gemini", "claude", "cursor", "antigravity"];
 export const CURSOR_HOST_PLUGIN_NAMES = ["opencode", "gemini", "claude", "antigravity"];
-export const ANTIGRAVITY_PLUGIN_NAMES = ["claude", "cursor"];
+export const ANTIGRAVITY_PLUGIN_NAMES = ["claude", "cursor", "antigravity"];
 export const PLUGIN_TREES = ["opencode", "gemini", "claude", "cursor", "antigravity"];
 
 function displayPath(filePath) {

@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { formatDeniedActions } from "../plugins/antigravity/scripts/lib/agy.mjs";
 import { QUIET_SETTLE_MS, TOKEN_PROMPT, finishAgyRun, startAcpRun, subagentBusy, subagentStates } from "../plugins/antigravity/scripts/lib/acp.mjs";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 import {
   COMPANION,
@@ -968,6 +968,25 @@ test("a relative PLUGIN_DATA with --cwd elsewhere gives agy an absolute reader f
   const addDir = session.argv[session.argv.indexOf("--add-dir") + 1];
   assert.ok(path.isAbsolute(addDir), addDir);
   assert.ok(addDir.startsWith(path.join(sandbox.dir, "rel-data")), addDir);
+});
+
+test("a companion loaded from a workspace's .agents/plugins keeps its state outside the workspace", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  // An Antigravity workspace install: the plugin copied into <workspace>/.agents/plugins/antigravity.
+  const copy = path.join(sandbox.repo, ".agents/plugins/antigravity");
+  for (const dir of ["scripts", "prompts", "schemas"]) fs.cpSync(path.join(root, "plugins/antigravity", dir), path.join(copy, dir), { recursive: true });
+  const companion = path.join(copy, "scripts/antigravity-companion.mjs");
+  const env = companionEnv(sandbox, { PLUGIN_DATA: undefined, CLAUDE_PLUGIN_DATA: path.join(sandbox.repo, "claude-data") });
+  const runCopy = (args) => spawnSync(process.execPath, [companion, ...args], { cwd: sandbox.repo, env, encoding: "utf8" });
+  const task = runCopy(["task", "--wait", "--json", "look"]);
+  assert.equal(task.status, 0, task.stdout + task.stderr);
+  const stateRoot = path.join(sandbox.dir, ".antigravity-companion", "state");
+  const [workspace] = fs.readdirSync(stateRoot);
+  assert.equal(fs.readdirSync(path.join(stateRoot, workspace, "jobs")).length > 0, true);
+  assert.deepEqual(fs.readdirSync(sandbox.repo).sort(), [".agents", ".git", "f0.txt"]);
+  assert.deepEqual(fs.readdirSync(path.join(sandbox.repo, ".agents/plugins/antigravity")).sort(), ["prompts", "schemas", "scripts"]);
+  const status = runCopy(["status", "--all", "--json"]);
+  assert.equal(JSON.parse(status.stdout).latestFinished.status, "completed", status.stdout);
 });
 
 function pidAlive(pid) {

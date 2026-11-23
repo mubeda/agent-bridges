@@ -41,5 +41,7 @@ node "<plugin-root>/scripts/antigravity-companion.mjs" task <flags> <<'TASK_TEXT
 TASK_TEXT
 ```
 
+In Antigravity, this bridge starts a separate session of the same client: a second Antigravity session over ACP, on the model the caller names with `--model` (Antigravity's default otherwise), for example a Gemini review asked for by a session on another provider's model. Start every call with `--background`, never `--wait`, even when the user asked for it: the session's shell moves a long command to the background, and a call left in the foreground can be cut off when the outer session ends. Then run `node "<plugin-root>/scripts/antigravity-companion.mjs" status <job-id> --wait` until the job is `completed`, `failed` or `cancelled` (run it again when it returns with the job still `queued` or `running`), then `node "<plugin-root>/scripts/antigravity-companion.mjs" result <job-id>`, and return that output verbatim. `task` still runs once; this is the one exception to the rules above against polling `status` and fetching `result`, and to returning the stdout of `task`. Do not finish before you have read the result.
+
 If the command fails or Antigravity cannot be invoked, return the companion's error output verbatim and tell the user to run the `antigravity-setup` skill.
 

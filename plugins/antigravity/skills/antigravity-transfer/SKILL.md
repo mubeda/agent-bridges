@@ -20,6 +20,8 @@ Transfer source rules:
 - Do not invent transcript paths. If auto-detect fails, return the companion error and tell the user to retry with `--source`.
 - Default to `--background`; pass `--wait` through when the user requests it.
 
+In Antigravity, do not transfer the current session: the companion reads only Claude Code, Codex and Cursor transcripts (`.jsonl`) and would otherwise pick an older conversation of another host. Transfer there only when the user gives the path of such a transcript, with `--source <path>`. this bridge starts a separate session of the same client: a second Antigravity session over ACP, on the model the caller names with `--model` (Antigravity's default otherwise), for example a Gemini review asked for by a session on another provider's model. Start every call with `--background`, never `--wait`, even when the user asked for it: the session's shell moves a long command to the background, and a call left in the foreground can be cut off when the outer session ends. Then run `node "<plugin-root>/scripts/antigravity-companion.mjs" status <job-id> --wait` until the job is `completed`, `failed` or `cancelled` (run it again when it returns with the job still `queued` or `running`), then `node "<plugin-root>/scripts/antigravity-companion.mjs" result <job-id>`, and return that output verbatim. Do not finish before you have read the result.
+
 User arguments (hosts that support it substitute them here; otherwise take them from the user's request): `$ARGUMENTS`
 
 Run and return stdout verbatim. Pass each flag and its value as a separate shell argument:

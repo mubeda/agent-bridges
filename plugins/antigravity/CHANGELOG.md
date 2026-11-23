@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.5 — 2026-11-23
+
+### Added
+- **The bridge is an Antigravity plugin too.** It ships `.antigravity-plugin/plugin.json`, so `agy plugin install` and a workspace's `.agents/plugins/antigravity` copy load its skills and companion. Inside Antigravity it starts a separate session of the same client (a second ACP session, on the model the caller names). The review, adversarial review, rescue, transfer and delegate skills say that there every call starts with `--background`, is waited for with `status <job-id> --wait` and read with `result <job-id>`, and the session does not finish before it has read the result: the session's shell moves a long command to the background, and a call left in the foreground was cut off when the outer session ended. `transfer` there sends only a transcript given with `--source`. The rescue agent loads but cannot start in Antigravity (it names `Bash`); use the `antigravity-rescue` skill there. A companion loaded from the workspace keeps its state under `~/.antigravity-companion/state`, outside the workspace (new test). ([#13](https://github.com/mubeda/agent-bridges/issues/13))
+
 ## 0.2.4 — 2026-11-23
 
 ### Fixed
