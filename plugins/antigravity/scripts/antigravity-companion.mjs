@@ -67,6 +67,8 @@ function printUsage() {
 }
 
 function normalizeArgv(argv) {
+  // A lone `--option=value` argument is one option whose value may hold spaces (`--include=docs/task plan.txt`), not a raw string to split.
+  if (argv.length === 1 && /^--[^=\s]+=/.test(argv[0])) return argv;
   return argv.length === 1 && argv[0]?.trim() ? splitRawArgumentString(argv[0]) : argv;
 }
 

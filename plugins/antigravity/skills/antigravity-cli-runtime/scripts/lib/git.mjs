@@ -519,6 +519,7 @@ export function collectReviewContext(cwd, target, options = {}) {
  */
 function openedRealPath(fd, real, platform) {
   if (platform === "linux") return fs.readlinkSync(`/proc/self/fd/${fd}`);
+  // Accepted window (see the ACP transport note): a folder swapped between this realpath and the open goes unseen; only a hostile local process could do it, and it already has the user's file access.
   const now = fs.realpathSync.native(real);
   const opened = fs.fstatSync(fd);
   const named = fs.statSync(now);
@@ -546,7 +547,8 @@ export function collectIncludedFiles(files, options = {}) {
     let read;
     try {
       // O_NOFOLLOW: a swap of the checked file for a link before this open cannot redirect the read.
-      const fd = fs.openSync(real, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+      // O_NONBLOCK: a FIFO swapped in after the check must not block the open; fstat below rejects it.
+      const fd = fs.openSync(real, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | (fs.constants.O_NONBLOCK ?? 0));
       try {
         let opened;
         try {

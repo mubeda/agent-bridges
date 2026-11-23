@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { EFFORT_LEVELS, validateEffort } from "../plugins/antigravity/scripts/lib/agy.mjs";
-import { CLIENT_INFO, buildAcpArgs, createLineReader } from "../plugins/antigravity/scripts/lib/acp.mjs";
+import { CLIENT_INFO, buildAcpArgs, createLineReader, startAcpRun } from "../plugins/antigravity/scripts/lib/acp.mjs";
 import { parseArgs } from "../plugins/antigravity/scripts/lib/args.mjs";
 import { isWithin } from "../plugins/antigravity/scripts/lib/fs.mjs";
 import { collectIncludedFiles } from "../plugins/antigravity/scripts/lib/git.mjs";
@@ -790,5 +791,67 @@ test("a failed task that shows a partial answer also shows its Incomplete task l
   assert.match(result.stdout, /^Antigravity run failed: /m);
   assert.match(result.stdout, /PARTIAL/);
   assert.match(result.stdout, /^Incomplete task: some files were not shown .*bin\.dat/m);
+});
+
+test("a FIFO swapped in for an include does not block the open and is not read", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const root = fs.realpathSync.native(sandbox.repo);
+  const fifo = path.join(root, "pipe.txt");
+  assert.equal(spawnSync("mkfifo", [fifo]).status, 0);
+  // In a child process: a blocked synchronous open would hang this test runner past any timeout.
+  const gitLib = new URL("../plugins/antigravity/scripts/lib/git.mjs", import.meta.url).href;
+  const code = `import(${JSON.stringify(gitLib)}).then((m) => console.log(JSON.stringify(m.collectIncludedFiles([{ name: "pipe.txt", real: ${JSON.stringify(fifo)} }], { root: ${JSON.stringify(root)} }))))`;
+  const result = spawnSync(process.execPath, ["-e", code], { encoding: "utf8", timeout: 5000 });
+  assert.equal(result.error, undefined, "the open blocked");
+  assert.equal(result.status, 0, result.stderr);
+  const collected = JSON.parse(result.stdout);
+  assert.deepEqual(collected.skipped, ["pipe.txt"]);
+  assert.match(collected.content, /### pipe\.txt\n\(skipped: /);
+});
+
+test("a single inline --include=value argument with a space is kept whole, with the prompt on stdin", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  fs.mkdirSync(path.join(sandbox.repo, "docs"));
+  fs.writeFileSync(path.join(sandbox.repo, "docs", "task plan.txt"), "SPACED-PLAN\n");
+  const result = run(sandbox, ["task", "--include=docs/task plan.txt"], {}, { input: "check the plan" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const prompt = promptTexts(sessions(sandbox)[0])[1];
+  assert.match(prompt, /^check the plan/);
+  assert.match(prompt, /### docs\/task plan\.txt\n```\nSPACED-PLAN\n```/);
+});
+
+test("an unnamed later record is judged by its first non-empty path, so an empty one cannot hide another", async () => {
+  const token = "tok";
+  for (const update of [
+    { rawInput: { Path: "" }, locations: [{ path: "/outside/secret.txt" }] },
+    { rawInput: { Path: "" }, args: { Path: "/outside/secret.txt" } },
+    { args: { Path: "" }, locations: [{ path: "/outside/secret.txt" }] }
+  ]) {
+    let acp;
+    const reply = (message) => setImmediate(() => acp.handle(message));
+    acp = startAcpRun({
+      cwd: process.cwd(),
+      prompt: "look",
+      readOnly: true,
+      token,
+      quietSettleMs: 50,
+      geminiDir: path.join(os.tmpdir(), "agy-no-gemini"),
+      write(line) {
+        const message = JSON.parse(line);
+        if (message.method === "initialize") reply({ id: message.id, result: { agentCapabilities: {} } });
+        else if (message.method === "session/new") reply({ id: message.id, result: { sessionId: "S1" } });
+        else if (message.method === "session/prompt" && message.params.prompt[0].text === TOKEN_PROMPT) {
+          reply({ method: "session/update", params: { sessionId: "S1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: token } } } });
+          reply({ id: message.id, result: { stopReason: "end_turn" } });
+        } else if (message.method === "session/prompt") {
+          reply({ method: "session/update", params: { sessionId: "S1", update: { sessionUpdate: "tool_call_update", status: "completed", ...update } } });
+          reply({ id: message.id, result: { stopReason: "end_turn" } });
+        }
+      }
+    });
+    const parsed = await acp.result;
+    assert.equal(parsed.ok, false, JSON.stringify(update));
+    assert.match(parsed.error, /\/outside\/secret\.txt/, JSON.stringify(update));
+  }
 });
 

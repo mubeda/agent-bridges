@@ -491,8 +491,8 @@ export function startAcpRun(options) {
 
   /** The path a read record reports: rawInput.Path, then args.Path, then the first location. */
   function readPath(update) {
-    const candidate = update.rawInput?.Path ?? update.args?.Path ?? update.locations?.[0]?.path;
-    return typeof candidate === "string" && candidate ? candidate : null;
+    // The first non-empty one: an empty field must not hide a path in another.
+    return [update.rawInput?.Path, update.args?.Path, update.locations?.[0]?.path].find(isText) ?? null;
   }
 
   const readerMissing = () =>
