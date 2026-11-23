@@ -939,10 +939,11 @@ test("a bookkeeping failure after spawn fails the run and ends agy", { skip: POS
   const sandbox = makeSandbox(t);
   const result = run(sandbox, WRITE.concat("go"), { AGENT_BRIDGES_TEST_THROW_ON_SPAWN: "1" });
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /test hook/);
-  const [session] = sessions(sandbox);
-  assert.deepEqual(promptTexts(session), []);
-  assert.throws(() => process.kill(session.pid, 0));
+  // agy can be ended before it logs its start, so its pid comes from the companion, not from agy's log.
+  const agyPid = Number(result.stderr.match(/test hook: recording the agy pid (\d+) failed/)?.[1]);
+  assert.ok(agyPid > 0, result.stderr);
+  assert.equal(sessions(sandbox).flatMap((session) => requests(session, "session/prompt")).length, 0);
+  assert.throws(() => process.kill(agyPid, 0));
   assert.equal(jobStatus(sandbox, lastJob(sandbox).id).status, "failed");
 });
 

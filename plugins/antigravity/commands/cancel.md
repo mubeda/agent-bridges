@@ -3,7 +3,7 @@ name: cancel
 description: Cancel an active background Antigravity job in this repository
 argument-hint: '[job-id]'
 disable-model-invocation: true
-allowed-tools: Bash(node:*)
+allowed-tools: Bash(cd:*), Bash(node:*)
 ---
 
 Resolve `<plugin-root>` as the first directory that contains `scripts/antigravity-companion.mjs`:
@@ -15,9 +15,11 @@ Resolve `<plugin-root>` as the first directory that contains `scripts/antigravit
 
 If none exist, stop and print those paths. Do not invent a companion elsewhere.
 
+Run the companion from its own folder and name the workspace with `--cwd`, as below: `<workspace>` is the absolute path of the folder this session works in. Never start `node` with the workspace as the shell's current folder: on Windows the shell looks there for `node.exe` before PATH, so one checked into the workspace would run as the user.
+
 Then run:
 
 ```bash
-node "<plugin-root>/scripts/antigravity-companion.mjs" cancel "$ARGUMENTS"
+cd "<plugin-root>" && node scripts/antigravity-companion.mjs cancel --cwd "<workspace>" "$ARGUMENTS"
 ```
 

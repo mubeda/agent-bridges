@@ -18,8 +18,10 @@ Resolve `<plugin-root>` as the first directory that contains `scripts/antigravit
 
 If none exist, stop and print those paths, and say that an `npx skills` install also needs `antigravity-cli-runtime`. Do not invent a companion elsewhere.
 
+Run the companion from its own folder and name the workspace with `--cwd`, as below: `<workspace>` is the absolute path of the folder this session works in. Never start `node` with the workspace as the shell's current folder: on Windows the shell looks there for `node.exe` before PATH, so one checked into the workspace would run as the user.
+
 Primary helper:
-- `node "<plugin-root>/scripts/antigravity-companion.mjs" task <flags> <<'TASK_TEXT'`, then the task text, then a line `TASK_TEXT`: the task text goes on stdin, never as an argument, because arguments are visible to other local users.
+- `cd "<plugin-root>" && node scripts/antigravity-companion.mjs task --cwd "<workspace>" <flags> <<'TASK_TEXT'`, then the task text, then a line `TASK_TEXT`: the task text goes on stdin, never as an argument, because arguments are visible to other local users.
 
 How the companion reaches Antigravity: it starts `agy acp` (Antigravity's ACP server) and speaks the Agent Client Protocol over its stdin and stdout. Prompts travel on that channel, never as arguments. Only the Google sign-in cached by `agy` is supported, not API keys. A read-only run uses a restricted reader agent with no tools: a review answers only from the evidence in its prompt, and a task without `--write` only from its prompt and the files named with `--include`.
 

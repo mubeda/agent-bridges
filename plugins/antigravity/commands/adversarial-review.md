@@ -55,12 +55,14 @@ Resolve `<plugin-root>` as the first directory that contains `scripts/antigravit
 
 If none exist, stop and print those paths. Do not invent a companion elsewhere.
 
+Run the companion from its own folder and name the workspace with `--cwd`, as below: `<workspace>` is the absolute path of the folder this session works in. Never start `node` with the workspace as the shell's current folder: on Windows the shell looks there for `node.exe` before PATH, so one checked into the workspace would run as the user.
+
 Pass each flag from the arguments as its own shell argument (`<flags>`), and send any free-form focus text on stdin as shown, never as an argument. Without focus text, drop `--focus-stdin` and the heredoc.
 
 Foreground flow:
 - Run:
 ```bash
-node "<plugin-root>/scripts/antigravity-companion.mjs" adversarial-review <flags> --focus-stdin <<'FOCUS_TEXT'
+cd "<plugin-root>" && node scripts/antigravity-companion.mjs adversarial-review --cwd "<workspace>" <flags> --focus-stdin <<'FOCUS_TEXT'
 <focus text>
 FOCUS_TEXT
 ```
@@ -71,7 +73,7 @@ FOCUS_TEXT
 Background flow:
 - If `--background` is present, run the companion normally and include all of the user's flags:
 ```bash
-node "<plugin-root>/scripts/antigravity-companion.mjs" adversarial-review <flags> --focus-stdin <<'FOCUS_TEXT'
+cd "<plugin-root>" && node scripts/antigravity-companion.mjs adversarial-review --cwd "<workspace>" <flags> --focus-stdin <<'FOCUS_TEXT'
 <focus text>
 FOCUS_TEXT
 ```

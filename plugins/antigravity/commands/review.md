@@ -50,10 +50,12 @@ Resolve `<plugin-root>` as the first directory that contains `scripts/antigravit
 
 If none exist, stop and print those paths. Do not invent a companion elsewhere.
 
+Run the companion from its own folder and name the workspace with `--cwd`, as below: `<workspace>` is the absolute path of the folder this session works in. Never start `node` with the workspace as the shell's current folder: on Windows the shell looks there for `node.exe` before PATH, so one checked into the workspace would run as the user.
+
 Foreground flow:
 - Run:
 ```bash
-node "<plugin-root>/scripts/antigravity-companion.mjs" review "$ARGUMENTS"
+cd "<plugin-root>" && node scripts/antigravity-companion.mjs review --cwd "<workspace>" "$ARGUMENTS"
 ```
 - Return the command stdout verbatim, exactly as-is.
 - Do not paraphrase, summarize, or add commentary before or after it.
@@ -62,7 +64,7 @@ node "<plugin-root>/scripts/antigravity-companion.mjs" review "$ARGUMENTS"
 Background flow:
 - If `--background` is present, run the companion normally and include all of the user's flags:
 ```bash
-node "<plugin-root>/scripts/antigravity-companion.mjs" review "$ARGUMENTS"
+cd "<plugin-root>" && node scripts/antigravity-companion.mjs review --cwd "<workspace>" "$ARGUMENTS"
 ```
 - The companion detaches the review itself. Do not wait for completion in this turn.
 - After launching the command, tell the user: "Antigravity review started in the background. Check `/antigravity:status` for progress."

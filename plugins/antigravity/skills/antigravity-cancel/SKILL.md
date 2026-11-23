@@ -14,11 +14,13 @@ Resolve `<plugin-root>` as the first directory that contains `scripts/antigravit
 
 If none exist, stop and print those paths, and say that an `npx skills` install also needs `antigravity-cli-runtime`. Do not invent a companion elsewhere.
 
+Run the companion from its own folder and name the workspace with `--cwd`, as below: `<workspace>` is the absolute path of the folder this session works in. Never start `node` with the workspace as the shell's current folder: on Windows the shell looks there for `node.exe` before PATH, so one checked into the workspace would run as the user.
+
 User arguments (hosts that support it substitute them here; otherwise take them from the user's request): `$ARGUMENTS`
 
 Run and return stdout verbatim. Pass each flag and its value as a separate shell argument:
 
 ```bash
-node "<plugin-root>/scripts/antigravity-companion.mjs" cancel <arguments>
+cd "<plugin-root>" && node scripts/antigravity-companion.mjs cancel --cwd "<workspace>" <arguments>
 ```
 

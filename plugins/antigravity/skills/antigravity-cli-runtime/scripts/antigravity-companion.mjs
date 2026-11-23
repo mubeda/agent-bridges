@@ -67,6 +67,8 @@ function printUsage() {
 }
 
 function normalizeArgv(argv) {
+  // Commands run from the plugin folder as `... <command> --cwd "<workspace>" "$ARGUMENTS"`: the raw string after it is split too.
+  if (argv.length === 3 && (argv[0] === "--cwd" || argv[0] === "-C")) return [argv[0], argv[1], ...normalizeArgv([argv[2]])];
   // A lone `--include=value` is one option whose path may hold spaces (`--include=docs/task plan.txt`). Any other
   // lone argument is a raw string (`/antigravity:review --base=main --background`) and is split.
   if (argv.length === 1 && argv[0].startsWith("--include=")) return argv;
@@ -468,7 +470,7 @@ async function runAcpJob(job, request) {
       onSpawn: (agyPid) => {
         save({ agyPid });
         // Test hook: simulates a failed bookkeeping write after spawn.
-        if (process.env.AGENT_BRIDGES_TEST_THROW_ON_SPAWN) throw new Error("test hook: recording the agy pid failed");
+        if (process.env.AGENT_BRIDGES_TEST_THROW_ON_SPAWN) throw new Error(`test hook: recording the agy pid ${agyPid} failed`);
       },
       isCancelled,
       onSignal: (signal) => {

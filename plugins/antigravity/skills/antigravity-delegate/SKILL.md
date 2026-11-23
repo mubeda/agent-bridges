@@ -23,6 +23,8 @@ Resolve `<plugin-root>` as the first directory that contains `scripts/antigravit
 
 If none exist, stop and print those paths, and say that an `npx skills` install also needs `antigravity-cli-runtime`. Do not invent a companion elsewhere.
 
+Run the companion from its own folder and name the workspace with `--cwd`, as below: `<repo>` is the absolute path of the repository. Never start `node` with the workspace as the shell's current folder: on Windows the shell looks there for `node.exe` before PATH, so one checked into the workspace would run as the user.
+
 Every Antigravity run goes through the companion's `task`, `status`, and `result`
 subcommands; never invoke the backend CLI directly.
 
@@ -84,7 +86,7 @@ Protected paths (beyond defaults): <list>
 ### 2. Launch each chunk as a fresh background job
 
 ```bash
-cd <repo> && node "<plugin-root>/scripts/antigravity-companion.mjs" task --background --fresh --write --bypass-permissions <<'CHUNK_PROMPT'
+cd "<plugin-root>" && node scripts/antigravity-companion.mjs task --cwd "<repo>" --background --fresh --write --bypass-permissions <<'CHUNK_PROMPT'
 <chunk prompt>
 CHUNK_PROMPT
 ```
@@ -94,8 +96,8 @@ CHUNK_PROMPT
   produces no edits. `--fresh` keeps every chunk on its own thread: the companion can
   only resume the latest thread in a workspace, so with parallel chunks in
   flight a resume may target the wrong one.
-- `cd <repo>` matters: the companion keys its job state to the working
-  directory.
+- `--cwd "<repo>"` matters: the companion keys its job state to that
+  folder, so every later `status`, `result` and `cancel` names it too.
 - Launch independent chunks together so they run concurrently.
 - If the companion or the Antigravity CLI (`agy`) is missing or not signed in, stop
   and tell the user to run setup (`/antigravity:setup` or the `antigravity-setup`
@@ -140,7 +142,7 @@ otherwise between other steps — and **cap every poll at 10 minutes** so it
 returns on completion OR on timeout; the timeout is the health-loop tick:
 
 ```bash
-node "<plugin-root>/scripts/antigravity-companion.mjs" status <job-id> --wait --timeout-ms 600000 --json
+cd "<plugin-root>" && node scripts/antigravity-companion.mjs status --cwd "<repo>" <job-id> --wait --timeout-ms 600000 --json
 ```
 
 The companion does the waiting, so the poll needs no `timeout` or `sleep`
@@ -158,7 +160,7 @@ running; the loop ends when every chunk is committed or escalated.
 **Health pass** (also run once right after launching the first chunk):
 
 1. For every in-flight chunk, run
-   `node "<plugin-root>/scripts/antigravity-companion.mjs" status <job-id> --json`
+   `cd "<plugin-root>" && node scripts/antigravity-companion.mjs status --cwd "<repo>" <job-id> --json`
    and pull any new output.
 2. Snapshot `git status --short` and diff it against the previous tick's
    snapshot (keep snapshots next to the docket).
@@ -175,7 +177,7 @@ running; the loop ends when every chunk is committed or escalated.
    job whose prompt states the worktree may already contain partial edits
    from the prior attempt and exactly what remains:
    - A **blocked** chunk is still running: stop it first with
-     `node "<plugin-root>/scripts/antigravity-companion.mjs" cancel <job-id>`
+     `cd "<plugin-root>" && node scripts/antigravity-companion.mjs cancel --cwd "<repo>" <job-id>`
      and confirm `status <job-id>` reports `cancelled` before
      relaunching — two implementers must never edit the same owned
      files at once.
@@ -199,7 +201,7 @@ touched vs. owned, elapsed time, attempt count), never a guessed
 percentage.
 
 When a chunk finishes, pull the report with
-`node "<plugin-root>/scripts/antigravity-companion.mjs" result <job-id>` and move
+`cd "<plugin-root>" && node scripts/antigravity-companion.mjs result --cwd "<repo>" <job-id>` and move
 it to review.
 
 ### 4. Review every chunk — mandatory checklist
