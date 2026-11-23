@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.4 — 2026-11-23
+
+### Fixed
+- **A subagent's transcript is read incrementally, with bounded memory.** The wait for a quiet session used to read a changed transcript whole and parse every record, on the event loop that answers permission requests and cancellation, so a long transcript could stall teardown or exhaust the heap. Each check now reads only the bytes appended since the last one, in 64 KiB chunks, carrying an unfinished last line over, and keeps only the counters the diagnosis needs. A transcript that shrank or was replaced is read again from the start. A record over 1 MiB is not parsed: it changes no count, counts as a record after a model turn (so it never makes a subagent stuck by itself) and is noted in the reason on the `Unfinished subagents:` line. A check that catches up on a large transcript still runs to its end in one go, so the first check of a very long one can hold the event loop briefly (about 0.4 s for 50 MB here). ([#18](https://github.com/mubeda/agent-bridges/issues/18))
+
 ## 0.2.3 — 2026-11-23
 
 ### Security

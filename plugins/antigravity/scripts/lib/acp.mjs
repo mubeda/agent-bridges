@@ -20,7 +20,7 @@ const READER_PLUGIN = "agent-bridges-reader";
 export const READER_MARKER = ".agent-bridges-reader";
 export const NO_RESUME_WARNING =
   "This Antigravity version cannot continue sessions (its ACP server offers no session/resume); this started a new session.";
-export const CLIENT_INFO = { name: "agent-bridges-antigravity", version: "0.2.3" };
+export const CLIENT_INFO = { name: "agent-bridges-antigravity", version: "0.2.4" };
 /** A task's session goes on after its turn ends: it is done once nothing changed for this long. */
 // A thinking model was seen silent for 17 s before its turn ended.
 export const QUIET_SETTLE_MS = 30_000;
@@ -236,7 +236,7 @@ function safeId(value) {
 }
 
 /**
- * The subagents this run's session started, read only (never written), each { id, role, busy, running, stuck, recent }:
+ * The subagents this run's session started, read only (never written), each { id, role, busy, running, stuck, recent, tooLarge }:
  * - running: a background command is still open. RUNNING tool records are counted against the SYSTEM_MESSAGE
  *   records after them, because the transcript does not say which command a SYSTEM_MESSAGE ends.
  * - stuck: the latest record is a model turn with run_command in its tool_calls and nothing followed (in the
@@ -244,6 +244,9 @@ function safeId(value) {
  * - recent: the transcript changed within settleMs. Such a transcript is busy by that alone and is not parsed
  *   (running and stuck stay false) unless `diagnose` asks for the reasons at the wait's bound.
  * - busy: running, or recent.
+ * - tooLarge: a record over MAX_RECORD_BYTES was skipped; it does not change the open count, and it ends
+ *   stuck like any later record does, so running may miss a RUNNING record it held.
+ * A transcript is read incrementally (see readTranscript), so memory stays bounded however long it grows.
  * Missing folders and unreadable files are skipped, and so is a transcript last changed before `since` (this
  * run's start): a resumed session lists earlier runs' subagents, which may have been cut off.
  */
@@ -278,40 +281,99 @@ export function subagentStates(geminiDir, sessionId, settleMs, { now = Date.now(
     if (mtime < since) return [];
     const recent = now - mtime < settleMs;
     // Still changing: busy by its mtime alone, so it is parsed only for the diagnostics at the wait's bound.
-    if (recent && !diagnose) return [{ id, role, busy: true, running: false, stuck: false, recent }];
-    // An unchanged transcript (same mtime and size) is not read and parsed again.
+    if (recent && !diagnose) return [{ id, role, busy: true, running: false, stuck: false, recent, tooLarge: false }];
+    // An unchanged transcript (same mtime and size) is not read again; a changed one is read from where the last read ended.
     let parsed = cache?.get(file);
     if (!parsed || parsed.mtime !== mtime || parsed.size !== stat.size) {
-      let transcript;
       try {
-        transcript = fs.readFileSync(file, "utf8");
+        parsed = readTranscript(file, stat, parsed);
       } catch {
         return [];
       }
-      parsed = { mtime, size: stat.size, open: 0, last: null };
-      for (const line of transcript.split("\n")) {
-        let record;
-        try {
-          record = JSON.parse(line);
-        } catch {
-          continue;
-        }
-        if (!isObject(record)) continue;
-        parsed.last = record;
-        if (record.type === "SYSTEM_MESSAGE") parsed.open = Math.max(0, parsed.open - 1);
-        else if (record.status === "RUNNING") parsed.open += 1;
-      }
       cache?.set(file, parsed);
     }
-    const { open, last } = parsed;
+    // A whole record at the end without its newline counts, as it would in a whole-file parse, but is not kept.
+    const { open, lastRunCommand } = parsed.partial.length && !parsed.skipping ? foldRecord({ ...parsed }, parsed.partial.toString("utf8")) : parsed;
     const running = open > 0;
-    const stuck = !running && Array.isArray(last?.tool_calls) && last.tool_calls.some((call) => call?.name === "run_command");
-    return [{ id, role, busy: running || recent, running, stuck, recent }];
+    const stuck = !running && lastRunCommand;
+    return [{ id, role, busy: running || recent, running, stuck, recent, tooLarge: parsed.tooLarge }];
   });
+}
+
+/** Transcripts are read in chunks of this size, so one read never holds more. */
+const TRANSCRIPT_CHUNK_BYTES = 64 * 1024;
+/** A transcript record longer than this is skipped (its counters unchanged) and noted, never parsed. */
+export const MAX_RECORD_BYTES = 1024 * 1024;
+
+/** Folds one transcript line into the counters; a line that is not a JSON object changes nothing. */
+function foldRecord(state, text) {
+  let record;
+  try {
+    record = JSON.parse(text);
+  } catch {
+    return state;
+  }
+  if (!isObject(record)) return state;
+  state.lastRunCommand = Array.isArray(record.tool_calls) && record.tool_calls.some((call) => call?.name === "run_command");
+  if (record.type === "SYSTEM_MESSAGE") state.open = Math.max(0, state.open - 1);
+  else if (record.status === "RUNNING") state.open += 1;
+  return state;
+}
+
+/**
+ * Reads the bytes appended since `previous` ended, chunk by chunk, keeping only the counters, the latest
+ * record's run_command flag and the unfinished last line (at most MAX_RECORD_BYTES). A file that shrank or was
+ * replaced (another inode) is read from 0.
+ */
+function readTranscript(file, stat, previous) {
+  const fd = fs.openSync(file, "r");
+  try {
+    // The identity of the file actually opened, as BigInts so no platform's inode loses precision.
+    const { ino, dev } = fs.fstatSync(fd, { bigint: true });
+    const again = previous && stat.size >= previous.offset && ino === previous.ino && dev === previous.dev;
+    const state = again
+      ? { ...previous }
+      : { ino, dev, offset: 0, partial: Buffer.alloc(0), skipping: false, open: 0, lastRunCommand: false, tooLarge: false };
+    const chunk = Buffer.allocUnsafe(TRANSCRIPT_CHUNK_BYTES);
+    while (state.offset < stat.size) {
+      const read = fs.readSync(fd, chunk, 0, Math.min(chunk.length, stat.size - state.offset), state.offset);
+      if (!read) break;
+      state.offset += read;
+      let start = 0;
+      for (let end = chunk.indexOf(10, start); end !== -1 && end < read; end = chunk.indexOf(10, start)) {
+        const piece = chunk.subarray(start, end);
+        start = end + 1;
+        if (state.skipping) state.skipping = false;
+        else if (state.partial.length + piece.length > MAX_RECORD_BYTES) skipRecord(state);
+        else foldRecord(state, (state.partial.length ? Buffer.concat([state.partial, piece]) : piece).toString("utf8"));
+        state.partial = Buffer.alloc(0);
+      }
+      if (start < read && !state.skipping) {
+        state.partial = Buffer.concat([state.partial, chunk.subarray(start, read)]);
+        if (state.partial.length > MAX_RECORD_BYTES) Object.assign(skipRecord(state), { partial: Buffer.alloc(0), skipping: true });
+      }
+    }
+    return Object.assign(state, { mtime: stat.mtimeMs, size: stat.size });
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * An over-long record is noted and not parsed. The open count stays as it was; the latest record is no longer a
+ * model turn asking for run_command, since something followed it, so a skip alone never makes a subagent stuck.
+ */
+function skipRecord(state) {
+  return Object.assign(state, { tooLarge: true, lastRunCommand: false });
 }
 
 export function subagentBusy(geminiDir, sessionId, settleMs, options) {
   return subagentStates(geminiDir, sessionId, settleMs, options).some((state) => state.busy);
+}
+
+/** One `unfinished` entry; the reason notes a skipped over-long record, which may have hidden the real state. */
+function unfinishedEntry({ id, role, tooLarge }, reason) {
+  return { id, role, reason: tooLarge ? `${reason} (a transcript record over ${MAX_RECORD_BYTES / 1024 / 1024} MiB was skipped)` : reason };
 }
 
 /** The `Unfinished subagents:` line, or "" when every subagent finished. */
@@ -581,7 +643,7 @@ export function startAcpRun(options) {
       if (!openCalls(false).length && now - lastUpdate >= settleMs) {
         const states = subagentStates(geminiDir, sessionId, settleMs, options);
         if (!states.some((state) => state.busy)) {
-          unfinished = states.filter((state) => state.stuck).map(({ id, role }) => ({ id, role, reason: "stuck on a command" }));
+          unfinished = states.filter((state) => state.stuck).map((state) => unfinishedEntry(state, "stuck on a command"));
           return;
         }
       }
@@ -589,7 +651,7 @@ export function startAcpRun(options) {
         // The diagnostics read every transcript of this run, the ones still changing too.
         unfinished = subagentStates(geminiDir, sessionId, settleMs, { ...options, diagnose: true })
           .filter((state) => state.running || state.stuck || state.recent)
-          .map(({ id, role, running, stuck }) => ({ id, role, reason: running ? "still running" : stuck ? "stuck on a command" : "recently active" }));
+          .map((state) => unfinishedEntry(state, state.running ? "still running" : state.stuck ? "stuck on a command" : "recently active"));
         stop(Object.assign(
           new Error(`Antigravity's session was still working ${Math.round(quietTimeoutMs / 1000)} s after its turn ended, so the run was stopped.`),
           { partialText: resultLines(current.text) }

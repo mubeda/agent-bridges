@@ -621,6 +621,18 @@ test("a subagent stuck on a command it never ran is named, and the task is not a
   assert.deepEqual(job.unfinishedSubagents, [{ id: "sub1", role: "implementer", reason: "stuck on a command" }]);
 });
 
+test("an over-long transcript record is noted in the reason and never makes a subagent stuck by itself", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const brain = path.join(sandbox.dir, ".gemini", "antigravity-cli", "brain");
+  const env = (after) => ({ ...scenario({ brain, turns: [{ chunks: ["asked"], after }] }), AGENT_BRIDGES_ACP_QUIET_TIMEOUT_MS: "1500" });
+  const stuckThenHuge = run(sandbox, WRITE.concat("go"), env([{ subagent: "sub1", role: "implementer", stuck: true }, { subagentHuge: "sub1" }]));
+  assert.equal(stuckThenHuge.status, 0, stuckThenHuge.stdout);
+  assert.equal(stuckThenHuge.stdout, "asked\n");
+  const running = run(sandbox, WRITE.concat("go"), env([{ subagent: "sub2", role: "tester" }, { subagentHuge: "sub2" }]));
+  assert.equal(running.status, 1, running.stdout);
+  assert.match(running.stdout, /^Unfinished subagents: tester \(sub2\): still running \(a transcript record over 1 MiB was skipped\)$/m);
+});
+
 test("a subagent still running when the wait's bound hits is named", { skip: POSIX_ONLY }, (t) => {
   const sandbox = makeSandbox(t);
   const brain = path.join(sandbox.dir, ".gemini", "antigravity-cli", "brain");
@@ -756,8 +768,8 @@ test("subagentStates does not parse a transcript still changing within the settl
   const transcript = path.join(logs, "transcript.jsonl");
   fs.writeFileSync(transcript, `${JSON.stringify({ type: "TOOL_CALL", status: "RUNNING" })}\n`);
   const now = fs.statSync(transcript).mtimeMs + 10;
-  assert.deepEqual(subagentStates(gemini, "S1", 1000, { now }), [{ id: "sub1", role: null, busy: true, running: false, stuck: false, recent: true }]);
-  assert.deepEqual(subagentStates(gemini, "S1", 1000, { now, diagnose: true }), [{ id: "sub1", role: null, busy: true, running: true, stuck: false, recent: true }]);
+  assert.deepEqual(subagentStates(gemini, "S1", 1000, { now }), [{ id: "sub1", role: null, busy: true, running: false, stuck: false, recent: true, tooLarge: false }]);
+  assert.deepEqual(subagentStates(gemini, "S1", 1000, { now, diagnose: true }), [{ id: "sub1", role: null, busy: true, running: true, stuck: false, recent: true, tooLarge: false }]);
 });
 
 test("the wait's bound ends agy's whole process group, even after agy itself exited", { skip: POSIX_ONLY }, (t) => {

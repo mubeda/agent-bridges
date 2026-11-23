@@ -157,7 +157,7 @@ async function prompt(id, params) {
 // { permission: true } asks and waits for the answer, { exit } exits, { subagent: id } lists a subagent with a RUNNING
 // record in its transcript under scenario.brain ({ stuck: true }: a run_command model turn instead; { plain: true }:
 // a model turn that asked for read_file; { role }), { subagentDone: id } adds its SYSTEM_MESSAGE record,
-// { subagentTouch: id } adds another plain model turn. { noId: true } on a toolCall sends it without a call id,
+// { subagentTouch: id } adds another plain model turn, { subagentHuge: id } a record over 1 MiB. { noId: true } on a toolCall sends it without a call id,
 // { toolDoneWithId: value } completes with that exact toolCallId (null, ""), { toolActive: id } reports the call
 // in_progress again, { background: true } starts a long command in agy's process group (pid in FAKE_AGY_PIDFILE).
 const PLAIN_TURN = { type: "PLANNER_RESPONSE", tool_calls: [{ name: "read_file", args: { Path: "a.txt" } }] };
@@ -199,6 +199,9 @@ async function afterTurn(sessionId, steps) {
     }
     if (step.subagentTouch) {
       fs.appendFileSync(path.join(scenario.brain, step.subagentTouch, ".system_generated", "logs", "transcript.jsonl"), JSON.stringify(PLAIN_TURN) + "\n");
+    }
+    if (step.subagentHuge) {
+      fs.appendFileSync(path.join(scenario.brain, step.subagentHuge, ".system_generated", "logs", "transcript.jsonl"), JSON.stringify({ type: "TOOL_RESULT", output: "x".repeat(1024 * 1024) }) + "\n");
     }
     if (step.subagentDone) {
       fs.appendFileSync(path.join(scenario.brain, step.subagentDone, ".system_generated", "logs", "transcript.jsonl"), JSON.stringify({ type: "SYSTEM_MESSAGE" }) + "\n");
