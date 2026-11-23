@@ -27,7 +27,7 @@ import {
 } from "./lib/agy.mjs";
 import { buildDetachedWorkerOptions, mergeSpawnedPid } from "./lib/detach.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
-import { collectReviewContext, ensureGitRepository, formatIncomplete, resolveReviewTarget } from "./lib/git.mjs";
+import { collectIncludedFiles, collectReviewContext, ensureGitRepository, formatIncomplete, resolveReviewTarget } from "./lib/git.mjs";
 import { capTranscriptMessages, packTranscript, parseTranscriptJsonl, resolveTransferSource } from "./lib/host-session.mjs";
 import { binaryAvailable, runCommand, terminateProcessTree } from "./lib/process.mjs";
 import { interpolateTemplate, loadPromptTemplate } from "./lib/prompts.mjs";
@@ -56,7 +56,7 @@ function printUsage() {
       "  node scripts/antigravity-companion.mjs setup [--json]",
       "  node scripts/antigravity-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/antigravity-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
-      "  node scripts/antigravity-companion.mjs task [--wait|--background] [--write] [--resume-last|--resume|--resume-job <job-id>|--fresh] [--model <id>] [prompt]",
+      "  node scripts/antigravity-companion.mjs task [--wait|--background] [--write] [--resume-last|--resume|--resume-job <job-id>|--fresh] [--model <id>] [--include <path>]... [prompt]",
       "  node scripts/antigravity-companion.mjs status [job-id] [--wait] [--all] [--json]",
       "  node scripts/antigravity-companion.mjs result [job-id] [--json]",
       "  node scripts/antigravity-companion.mjs cancel [job-id] [--json]",
@@ -310,7 +310,7 @@ async function executeAcpRun(request, hooks = {}) {
   for (const signal of FORWARDED_SIGNALS) process.on(signal, forward);
   try {
     if (readOnly) {
-      reader = writeReaderAgent(readerBaseDir(cwd), { canRead: request.review !== true });
+      reader = writeReaderAgent(readerBaseDir(cwd));
       if (hooks.onReader) hooks.onReader(reader.dir);
     }
     const command = resolveAgySpawnCommand();
@@ -324,7 +324,6 @@ async function executeAcpRun(request, hooks = {}) {
         child.stdin.write(line);
       },
       cwd,
-      workspaceRoot: resolveWorkspaceRoot(cwd),
       prompt: request.prompt,
       readOnly,
       token: reader?.token,
@@ -407,6 +406,8 @@ async function executeAcpRun(request, hooks = {}) {
   }
 }
 
+const INCLUDE_NOTICE = { cutLabel: "the included files were cut", rest: "the rest of them was not shown to Antigravity" };
+
 function renderExecution(request, command, parsed, evidence) {
   const lines = [];
   if (parsed.warning) lines.push(`Warning: ${parsed.warning}`, "");
@@ -416,6 +417,7 @@ function renderExecution(request, command, parsed, evidence) {
     return `${lines.join("\n")}\n`;
   }
   if (!request.review) {
+    if (evidence?.incomplete) lines.push(`Incomplete task: ${formatIncomplete(evidence, INCLUDE_NOTICE)}`, "");
     lines.push(parsed.resultText || command.stderr.trim() || "Antigravity did not return a final message.");
     return `${lines.join("\n")}\n`;
   }
@@ -665,9 +667,49 @@ function resolveResumeJob(cwd, reference) {
   return job.agySessionId;
 }
 
+/**
+ * The files a read-only task names with --include, each checked before any session starts: its real path (links
+ * resolved) must be a regular file inside the workspace's real path, by whole path components.
+ */
+function resolveIncludes(cwd, workspaceRoot, includes) {
+  const root = fs.realpathSync.native(workspaceRoot);
+  const seen = new Set();
+  return includes.flatMap((include) => {
+    let real;
+    try {
+      real = fs.realpathSync.native(path.resolve(cwd, include));
+    } catch (error) {
+      throw new Error(`--include ${include} cannot be read (${error.code ?? error.message}), so nothing was run.`);
+    }
+    if (!isInside(real, root)) {
+      throw new Error(`--include ${include} is outside the workspace (${workspaceRoot}): a read-only task sees only files inside it, so nothing was run.`);
+    }
+    if (!fs.statSync(real).isFile()) throw new Error(`--include ${include} is not a regular file, so nothing was run.`);
+    if (seen.has(real)) return [];
+    seen.add(real);
+    return [{ name: path.relative(root, real).split(path.sep).join("/"), real }];
+  });
+}
+
+/** The task prompt with the included files after it, and the evidence record when some were not shown in full. */
+function buildIncludedPrompt(prompt, files) {
+  const included = collectIncludedFiles(files);
+  const cut = included.truncated ? ` The files are larger than ${included.maxBytes} bytes, so they were cut; say in your answer that the rest was not shown.` : "";
+  const text = [
+    prompt,
+    `You have no tools in this task: you cannot read files, list folders, search or run commands. Answer only from this prompt and the files below.${cut}`,
+    included.content
+  ].join("\n\n");
+  const evidence = included.truncated || included.skipped.length
+    ? { incomplete: true, truncated: included.truncated, maxBytes: included.maxBytes, filesNotShown: included.notShown, filesPartlyShown: included.partlyShown, filesSkipped: included.skipped }
+    : null;
+  return { text, evidence };
+}
+
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["model", "effort", "cwd", "prompt-file", "resume-job"],
+    arrayOptions: ["include"],
     booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background", "wait"],
     aliasMap: { m: "model" }
   });
@@ -678,6 +720,10 @@ async function handleTask(argv) {
   const resumeJob = options["resume-job"];
   if ([resumeLatest, Boolean(resumeJob), Boolean(options.fresh)].filter(Boolean).length > 1) {
     throw new Error("Choose one of --resume-job, --resume/--resume-last or --fresh.");
+  }
+  const includes = options.include ?? [];
+  if (includes.length && options.write) {
+    throw new Error("--include is for a read-only task, which cannot open files itself. A task with --write reads files on its own: name them in the prompt.");
   }
   if (resumeJob && !options.write) {
     throw new Error("--resume-job continues a write session: add --write --bypass-permissions, or start a new read-only task without it.");
@@ -697,6 +743,8 @@ async function handleTask(argv) {
   }
   if (!prompt && !resumeLatest && !resumeJob) throw new Error("Provide a prompt, prompt file, piped stdin, or use --resume-last or --resume-job.");
   const effectivePrompt = prompt || "Continue the previous task.";
+  // Checked and read before agy is looked for and before any job exists: a refused file starts nothing.
+  const included = includes.length ? buildIncludedPrompt(effectivePrompt, resolveIncludes(cwd, workspaceRoot, includes)) : null;
   ensureAgyAvailable(cwd);
   const job = createCompanionJob({
     prefix: "task",
@@ -707,7 +755,9 @@ async function handleTask(argv) {
     summary: shorten(effectivePrompt),
     write: Boolean(options.write)
   });
-  const request = buildRequest(cwd, options, effectivePrompt, { resumeSessionId, resumeWarning });
+  // Kept on the job record, like a review's, so `--json`, `status` and `result` show what was not shown.
+  if (included?.evidence) job.evidence = included.evidence;
+  const request = buildRequest(cwd, options, included?.text ?? effectivePrompt, { resumeSessionId, resumeWarning });
   if (options.background) {
     const queued = enqueueBackground(job, request);
     outputCommandResult({ jobId: queued.id, status: queued.status }, `${job.title} started in the background as ${job.id}.\n`, options.json);

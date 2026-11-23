@@ -1,7 +1,7 @@
 ---
 name: rescue
 description: Delegate investigation, an explicit fix request, or follow-up rescue work to the Antigravity rescue subagent
-argument-hint: "[--background|--wait] [--write --bypass-permissions] [--trust] [--resume|--resume-job <job-id>|--fresh] [--model <id>] [--effort <level>] [what Antigravity should investigate, solve, or continue]"
+argument-hint: "[--background|--wait] [--write --bypass-permissions] [--trust] [--resume|--resume-job <job-id>|--fresh] [--model <id>] [--effort <level>] [--include <path>]... [what Antigravity should investigate, solve, or continue]"
 allowed-tools: Bash(node:*), AskUserQuestion, Agent
 ---
 
@@ -27,7 +27,7 @@ Execution mode:
 - If the request includes `--wait`, forward it to the companion `task` call so the task runs in the foreground.
 - If neither flag is present, omit both and let `task` default to foreground.
 - `--background` and `--wait` are companion runtime controls. Preserve them for the forwarded `task` call, but do not treat them as part of the natural-language task text.
-- `--model`, `--effort`, `--write`, `--bypass-permissions` and `--trust` are runtime-selection flags. Preserve them for the forwarded `task` call, but do not treat them as part of the natural-language task text.
+- `--model`, `--effort`, `--include`, `--write`, `--bypass-permissions` and `--trust` are runtime-selection flags. Preserve them for the forwarded `task` call, but do not treat them as part of the natural-language task text.
 - If the request includes `--resume` or `--resume-job`, do not ask whether to continue. The user already chose.
 - If the request includes `--fresh`, do not ask whether to continue. The user already chose.
 - Otherwise, only when the request will run with `--write --bypass-permissions` (the user asked for changes), check for an Antigravity thread that run could continue:
@@ -55,6 +55,7 @@ Operating rules:
 - Do not paraphrase, summarize, rewrite, or add commentary before or after it.
 - Do not ask the subagent to inspect files, monitor progress, poll `/antigravity:status`, fetch `/antigravity:result`, call `/antigravity:cancel`, summarize output, or do follow-up work of its own.
 - Default to a read-only run. Add `--write --bypass-permissions` only when the user asked for changes to be made (a fix, an implementation, "apply it"): `--write` lets the backend change files and run commands without asking, and the companion refuses it without `--bypass-permissions` (or `AGENT_BRIDGES_ALLOW_BYPASS=1`). A write run also sets the session mode `auto`, so subagents of the session can run commands that Antigravity counts as safe; Antigravity still asks before irreversible ones, and the companion answers each such request once.
+- A read-only run has no file tool: it sees only the task text and the files named with `--include <path>` (one flag per file, inside the workspace, refused with `--write`). When the user names files Antigravity should look at in a read-only run, add one `--include` per file.
 - Leave the model unset unless the user explicitly asks for one. Forward whatever model string they pass verbatim.
 - Leave `--resume`, `--resume-job <id>` and `--fresh` in the forwarded request. The subagent handles that routing when it builds the `task` command.
 - If the helper reports that Antigravity is missing or not signed in, stop and tell the user to run `/antigravity:setup`.

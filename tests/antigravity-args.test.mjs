@@ -9,6 +9,7 @@ import { CLIENT_INFO, buildAcpArgs, createLineReader } from "../plugins/antigrav
 import {
   POSIX_ONLY,
   jobFiles,
+  lastJob,
   makeSandbox,
   promptTexts,
   requests,
@@ -70,7 +71,7 @@ test("a review starts the restricted reader, checks its token first, then sends 
   assert.deepEqual(requests(session, "session/new")[0].params, { cwd: sandbox.repo, mcpServers: [] });
 });
 
-test("the reader agent file allows read_file only and carries the token", { skip: POSIX_ONLY }, (t) => {
+test("a read-only task's reader agent file has no tools and carries the token", { skip: POSIX_ONLY }, (t) => {
   const sandbox = makeSandbox(t);
   assert.equal(run(sandbox, ["task", "--wait", "look"]).status, 0);
   const [session] = sessions(sandbox);
@@ -84,8 +85,8 @@ test("the reader agent file allows read_file only and carries the token", { skip
   for (const key of ["name", "version", "description", "license"]) assert.equal(typeof manifest[key], "string", key);
   const agent = files[agentPath];
   assert.match(agent, new RegExp(`^---\\nname: ${agentName}\\n`));
-  assert.match(agent, /^tools:\n  - read_file\n---/m);
-  assert.doesNotMatch(agent, /write_file|run_command/);
+  assert.match(agent, /^tools: \[\]\n---/m);
+  assert.doesNotMatch(agent, /read_file|write_file|run_command/);
   const token = agent.match(/Your agent token is (\S+?)\./)[1];
   assert.ok(token.length >= 16);
   assert.ok(Object.keys(files).some((file) => file.endsWith(".agent-bridges-reader")), "the folder carries the ownership marker");
@@ -105,14 +106,14 @@ test("a review's reader agent has no tools at all", { skip: POSIX_ONLY }, (t) =>
   assert.doesNotMatch(agent, /read_file/);
 });
 
-test("a read_file call in a review fails the run; in a read-only task it is allowed", { skip: POSIX_ONLY }, (t) => {
+test("a read_file call fails a review and a read-only task alike", { skip: POSIX_ONLY }, (t) => {
   const sandbox = makeSandbox(t);
-  const review = run(sandbox, ["review", "--wait"], scenario({ turns: [{ toolCall: "read_file", chunks: ["looked"] }] }));
-  assert.notEqual(review.status, 0);
-  assert.match(review.stdout, /read_file/);
-  const task = run(sandbox, ["task", "--wait", "look"], scenario({ turns: [{ toolCall: "read_file", toolPath: path.join(sandbox.repo, "f0.txt"), chunks: ["looked"] }] }));
-  assert.equal(task.status, 0, task.stdout);
-  assert.match(task.stdout, /looked/);
+  for (const args of [["review", "--wait"], ["task", "--wait", "look"]]) {
+    const result = run(sandbox, args, scenario({ turns: [{ toolCall: "read_file", toolPath: path.join(sandbox.repo, "f0.txt"), chunks: ["looked"] }] }));
+    assert.equal(result.status, 1, `${args[0]}: ${result.stdout}`);
+    assert.match(result.stdout, /read_file/);
+    assert.doesNotMatch(result.stdout, /looked/);
+  }
 });
 
 for (const [label, args] of [["review", ["review", "--wait"]], ["read-only task", ["task", "--wait", "look"]]]) {
@@ -250,52 +251,113 @@ test("a permission request with only always choices is cancelled and fails the r
   }
 });
 
-test("a read-only task may read inside its workspace, by absolute or relative path and through each field", { skip: POSIX_ONLY }, (t) => {
+test("any tool call in a read-only task stops it at once, wherever it reads", { skip: POSIX_ONLY }, (t) => {
   const sandbox = makeSandbox(t);
-  for (const turn of [
-    { toolPath: path.join(sandbox.repo, "f0.txt") },
-    { toolPath: "f0.txt" },
-    { toolPath: path.join(sandbox.repo, "missing", "new.txt") },
-    { toolPath: path.join(sandbox.repo, "f0.txt"), toolPathVia: "args" },
-    { toolPath: path.join(sandbox.repo, "f0.txt"), toolPathVia: "locations" }
-  ]) {
-    const result = run(sandbox, ["task", "--wait", "look"], scenario({ turns: [{ toolCall: "read_file", ...turn, chunks: ["read it"] }] }));
-    assert.equal(result.status, 0, `${JSON.stringify(turn)}: ${result.stdout}`);
-    assert.match(result.stdout, /read it/);
+  const secret = path.join(sandbox.dir, "secret.txt");
+  fs.writeFileSync(secret, "TOP-SECRET\n");
+  const cases = [
+    // A start record of a read, inside or outside the workspace, by each field.
+    [{ toolCall: "read_file", toolPath: path.join(sandbox.repo, "f0.txt") }, "read_file"],
+    [{ toolCall: "read_file", toolPath: "f0.txt", toolPathVia: "args" }, "read_file"],
+    [{ toolCall: "read_file", toolPath: secret, toolPathVia: "locations" }, "read_file"],
+    [{ toolCall: "read_file" }, "read_file"],
+    [{ toolCall: "write_file" }, "write_file"],
+    // Only a later record, with no start record: by its name, or by the path it reports.
+    [{ toolUpdatePath: secret, toolUpdateName: "read_file" }, "read_file"],
+    [{ toolUpdatePath: secret, toolUpdateName: "read_file", toolUpdateNoId: true }, "read_file"],
+    [{ toolUpdatePath: secret }, secret],
+    [{ toolUpdatePath: secret, toolUpdateNoId: true }, secret]
+  ];
+  for (const [turn, named] of cases) {
+    const result = run(sandbox, ["task", "--wait", "look"], scenario({ turns: [{ permission: true, ...turn, chunks: [] }, { chunks: ["second answer"] }] }));
+    const label = JSON.stringify(turn);
+    assert.equal(result.status, 1, `${label}: ${result.stdout}`);
+    assert.match(result.stdout, /in a read-only run, so the run was stopped/, label);
+    assert.ok(result.stdout.includes(named), `${label}: ${result.stdout}`);
+    // No later prompt: not even the follow-up after the refused permission.
+    assert.deepEqual(promptTexts(sessions(sandbox).at(-1)), [TOKEN_PROMPT, "look"], label);
   }
 });
 
-test("a read-only task that reads outside its workspace is stopped at once", { skip: POSIX_ONLY }, (t) => {
+test("--include puts the named files inside the workspace into a read-only task's prompt", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  fs.mkdirSync(path.join(sandbox.repo, "docs"));
+  fs.writeFileSync(path.join(sandbox.repo, "docs", "plan.md"), "PLAN-TEXT\n");
+  fs.writeFileSync(path.join(sandbox.repo, "notes.txt"), "NOTES-TEXT\n");
+  fs.symlinkSync(path.join(sandbox.repo, "notes.txt"), path.join(sandbox.repo, "inner-link.txt"));
+  const result = run(sandbox, ["task", "--wait", "--include", "docs/plan.md", `--include=${path.join(sandbox.repo, "notes.txt")}`, "--include", "inner-link.txt", "check the plan"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.doesNotMatch(result.stdout, /Incomplete task/);
+  const texts = promptTexts(sessions(sandbox)[0]);
+  assert.equal(texts[0], TOKEN_PROMPT);
+  assert.match(texts[1], /^check the plan\n/);
+  assert.match(texts[1], /### docs\/plan\.md\n```\nPLAN-TEXT\n```/);
+  // A link inside the workspace to a file inside it is read once, under the file's own name.
+  assert.equal(texts[1].split("NOTES-TEXT").length, 2, texts[1]);
+  assert.match(texts[1], /### notes\.txt\n/);
+  assert.match(texts[1], /no tools/);
+  assert.equal(lastJob(sandbox).evidence, undefined);
+});
+
+test("--include refuses a file outside the workspace, a .. path, a link out and a missing file before any session starts", { skip: POSIX_ONLY }, (t) => {
   const sandbox = makeSandbox(t);
   const secret = path.join(sandbox.dir, "secret.txt");
   fs.writeFileSync(secret, "TOP-SECRET\n");
   fs.symlinkSync(secret, path.join(sandbox.repo, "inside-link.txt"));
   fs.mkdirSync(path.join(sandbox.dir, "outside"));
   fs.symlinkSync(path.join(sandbox.dir, "outside"), path.join(sandbox.repo, "linkdir"));
-  const cases = [
-    // The OS follows linkdir before "..", so this lands next to the repository, not inside it.
-    [{ toolPath: "linkdir/../secret.txt" }, "linkdir/../secret.txt"],
-    [{ toolPath: secret }, secret],
-    [{ toolPath: "../secret.txt" }, "../secret.txt"],
-    [{ toolPath: path.join(sandbox.repo, "inside-link.txt") }, path.join(sandbox.repo, "inside-link.txt")],
-    [{ toolPath: secret, toolPathVia: "locations" }, secret],
-    [{ toolPath: "$READER/.agents/plugins/x.md" }, ".agents/plugins/x.md"],
-    [{ toolPath: path.join(sandbox.repo, "f0.txt"), toolUpdatePath: secret }, secret],
-    // A later record of the read with an empty name, with its name but no toolCallId, or with neither.
-    [{ toolPath: path.join(sandbox.repo, "f0.txt"), toolUpdatePath: secret, toolUpdateName: "" }, secret],
-    [{ toolPath: path.join(sandbox.repo, "f0.txt"), toolUpdatePath: secret, toolUpdateName: "read_file", toolUpdateNoId: true }, secret],
-    [{ toolPath: path.join(sandbox.repo, "f0.txt"), toolUpdatePath: secret, toolUpdateNoId: true }, secret],
-    [{}, "no path"]
-  ];
-  for (const [turn, named] of cases) {
-    const result = run(sandbox, ["task", "--wait", "look"], scenario({ turns: [{ toolCall: "read_file", permission: true, ...turn, chunks: [] }, { chunks: ["second answer"] }] }));
-    const label = JSON.stringify(turn);
-    assert.equal(result.status, 1, `${label}: ${result.stdout}`);
-    assert.match(result.stdout, /reads only inside its workspace/, label);
-    assert.ok(result.stdout.includes(named), `${label}: ${result.stdout}`);
-    // No later prompt: not even the follow-up after the refused permission.
-    assert.deepEqual(promptTexts(sessions(sandbox).at(-1)), [TOKEN_PROMPT, "look"], label);
+  fs.writeFileSync(path.join(sandbox.dir, "outside", "x.txt"), "X\n");
+  fs.mkdirSync(path.join(sandbox.repo, "sub"));
+  for (const [include, message] of [
+    [secret, /outside the workspace/],
+    ["../secret.txt", /outside the workspace/],
+    ["inside-link.txt", /outside the workspace/],
+    ["linkdir/x.txt", /outside the workspace/],
+    [`${sandbox.repo}-other/f.txt`, /cannot be read/],
+    ["missing.txt", /cannot be read/],
+    ["sub", /not a regular file/]
+  ]) {
+    for (const extra of [["--wait"], ["--background"]]) {
+      const result = run(sandbox, ["task", ...extra, "--include", "f0.txt", "--include", include, "look"]);
+      assert.equal(result.status, 1, `${include}: ${result.stdout}`);
+      assert.match(result.stderr, message, include);
+      assert.ok(result.stderr.includes(include), `${include}: ${result.stderr}`);
+      assert.doesNotMatch(result.stdout + result.stderr, /TOP-SECRET/);
+    }
   }
+  assert.equal(sessions(sandbox).length, 0);
+  assert.deepEqual(jobFiles(sandbox), []);
+});
+
+test("--include is refused with --write", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const result = run(sandbox, ["task", "--wait", "--write", "--bypass-permissions", "--include", "f0.txt", "go"]);
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stderr, /--include.*read-only/);
+  assert.equal(sessions(sandbox).length, 0);
+  assert.deepEqual(jobFiles(sandbox), []);
+});
+
+test("an include over the budget, or a binary one, is named in an Incomplete task line and on the job", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  fs.writeFileSync(path.join(sandbox.repo, "big.txt"), "x".repeat(300 * 1024));
+  fs.writeFileSync(path.join(sandbox.repo, "after.txt"), "AFTER\n");
+  fs.writeFileSync(path.join(sandbox.repo, "bin.dat"), Buffer.from([0, 1, 2, 3]));
+  const result = run(sandbox, ["task", "--wait", "--include", "bin.dat", "--include", "big.txt", "--include", "after.txt", "look"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^Incomplete task: the included files were cut at 262144 bytes/m);
+  assert.match(result.stdout, /Files shown only in part: big\.txt\./);
+  assert.match(result.stdout, /Files not shown: after\.txt\./);
+  assert.match(result.stdout, /bin\.dat/);
+  const prompt = promptTexts(sessions(sandbox)[0])[1];
+  assert.ok(Buffer.byteLength(prompt) < 270 * 1024, String(Buffer.byteLength(prompt)));
+  assert.doesNotMatch(prompt, /AFTER/);
+  const { evidence } = lastJob(sandbox);
+  assert.equal(evidence.incomplete, true);
+  assert.equal(evidence.truncated, true);
+  assert.deepEqual(evidence.filesPartlyShown, ["big.txt"]);
+  assert.deepEqual(evidence.filesNotShown.sort(), ["after.txt", "bin.dat"]);
+  assert.deepEqual(evidence.filesSkipped, ["bin.dat"]);
 });
 
 test("mode, model and thinking level are set before the prompt", { skip: POSIX_ONLY }, (t) => {

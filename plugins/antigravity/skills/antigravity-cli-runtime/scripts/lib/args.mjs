@@ -1,5 +1,7 @@
 export function parseArgs(argv, config = {}) {
-  const valueOptions = new Set(config.valueOptions ?? []);
+  // A repeatable option collects every value in order: `--include a --include b` gives ["a", "b"].
+  const arrayOptions = new Set(config.arrayOptions ?? []);
+  const valueOptions = new Set([...(config.valueOptions ?? []), ...arrayOptions]);
   const booleanOptions = new Set(config.booleanOptions ?? []);
   const aliasMap = config.aliasMap ?? {};
   const options = {};
@@ -38,7 +40,7 @@ export function parseArgs(argv, config = {}) {
         if (nextValue === undefined) {
           throw new Error(`Missing value for --${rawKey}`);
         }
-        options[key] = nextValue;
+        options[key] = arrayOptions.has(key) ? [...(options[key] ?? []), nextValue] : nextValue;
         if (inlineValue === undefined) {
           index += 1;
         }
@@ -62,7 +64,7 @@ export function parseArgs(argv, config = {}) {
       if (nextValue === undefined) {
         throw new Error(`Missing value for -${shortKey}`);
       }
-      options[key] = nextValue;
+      options[key] = arrayOptions.has(key) ? [...(options[key] ?? []), nextValue] : nextValue;
       index += 1;
       continue;
     }

@@ -13,15 +13,14 @@ export const READ_ONLY_RESUME_WARNING =
   "A read-only run cannot continue an earlier Antigravity session, because the restricted reader cannot be attached to it; this started a new session. Add --write to continue the earlier one.";
 export const AUTH_MESSAGE = "Antigravity is not signed in: run `agy` once interactively, or `agy acp --login`.";
 const AUTH_ERROR_CODE = -32000;
-// manage_task is built into every agy agent. A review's reader has no other tool; a read-only task's has read_file.
-const REVIEW_TOOLS = new Set(["manage_task"]);
-const TASK_TOOLS = new Set(["read_file", "manage_task"]);
+// manage_task is built into every agy agent. The reader (a review's and a read-only task's) has no other tool.
+const READER_TOOLS = new Set(["manage_task"]);
 const READER_PLUGIN = "agent-bridges-reader";
 /** Written into every reader folder at creation: cleanup removes only folders that carry it. */
 export const READER_MARKER = ".agent-bridges-reader";
 export const NO_RESUME_WARNING =
   "This Antigravity version cannot continue sessions (its ACP server offers no session/resume); this started a new session.";
-export const CLIENT_INFO = { name: "agent-bridges-antigravity", version: "0.2.2" };
+export const CLIENT_INFO = { name: "agent-bridges-antigravity", version: "0.2.3" };
 /** A task's session goes on after its turn ends: it is done once nothing changed for this long. */
 // A thinking model was seen silent for 17 s before its turn ended.
 export const QUIET_SETTLE_MS = 30_000;
@@ -54,9 +53,9 @@ export function buildAcpArgs({ agentDir, agentName } = {}) {
 
 /**
  * Write a plugin with one restricted agent, plus a random token that proves agy loaded it.
- * A review's reader has no tools (`tools: []`); a read-only task's can read files.
+ * The reader has no tools (`tools: []`): a read-only task sees only its prompt and the files the bridge put in it.
  */
-export function writeReaderAgent(baseDir, { canRead = false } = {}) {
+export function writeReaderAgent(baseDir) {
   fs.mkdirSync(baseDir, { recursive: true, mode: 0o700 });
   const dir = fs.mkdtempSync(path.join(baseDir, "reader-"));
   fs.writeFileSync(path.join(dir, READER_MARKER), "agent-bridges antigravity reader\n", { mode: 0o600 });
@@ -76,13 +75,11 @@ export function writeReaderAgent(baseDir, { canRead = false } = {}) {
       "---",
       `name: ${name}`,
       "description: Read-only reader for agent-bridges reviews and read-only tasks.",
-      ...(canRead ? ["tools:", "  - read_file"] : ["tools: []"]),
+      "tools: []",
       "---",
       `Your agent token is ${token}. When asked for your agent token, reply with exactly that token and nothing else.`,
       "",
-      canRead
-        ? "You are a read-only assistant. You can read files by path; you cannot change files, run commands, list folders or search."
-        : "You are a reviewer with no tools: you cannot read files, list folders, search or run commands. Answer only from the evidence in the prompt.",
+      "You have no tools: you cannot read files, list folders, search or run commands. Answer only from what the prompt gives you.",
       ""
     ].join("\n"),
     { mode: 0o600 }
@@ -348,7 +345,6 @@ export async function finishAgyRun({ clean, endTree, closeInput, waitExit, grace
  */
 export function startAcpRun(options) {
   const { write, cwd, prompt, readOnly, token, model, effort, resumeSessionId, review } = options;
-  const workspaceRoot = options.workspaceRoot ?? cwd;
   // Every tool call of the session by id: { name, title, status, questions }.
   const toolCalls = new Map();
   // Setup requests and the token check are bounded; the real prompt is not (jobs may run long; cancel ends them).
@@ -461,26 +457,28 @@ export function startAcpRun(options) {
     toolCalls.set(key, call);
   }
 
-  /** The read-only rules, for every update of every session, at every moment. */
+  /**
+   * The read-only rules, for every update of every session, at every moment. The reader has no tools, so any
+   * tool call but manage_task stops the run; a later record is judged by its own name, then the tracked one.
+   * One that names neither but reports a path is a read and stops the run too.
+   */
   function enforce(message) {
+    if (!readOnly) return;
     const update = message.params?.update ?? {};
-    if (update.sessionUpdate === "tool_call_update" && readOnly && !review) {
-      // A later record of a read can carry the path too: the same confinement applies. The record's own name
-      // first, then the tracked one; a record that names neither is confined too, because a read-only task's
-      // only other tool (manage_task) is the one exception. The tool map holds only this session's calls, so
-      // another session's record (or one before the session id is known) goes by its own name.
+    if (update.sessionUpdate === "tool_call_update") {
+      // The tool map holds only this session's calls, so another session's record goes by its own name.
       const tracked = sessionId !== null && isOwn(message.params) && callId(update) !== null ? toolCalls.get(callId(update))?.name : undefined;
       const name = isText(update.name) ? update.name : tracked;
-      if (name !== "manage_task" && readPath(update) !== null) confineRead(update);
-    } else if (update.sessionUpdate === "tool_call" && readOnly) {
+      if (isText(name) ? !READER_TOOLS.has(name) : readPath(update) !== null) {
+        stop(new Error(`Antigravity used ${isText(name) ? `the tool "${name}"` : `a tool on "${readPath(update)}"`} in a read-only run, so the run was stopped.`), { security: true });
+      }
+    } else if (update.sessionUpdate === "tool_call") {
       const name = typeof update.name === "string" ? update.name : "";
       // The real reader has the token in its instructions: a tool used to answer the check proves nothing.
       if (turn?.verifying) {
         stop(new Error(`${readerMissing()} A tool (${name || "unnamed"}) was used during the token check.`), { security: true });
-      } else if (!(review ? REVIEW_TOOLS : TASK_TOOLS).has(name)) {
+      } else if (!READER_TOOLS.has(name)) {
         stop(new Error(`Antigravity started the tool "${name || "unnamed"}" in a read-only run, so the run was stopped.`), { security: true });
-      } else if (name === "read_file") {
-        confineRead(update);
       }
     }
   }
@@ -491,37 +489,10 @@ export function startAcpRun(options) {
     for (const message of heldBack.splice(0)) bookkeep(message);
   }
 
-  /** The path a read_file record reports: rawInput.Path, then args.Path, then the first location. */
+  /** The path a read record reports: rawInput.Path, then args.Path, then the first location. */
   function readPath(update) {
     const candidate = update.rawInput?.Path ?? update.args?.Path ?? update.locations?.[0]?.path;
     return typeof candidate === "string" && candidate ? candidate : null;
-  }
-
-  /**
-   * Antigravity does not ask before it reads, so the bridge can only stop the session the moment a read
-   * outside the workspace is reported (symlinks resolved, whole path components compared).
-   */
-  function confineRead(update) {
-    const reported = readPath(update);
-    let inside = false;
-    try {
-      if (reported !== null) {
-        // The raw string first: the OS resolves a symlink before a following "..", which path.resolve would not.
-        const raw = path.isAbsolute(reported) ? reported : `${cwd}${path.sep}${reported}`;
-        let real;
-        try {
-          real = fs.realpathSync.native(raw);
-        } catch {
-          real = canonicalPath(raw);
-        }
-        inside = isInside(real, canonicalPath(workspaceRoot));
-      }
-    } catch {
-      inside = false;
-    }
-    if (inside) return;
-    const what = reported === null ? "a file with no path" : `"${reported}"`;
-    stop(new Error(`Antigravity read ${what}, but a read-only task reads only inside its workspace, so the run was stopped at once.`), { security: true });
   }
 
   const readerMissing = () =>

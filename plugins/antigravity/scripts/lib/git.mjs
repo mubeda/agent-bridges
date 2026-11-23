@@ -279,11 +279,11 @@ export function formatNotShown(notShown, partlyShown = []) {
 }
 
 /**
- * What follows `Incomplete review: ` in a result, by cause: the budget cut the evidence, the prompt only named
+ * What follows `Incomplete review: ` (a task's `Incomplete task: `) in a result, by cause: the budget cut the evidence, the prompt only named
  * some files as skipped, or both. A skipped file is named once, under its own cause: as not shown, or as shown
  * only in part when another part of the same path was shown (a staged deletion of a file left untracked).
  */
-export function formatIncomplete(evidence) {
+export function formatIncomplete(evidence, { cutLabel = "the evidence was cut", rest = "the rest of this change was not reviewed" } = {}) {
   const skipped = new Set(evidence.filesSkipped ?? []);
   const partly = new Set(evidence.filesPartlyShown ?? []);
   const reasons = "(too large, binary, a link or unreadable)";
@@ -294,11 +294,11 @@ export function formatIncomplete(evidence) {
     return (capNames(`some files were not shown ${reasons}`, whole) + capNames(`${whole.length ? "Files" : "some files were"} ${copyLabel}`, copies)).trimStart();
   }
   const cut = (files) => (files ?? []).filter((file) => !skipped.has(file));
-  return `the evidence was cut at ${evidence.maxBytes} bytes, so the rest of this change was not reviewed.${formatNotShown(cut(evidence.filesNotShown), cut(evidence.filesPartlyShown))}${capNames(`Files not shown for another reason ${reasons}`, whole)}${capNames(`Files ${copyLabel}`, copies)}`;
+  return `${cutLabel} at ${evidence.maxBytes} bytes, so ${rest}.${formatNotShown(cut(evidence.filesNotShown), cut(evidence.filesPartlyShown))}${capNames(`Files not shown for another reason ${reasons}`, whole)}${capNames(`Files ${copyLabel}`, copies)}`;
 }
 
 /** Collects sections into a byte budget; once it is used up, later items are only named. */
-function createEvidence(maxBytes) {
+function createEvidence(maxBytes, rest = "the rest of this change is not shown") {
   const parts = [];
   // Sets: a file that is both staged and unstaged is named once, and never as both shown in part and not shown.
   const shown = new Set();
@@ -372,7 +372,7 @@ function createEvidence(maxBytes) {
     },
     content() {
       if (!truncated) return parts.join("");
-      return `${parts.join("")}\n\n(The evidence was cut at ${maxBytes} bytes; the rest of this change is not shown.${formatNotShown([...notShown], [...partlyShown])})`;
+      return `${parts.join("")}\n\n(The evidence was cut at ${maxBytes} bytes; ${rest}.${formatNotShown([...notShown], [...partlyShown])})`;
     }
   };
 }
@@ -510,5 +510,57 @@ export function collectReviewContext(cwd, target, options = {}) {
     inputMode: details.truncated ? "truncated-diff" : "inline-diff",
     collectionGuidance: buildCollectionGuidance(details.truncated, maxBytes),
     ...details
+  };
+}
+
+/**
+ * A read-only task's --include files, under the review's budget. Each entry is { name, real }: the caller has
+ * already checked that `real` (links resolved) is a regular file inside the workspace. Only `real` is read.
+ */
+export function collectIncludedFiles(files, options = {}) {
+  const maxBytes = normalizeMaxInlineDiffBytes(options.maxBytes);
+  const evidence = createEvidence(maxBytes, "the rest of the included files is not shown");
+  evidence.format("## Included Files\n\n");
+  for (const { name, real } of files) {
+    if (!evidence.left) {
+      evidence.skip(name);
+      continue;
+    }
+    const heading = `### ${name}\n`;
+    let read;
+    try {
+      // O_NOFOLLOW: a swap of the checked file for a link before this open cannot redirect the read.
+      const fd = fs.openSync(real, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+      try {
+        if (!fs.fstatSync(fd).isFile()) throw new Error("not a regular file");
+        // At most one byte past the budget: enough to know the file did not fit, never a huge file whole.
+        const buffer = Buffer.alloc(evidence.left + 1);
+        const length = fs.readSync(fd, buffer, 0, buffer.length, 0);
+        read = { buffer: buffer.subarray(0, length), more: length > evidence.left };
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch {
+      read = { skipped: "(skipped: unreadable file)" };
+    }
+    if (!read.skipped && !isProbablyText(read.buffer)) read = { skipped: "(skipped: binary file)" };
+    if (read.skipped) {
+      evidence.add(`${heading}${read.skipped}`);
+      evidence.format("\n\n");
+      evidence.omit(name);
+      continue;
+    }
+    const text = read.buffer.toString("utf8");
+    evidence.format(`${heading}\`\`\`\n`);
+    evidence.add(text, name, read.more);
+    evidence.format(`${text.endsWith("\n") ? "" : "\n"}\`\`\`\n\n`);
+  }
+  return {
+    content: evidence.content(),
+    truncated: evidence.truncated,
+    notShown: evidence.notShown,
+    partlyShown: evidence.partlyShown,
+    skipped: evidence.skipped,
+    maxBytes
   };
 }

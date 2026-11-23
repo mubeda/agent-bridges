@@ -1,6 +1,6 @@
 {
   "name": "antigravity",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Use the local Antigravity CLI to review code or delegate tasks.",
   "author": { "name": "mubeda" }
 }

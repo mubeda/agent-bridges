@@ -652,8 +652,8 @@ test("an empty title on a later record keeps an ask_question's name, so it neith
 
 test("a read-only violation after the wait's bound hit still discards the partial answer", { skip: POSIX_ONLY }, (t) => {
   const sandbox = makeSandbox(t);
-  const inside = path.join(sandbox.repo, "f0.txt");
-  const after = [{ toolCall: "read_file", id: "r", path: inside }, { delayMs: 1150, toolCall: "write_file", id: "w" }];
+  // An open manage_task (the reader's one allowed tool) holds the wait open until its bound.
+  const after = [{ toolCall: "manage_task", id: "r" }, { delayMs: 1150, toolCall: "write_file", id: "w" }];
   // agy ignores SIGTERM, so the violation arrives while its tree is being ended.
   const result = run(sandbox, ["task", "--wait", "look"], { ...scenario({ ignoreTerm: true, exitDelayMs: 1000, turns: [{ chunks: ["PARTIAL"], after }] }), AGENT_BRIDGES_ACP_QUIET_TIMEOUT_MS: "1000" });
   assert.equal(result.status, 1, result.stdout);
@@ -740,8 +740,7 @@ test("on the wait's bound the result keeps its Unanswered questions and Denied l
   const write = run(sandbox, WRITE.concat("go"), { ...scenario({ turns: [{ chunks: ["partial"], after: [{ toolCall: "ask_question", id: "q", question: "Which?" }, { toolCall: "run_command", id: "bg" }] }] }), ...bound });
   assert.equal(write.status, 1, write.stdout);
   assert.match(write.stdout, /^partial\nUnanswered questions: Which\?$/m);
-  const inside = path.join(sandbox.repo, "f0.txt");
-  const readOnly = run(sandbox, ["task", "--wait", "look"], { ...scenario({ turns: [{ chunks: ["partial"], after: [{ permission: true }, { toolCall: "read_file", id: "r", path: inside }] }] }), ...bound });
+  const readOnly = run(sandbox, ["task", "--wait", "look"], { ...scenario({ turns: [{ chunks: ["partial"], after: [{ permission: true }, { toolCall: "manage_task", id: "r" }] }] }), ...bound });
   assert.equal(readOnly.status, 1, readOnly.stdout);
   assert.match(readOnly.stdout, /^partial\nDenied: run_command \(echo later\)$/m);
 });
