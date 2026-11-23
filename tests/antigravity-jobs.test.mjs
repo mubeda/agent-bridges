@@ -1054,6 +1054,27 @@ test("cancel ends a background agy and its child, and removes the reader", { ski
   assert.equal(jobStatus(sandbox, started.jobId).status, "cancelled");
 });
 
+test("a job whose worker died without an end state is failed by status, and its agy is ended", { skip: POSIX_ONLY }, async (t) => {
+  const sandbox = makeSandbox(t);
+  const companion = startCompanion(sandbox, ["task", "--wait", "hi"], { FAKE_AGY_SLEEP_MS: "30000" });
+  t.after(() => companion.kill("SIGKILL"));
+  assert.ok(await waitFor(() => readPids(sandbox)));
+  const { pid: agyPid } = readPids(sandbox);
+  const job = lastJob(sandbox);
+  assert.equal(job.status, "running");
+  // SIGKILL: the worker gets no chance to record an end state.
+  companion.kill("SIGKILL");
+  assert.ok(await waitFor(() => !pidAlive(companion.pid)));
+  t.after(() => { try { process.kill(agyPid, "SIGKILL"); } catch {} });
+  const waited = run(sandbox, ["status", job.id, "--wait", "--json"]);
+  assert.equal(waited.status, 0, waited.stderr);
+  const failed = JSON.parse(waited.stdout).job;
+  assert.equal(failed.status, "failed");
+  assert.match(failed.errorMessage, /ended without recording a result/);
+  assert.ok(await waitFor(() => !pidAlive(agyPid)), "the orphaned agy outlived its dead worker");
+  assert.match(run(sandbox, ["result", job.id]).stdout, /ended without recording a result/);
+});
+
 test("cancel ends a foreground agy and its child", { skip: POSIX_ONLY }, async (t) => {
   const sandbox = makeSandbox(t);
   const companion = startCompanion(sandbox, ["task", "--wait", "hi"], { FAKE_AGY_SLEEP_MS: "30000" });

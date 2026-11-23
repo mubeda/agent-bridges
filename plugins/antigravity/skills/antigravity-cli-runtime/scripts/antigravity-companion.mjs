@@ -806,26 +806,31 @@ async function handleStatus(argv) {
   const reference = positionals[0] ?? "";
   if (!reference) {
     if (options.wait) throw new Error("`status --wait` requires a job id.");
+    await failDeadWorkers(cwd);
     const report = buildStatusSnapshot(cwd, options.all);
     outputResult(options.json ? report : renderStatusReport(report), options.json);
     return;
   }
   const deadline = Date.now() + Math.max(0, Number(options["timeout-ms"]) || DEFAULT_STATUS_WAIT_TIMEOUT_MS);
   const pollInterval = Math.max(100, Number(options["poll-interval-ms"]) || DEFAULT_STATUS_POLL_INTERVAL_MS);
-  let selected = findJob(cwd, reference);
-  if (!selected.job) throw new Error(`No job found for "${reference}".`);
+  const find = async () => {
+    const found = findJob(cwd, reference);
+    if (!found.job) throw new Error(`No job found for "${reference}".`);
+    return { ...found, job: await failDeadWorker(found.workspaceRoot, found.job) };
+  };
+  let selected = await find();
   while (options.wait && isActive(selected.job) && Date.now() < deadline) {
     await sleep(pollInterval);
-    selected = findJob(cwd, reference);
-    if (!selected.job) throw new Error(`No job found for "${reference}".`);
+    selected = await find();
   }
   outputCommandResult({ workspaceRoot: selected.workspaceRoot, job: selected.job }, `${selected.job.id}: ${selected.job.status}\n`, options.json);
 }
 
-function handleResult(argv) {
+async function handleResult(argv) {
   const { options, positionals } = parseCommandInput(argv, { valueOptions: ["cwd"], booleanOptions: ["json"] });
   const selected = findJob(resolveCommandCwd(options), positionals[0] ?? "");
   if (!selected.job) throw new Error("No Antigravity job found for this repository.");
+  selected.job = await failDeadWorker(selected.workspaceRoot, selected.job);
   if (isActive(selected.job)) throw new Error(`Job ${selected.job.id} is still ${selected.job.status}.`);
   const storedJob = readStoredJob(selected.workspaceRoot, selected.job.id);
   const stored = storedJob?.rendered ?? storedJob?.result?.rawOutput ?? null;
@@ -859,6 +864,46 @@ async function endAgyTree(pid, cwd) {
       // already gone
     }
   }
+}
+
+function processAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+
+/**
+ * A queued or running job whose recorded worker is gone can never record an end state: mark it failed and end
+ * the agy it left behind. shortcut: a reused pid reads as alive, so such a job stays running until cancel.
+ */
+async function failDeadWorker(workspaceRoot, job) {
+  if (job.status !== "queued" && job.status !== "running") return job;
+  const stored = readStoredJob(workspaceRoot, job.id) ?? job;
+  if ((stored.status !== "queued" && stored.status !== "running") || !Number.isInteger(stored.pid) || stored.pid <= 0) return stored;
+  if (processAlive(stored.pid) || isCancelMarked(workspaceRoot, job.id)) return stored;
+  // Read again after the check: a worker that wrote its end state and then exited is not a dead worker.
+  const late = readStoredJob(workspaceRoot, job.id) ?? stored;
+  if (late.status !== stored.status || late.pid !== stored.pid) return late;
+  await endAgyTree(late.agyPid ?? Number.NaN, workspaceRoot);
+  removeReaderDir(late.readerDir, workspaceRoot);
+  return persistJob(workspaceRoot, {
+    ...late,
+    status: "failed",
+    phase: "failed",
+    pid: null,
+    agyPid: null,
+    readerDir: null,
+    completedAt: nowIso(),
+    errorMessage: `The companion process that ran this job (pid ${late.pid}) ended without recording a result, so the job cannot finish. Start it again.`
+  });
+}
+
+async function failDeadWorkers(cwd) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  for (const job of listJobs(workspaceRoot).filter(isActive)) await failDeadWorker(workspaceRoot, job);
 }
 
 async function handleCancel(argv) {
