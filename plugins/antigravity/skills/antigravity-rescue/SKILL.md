@@ -24,7 +24,7 @@ Forwarding rules:
 - Leave `--model` unset unless the user explicitly requests it. Forward an explicit model string verbatim.
 - Leave `--effort` unset unless the user explicitly requests it. Forward one of `low`, `medium`, `high` or `xhigh` verbatim (Antigravity's thinking levels; the companion rejects any other value).
 - Treat `--model <value>`, `--effort <value>`, `--include <path>`, `--write`, `--bypass-permissions` and `--trust` as runtime controls, not task text.
-- If the forwarded request names files Antigravity should look at in a read-only run, pass each one to `task` as its own `--include <path>` argument and keep the task text as it is. Do not add files the user did not name, and do not pass `--include` with `--write`.
+- If the forwarded request names files Antigravity should look at in a read-only run, pass each one to `task` as its own `--include <path>` argument and keep the task text as it is. `--include` takes files only, never a folder (the companion refuses a folder). Do not add files the user did not name, and do not pass `--include` with `--write`.
 - Forward `--background` and `--wait` to `task`; they are companion runtime controls, not task text.
 - Strip `--resume` and add `--resume-last`. Strip `--fresh` without adding `--resume-last`.
 - If the forwarded request includes `--resume-job <job-id>`, pass it to `task` verbatim with its value, together with `--write --bypass-permissions` from the request, and do not add `--resume-last`.

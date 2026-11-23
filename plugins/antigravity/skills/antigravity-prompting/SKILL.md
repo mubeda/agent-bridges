@@ -12,6 +12,7 @@ Use this skill only inside `antigravity-rescue` and only to shape the user's nat
 
 1. State a one-sentence objective.
 2. Include concrete file paths, commands to reproduce, error excerpts, or failing assertions the user supplied.
+   A read-only run has no file tool: a path in the prompt is only a name, so the forwarder passes each file the user named with `--include <path>` as well.
 3. State constraints plainly: read-only, no unrelated refactor, preserve a public API, or keep a named test green.
 4. Define done: a patch, findings, options with tradeoffs, or a passing test command.
 
@@ -27,7 +28,7 @@ For a background task, make the objective and definition of done self-contained:
 ## What to strip out
 
 - Routing flags (`--background`, `--wait`, `--resume`, `--fresh`).
-- Runtime flags (`--model`).
+- Runtime flags (`--model`, `--effort`, `--include`).
 - Host-side conversational filler.
 
 Do not inspect the repository to build the prompt or invent file paths, function names, errors, or test names.

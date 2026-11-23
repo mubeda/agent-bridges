@@ -38,7 +38,7 @@ Command selection:
 - Pass each runtime flag as its own shell argument, then `--`, then the task text as one quoted argument (use a quoted heredoc when the text contains quotes, `$`, or backticks). Never pass flags and task text together as a single string: the companion re-splits a lone argument and mangles apostrophes.
 - If the forwarded request includes `--background` or `--wait`, pass it through to `task`; the companion handles foreground waiting or background detachment. Do not treat it as part of the natural-language task text.
 - If the forwarded request includes `--model`, pass the model string through to `task` verbatim.
-- If the forwarded request names files Antigravity should look at in a read-only run, pass each one to `task` as its own `--include <path>` argument and keep the task text as it is. Do not add files the user did not name, and do not pass `--include` with `--write`.
+- If the forwarded request names files Antigravity should look at in a read-only run, pass each one to `task` as its own `--include <path>` argument and keep the task text as it is. `--include` takes files only, never a folder (the companion refuses a folder). Do not add files the user did not name, and do not pass `--include` with `--write`.
 - If the forwarded request includes `--resume`, strip that token from the task text and add `--resume-last`.
 - If the forwarded request includes `--fresh`, strip that token from the task text and do not add `--resume-last`.
 - If the forwarded request includes `--resume-job <job-id>`, pass it to `task` verbatim with its value, together with `--write --bypass-permissions` from the request, and do not add `--resume-last`.
