@@ -128,7 +128,7 @@ export function saveState(cwd, state) {
     removeFileIfExists(job.logFile);
   }
 
-  writeFileAtomic(resolveStateFile(cwd), `${JSON.stringify(nextState, null, 2)}\n`);
+  fs.writeFileSync(resolveStateFile(cwd), `${JSON.stringify(nextState, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
   return nextState;
 }
 
@@ -180,22 +180,10 @@ export function getConfig(cwd) {
   return loadState(cwd).config;
 }
 
-/** A temporary file in the same folder, renamed into place: a reader sees the old record or the new one, never half. */
-function writeFileAtomic(file, text) {
-  const temp = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`);
-  try {
-    fs.writeFileSync(temp, text, { encoding: "utf8", mode: 0o600 });
-    fs.renameSync(temp, file);
-  } catch (error) {
-    fs.rmSync(temp, { force: true });
-    throw error;
-  }
-}
-
 export function writeJobFile(cwd, jobId, payload) {
   ensureStateDir(cwd);
   const jobFile = resolveJobFile(cwd, jobId);
-  writeFileAtomic(jobFile, `${JSON.stringify(payload, null, 2)}\n`);
+  fs.writeFileSync(jobFile, `${JSON.stringify(payload, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
   return jobFile;
 }
 
