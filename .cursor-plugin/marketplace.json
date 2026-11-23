@@ -4,7 +4,7 @@
   "owner": { "name": "mubeda" },
   "metadata": {
     "description": "OpenCode, Gemini, Claude, and Antigravity companion plugins for Cursor.",
-    "version": "0.4.7",
+    "version": "0.4.8",
     "pluginRoot": "plugins"
   },
   "plugins": [
@@ -29,7 +29,7 @@
     {
       "name": "antigravity",
       "description": "Use the local Antigravity CLI (agy) to review code or delegate tasks.",
-      "version": "0.2.3",
+      "version": "0.2.4",
       "source": "antigravity"
     }
   ]
