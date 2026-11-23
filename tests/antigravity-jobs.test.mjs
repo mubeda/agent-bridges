@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { formatDeniedActions } from "../plugins/antigravity/scripts/lib/agy.mjs";
+import { processStartTime } from "../plugins/antigravity/scripts/lib/process.mjs";
 import { QUIET_SETTLE_MS, TOKEN_PROMPT, finishAgyRun, startAcpRun, subagentBusy, subagentStates } from "../plugins/antigravity/scripts/lib/acp.mjs";
 import { spawn, spawnSync } from "node:child_process";
 
@@ -31,15 +32,6 @@ const FINDINGS = {
   findings: [{ severity: "high", title: "t", body: "b", file: "a.js", line_start: 3, line_end: 4, confidence: 0.9, recommendation: "r" }]
 };
 const WRITE = ["task", "--wait", "--write", "--bypass-permissions"];
-
-/** Linux start time of a process (field 22 of /proc/<pid>/stat), as the companion records it. */
-function procStart(pid) {
-  const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
-  return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
-}
-
-// cancel and a dead worker's cleanup signal a pid only when its Linux start time proves it is the job's.
-const LINUX_ONLY = process.platform === "linux" ? false : "signals only a pid whose /proc start time matches";
 
 /** Alive and not a zombie: an orphan whose parent never reaps it still answers signal 0, but cannot write anything. */
 function processAlive(pid) {
@@ -1049,7 +1041,7 @@ function readerDirs(sandbox) {
   return found;
 }
 
-test("cancel ends a background agy and its child, and removes the reader", { skip: LINUX_ONLY }, async (t) => {
+test("cancel ends a background agy and its child, and removes the reader", { skip: POSIX_ONLY }, async (t) => {
   const sandbox = makeSandbox(t);
   const started = JSON.parse(run(sandbox, ["task", "--background", "--json", "hi"], { FAKE_AGY_SLEEP_MS: "30000" }).stdout);
   assert.ok(await waitFor(() => readPids(sandbox)));
@@ -1082,9 +1074,7 @@ test("a job whose worker died without an end state is failed by status, and its 
   const failed = JSON.parse(waited.stdout).job;
   assert.equal(failed.status, "failed");
   assert.match(failed.errorMessage, /ended without recording a result/);
-  // Only Linux records a start time that proves the pid is still this agy; elsewhere it is never signalled.
-  if (process.platform === "linux") assert.ok(await waitFor(() => !pidAlive(agyPid)), "the orphaned agy outlived its dead worker");
-  else assert.match(failed.errorMessage, /not signalled/);
+  assert.ok(await waitFor(() => !pidAlive(agyPid)), "the orphaned agy outlived its dead worker");
   assert.match(run(sandbox, ["result", job.id]).stdout, /ended without recording a result/);
 });
 
@@ -1140,23 +1130,20 @@ test("a dead worker's job records process start times, and a pid that now names 
   const sandbox = makeSandbox(t);
   const { job, agyPid } = await deadWorkerJob(t, sandbox);
   const stored = jobRecord(sandbox, job.id);
-  if (process.platform === "linux") {
-    assert.equal(typeof stored.pidStart, "string", JSON.stringify(stored));
-    assert.equal(typeof stored.agyPidStart, "string", JSON.stringify(stored));
-  }
+  assert.equal(typeof stored.pidStart, "string", JSON.stringify(stored));
+  assert.equal(typeof stored.agyPidStart, "string", JSON.stringify(stored));
   assert.equal(pidAlive(agyPid), true);
   process.kill(agyPid, "SIGKILL");
   // After a reboot or pid reuse: the recorded agy pid (and the worker pid) now belong to an unrelated process.
   const stranger = startStranger(t);
-  const reused = { agyPid: stranger.pid, ...(process.platform === "linux" ? {} : { agyPidStart: undefined }) };
-  rewriteJob(sandbox, job.id, reused);
+  rewriteJob(sandbox, job.id, { agyPid: stranger.pid });
   const failed = JSON.parse(run(sandbox, ["status", job.id, "--wait", "--timeout-ms", "3000", "--json"]).stdout).job;
   assert.equal(failed.status, "failed");
   await new Promise((resolve) => setTimeout(resolve, 300));
   assert.equal(pidAlive(stranger.pid), true, "status signalled a process it could not prove was the job's");
 });
 
-test("a recorded worker pid reused by another process reads as dead, and an old record without start times sends no signal", { skip: process.platform === "linux" ? false : "needs /proc" }, async (t) => {
+test("a recorded worker pid reused by another process reads as dead, and an old record without start times sends no signal", { skip: POSIX_ONLY }, async (t) => {
   const sandbox = makeSandbox(t);
   const { job, agyPid } = await deadWorkerJob(t, sandbox);
   const stranger = startStranger(t);
@@ -1175,6 +1162,7 @@ test("a recorded worker pid reused by another process reads as dead, and an old 
   void agyPid;
 });
 
+// Only Linux reads a process's state; elsewhere a zombie answers signal 0 and keeps its start time.
 test("a zombie worker counts as dead", { skip: process.platform === "linux" ? false : "needs /proc" }, async (t) => {
   const sandbox = makeSandbox(t);
   // The companion's parent becomes `sleep`, which never reaps it: killed, it stays a zombie.
@@ -1226,7 +1214,7 @@ test("writeJobFile writes a temporary file in the same folder and renames it int
   assert.deepEqual(state.readJobFile(jobFile), { id: "job-1" });
 });
 
-test("a cancel during a dead worker's teardown wins over the failed state", { skip: LINUX_ONLY }, async (t) => {
+test("a cancel during a dead worker's teardown wins over the failed state", { skip: POSIX_ONLY }, async (t) => {
   const sandbox = makeSandbox(t);
   // agy ignores SIGTERM, so ending it takes the 2 s grace: cancel lands in that window.
   const { job } = await deadWorkerJob(t, sandbox, { ignoreTerm: true });
@@ -1262,7 +1250,7 @@ test("a relative PLUGIN_DATA reaches a background worker as an absolute path", {
   assert.equal(fs.existsSync(path.join(sandbox.repo, "rel-data")), false, "the worker wrote its state inside the workspace");
 });
 
-test("cancel never signals a recorded pid that now names another process", { skip: process.platform === "linux" ? false : "needs /proc" }, async (t) => {
+test("cancel never signals a recorded pid that now names another process", { skip: POSIX_ONLY }, async (t) => {
   const sandbox = makeSandbox(t);
   const companion = startCompanion(sandbox, ["task", "--wait", "hi"], { FAKE_AGY_SLEEP_MS: "30000", ...scenario({ ignoreEof: true }) });
   t.after(() => companion.kill("SIGKILL"));
@@ -1282,7 +1270,7 @@ test("cancel never signals a recorded pid that now names another process", { ski
   assert.equal(jobRecord(sandbox, job.id).status, "cancelled");
 });
 
-test("cancel with no start time to check signals nothing, records why, and names the live agy", { skip: process.platform === "linux" ? false : "needs /proc" }, async (t) => {
+test("cancel with no start time to check signals nothing, records why, and names the live agy", { skip: POSIX_ONLY }, async (t) => {
   const sandbox = makeSandbox(t);
   const companion = startCompanion(sandbox, ["task", "--wait", "hi"], { FAKE_AGY_SLEEP_MS: "30000", ...scenario({ ignoreEof: true }) });
   t.after(() => companion.kill("SIGKILL"));
@@ -1303,7 +1291,7 @@ test("cancel with no start time to check signals nothing, records why, and names
   assert.match(record.errorMessage, /nothing was signalled|not signalled/);
 });
 
-test("cancel ends a foreground agy and its child", { skip: LINUX_ONLY }, async (t) => {
+test("cancel ends a foreground agy and its child", { skip: POSIX_ONLY }, async (t) => {
   const sandbox = makeSandbox(t);
   const companion = startCompanion(sandbox, ["task", "--wait", "hi"], { FAKE_AGY_SLEEP_MS: "30000" });
   t.after(() => companion.kill("SIGKILL"));
@@ -1340,7 +1328,7 @@ test("SIGINT leaves the job in a terminal state, not running", { skip: POSIX_ONL
   assert.ok(await waitFor(() => !["running", "queued"].includes(jobStatus(sandbox, job.id).status)), "job stayed running");
 });
 
-test("cancel escalates when agy's child ignores SIGTERM", { skip: LINUX_ONLY }, async (t) => {
+test("cancel escalates when agy's child ignores SIGTERM", { skip: POSIX_ONLY }, async (t) => {
   const sandbox = makeSandbox(t);
   const started = JSON.parse(run(sandbox, ["task", "--background", "--json", "hi"], { FAKE_AGY_SLEEP_MS: "30000", FAKE_AGY_CHILD_IGNORES_TERM: "1" }).stdout);
   assert.ok(await waitFor(() => readPids(sandbox)));
@@ -1413,7 +1401,7 @@ test("a cancel marker wins: a worker never starts agy and never overwrites the c
   assert.notEqual(JSON.parse(fs.readFileSync(file, "utf8")).status, "completed");
 });
 
-test("cancel creates the marker, and a job left cancelling keeps its handles and is retried by a second cancel", { skip: LINUX_ONLY }, async (t) => {
+test("cancel creates the marker, and a job left cancelling keeps its handles and is retried by a second cancel", { skip: POSIX_ONLY }, async (t) => {
   const sandbox = makeSandbox(t);
   const started = JSON.parse(run(sandbox, ["task", "--background", "--json", "hi"], { FAKE_AGY_SLEEP_MS: "30000" }).stdout);
   assert.ok(await waitFor(() => readPids(sandbox)));
@@ -1428,7 +1416,7 @@ test("cancel creates the marker, and a job left cancelling keeps its handles and
   fs.mkdirSync(readerDir, { recursive: true });
   fs.writeFileSync(path.join(readerDir, ".agent-bridges-reader"), "");
   const record = JSON.parse(fs.readFileSync(file, "utf8"));
-  fs.writeFileSync(file, JSON.stringify({ ...record, status: "cancelling", phase: "cancelling", agyPid: sleeper.pid, agyPidStart: procStart(sleeper.pid), pid: null, readerDir }));
+  fs.writeFileSync(file, JSON.stringify({ ...record, status: "cancelling", phase: "cancelling", agyPid: sleeper.pid, agyPidStart: processStartTime(sleeper.pid), pid: null, readerDir }));
   const stateFile = path.join(path.dirname(path.dirname(file)), "state.json");
   const state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
   state.jobs = state.jobs.map((entry) => (entry.id === started.jobId ? { ...entry, status: "cancelling" } : entry));

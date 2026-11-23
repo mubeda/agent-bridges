@@ -202,48 +202,74 @@ export function npmShimTarget(cmdFile) {
   return viaNode ? { file: process.execPath, args: [target] } : { file: target, args: [] };
 }
 
-/** Linux /proc/<pid>/stat: the state letter (field 3) and the start time in clock ticks (field 22), or null. */
+const validPid = (pid) => Number.isSafeInteger(pid) && pid > 0;
+
+/** Linux /proc/<pid>/stat: the state letter (field 3) and the start time in clock ticks (field 22). */
 function readProcStat(pid) {
-  if (process.platform !== "linux" || !Number.isInteger(pid) || pid <= 0) return null;
   try {
     const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
     // The command name (field 2) may hold spaces and parentheses: the fields after it start past the last ")".
     const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-    return { state: fields[0], startTime: fields[19] };
+    return { state: fields[0], startTime: fields[19] || null };
   } catch {
     return { state: null, startTime: null };
   }
 }
 
-/** A process's identity beside its pid: its Linux start time. null where none can be read (other systems). */
-export function processIdentity(pid) {
-  return readProcStat(pid)?.startTime ?? null;
+function lookupOutput(spawn, file, args) {
+  try {
+    const result = spawn(file, args, { encoding: "utf8", windowsHide: true, timeout: 10000 });
+    if (result?.status !== 0 || typeof result.stdout !== "string") return null;
+    return result.stdout.trim() || null;
+  } catch {
+    return null;
+  }
 }
 
 /**
- * "dead": gone, a zombie, or the pid now names a process with another start time; "alive" otherwise.
- * Without a recorded identity (other systems, old records) a pid that answers signal 0 counts as alive.
+ * A process's identity beside its pid: its start time as a string, or null when it cannot be read.
+ * Linux: field 22 of /proc/<pid>/stat. Windows: Get-Process's StartTime in UTC. Other systems: ps -o lstart=.
  */
-export function processState(pid, identity) {
-  if (!Number.isInteger(pid) || pid <= 0) return "dead";
-  const stat = readProcStat(pid);
-  if (stat) {
-    if (!stat.state || stat.state === "Z") return "dead";
-    return identity && stat.startTime !== identity ? "dead" : "alive";
+export function processStartTime(pid, { platform = process.platform, spawn = spawnSync } = {}) {
+  if (!validPid(pid)) return null;
+  if (platform === "linux") return readProcStat(pid).startTime;
+  if (platform === "win32") {
+    return lookupOutput(spawn, "powershell", ["-NoProfile", "-NonInteractive", "-Command", `(Get-Process -Id ${pid}).StartTime.ToUniversalTime().ToString('o')`]);
   }
+  return lookupOutput(spawn, "ps", ["-o", "lstart=", "-p", String(pid)]);
+}
+
+function answersSignal(pid) {
   try {
     process.kill(pid, 0);
-    return "alive";
+    return true;
   } catch (error) {
-    return error.code === "EPERM" ? "alive" : "dead";
+    return error.code === "EPERM";
   }
+}
+
+/**
+ * "dead": gone, a zombie (Linux), or the pid now names a process with another start time; "alive" otherwise.
+ * Without a recorded identity, or when the start time cannot be read, a pid that answers signal 0 counts as alive.
+ */
+export function processState(pid, identity, options = {}) {
+  if (!validPid(pid)) return "dead";
+  if ((options.platform ?? process.platform) === "linux") {
+    const stat = readProcStat(pid);
+    if (!stat.state || stat.state === "Z") return "dead";
+  } else if (!answersSignal(pid)) {
+    return "dead";
+  }
+  if (!identity) return "alive";
+  const current = processStartTime(pid, options);
+  return current && current !== identity ? "dead" : "alive";
 }
 
 /**
  * True only when the pid provably still names the recorded process: the only case in which it may be signalled.
- * A zombie with the recorded start time still counts: its pid cannot be reused before it is reaped.
+ * A Linux zombie with the recorded start time still counts: its pid cannot be reused before it is reaped.
  */
-export function isSameProcess(pid, identity) {
-  const stat = readProcStat(pid);
-  return Boolean(identity && stat?.startTime && stat.startTime === identity);
+export function isSameProcess(pid, identity, options = {}) {
+  if (!identity) return false;
+  return processStartTime(pid, options) === identity;
 }

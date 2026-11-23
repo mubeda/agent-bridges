@@ -29,7 +29,7 @@ import { buildDetachedWorkerOptions, mergeSpawnedPid } from "./lib/detach.mjs";
 import { isWithin, readStdinIfPiped } from "./lib/fs.mjs";
 import { collectIncludedFiles, collectReviewContext, ensureGitRepository, formatIncomplete, resolveReviewTarget } from "./lib/git.mjs";
 import { capTranscriptMessages, packTranscript, parseTranscriptJsonl, resolveTransferSource } from "./lib/host-session.mjs";
-import { binaryAvailable, isSameProcess, processIdentity, processState, runCommand, terminateProcessTree } from "./lib/process.mjs";
+import { binaryAvailable, isSameProcess, processStartTime, processState, runCommand, terminateProcessTree } from "./lib/process.mjs";
 import { interpolateTemplate, loadPromptTemplate } from "./lib/prompts.mjs";
 import {
   generateJobId,
@@ -466,7 +466,7 @@ async function runAcpJob(job, request) {
     status: "running",
     phase: "running",
     pid: process.pid,
-    pidStart: processIdentity(process.pid),
+    pidStart: processStartTime(process.pid),
     startedAt: nowIso(),
     worktree: request.cwd,
     // A session keeps its agent: a write resume must never pick a read-only (reader) session.
@@ -476,7 +476,7 @@ async function runAcpJob(job, request) {
     const { command, parsed } = await executeAcpRun(request, {
       onReader: (readerDir) => save({ readerDir }),
       onSpawn: (agyPid) => {
-        save({ agyPid, agyPidStart: processIdentity(agyPid) });
+        save({ agyPid, agyPidStart: processStartTime(agyPid) });
         // Test hook: simulates a failed bookkeeping write after spawn.
         if (process.env.AGENT_BRIDGES_TEST_THROW_ON_SPAWN) throw new Error("test hook: recording the agy pid failed");
       },
@@ -561,7 +561,7 @@ function enqueueBackground(job, request) {
   try {
     const child = spawnDetachedWorker(request.cwd, job.id);
     const merged = mergeSpawnedPid(readStoredJob(job.workspaceRoot, job.id) ?? queued, child.pid);
-    const record = merged.pid === child.pid && !merged.pidStart ? { ...merged, pidStart: processIdentity(child.pid) } : merged;
+    const record = merged.pid === child.pid && !merged.pidStart ? { ...merged, pidStart: processStartTime(child.pid) } : merged;
     return persistJob(job.workspaceRoot, record);
   } catch (error) {
     persistJob(job.workspaceRoot, {
