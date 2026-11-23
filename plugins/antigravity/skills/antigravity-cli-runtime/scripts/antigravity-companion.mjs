@@ -25,6 +25,7 @@ import {
   resolveAgySpawnCommand,
   validateEffort
 } from "./lib/agy.mjs";
+import { markUnresolvedIfUnchanged, workerGone } from "./lib/dead-worker.mjs";
 import { buildDetachedWorkerOptions, mergeSpawnedPid } from "./lib/detach.mjs";
 import { isWithin, readStdinIfPiped } from "./lib/fs.mjs";
 import { collectIncludedFiles, collectReviewContext, ensureGitRepository, formatIncomplete, resolveReviewTarget } from "./lib/git.mjs";
@@ -101,18 +102,23 @@ function resolveCommandCwd(options = {}) {
   return options.cwd ? path.resolve(process.cwd(), options.cwd) : process.cwd();
 }
 
+/**
+ * JSON never carries a job's stored request (the prompt, included files or a packed transcript, kept for its worker), nor
+ * a task's summary before it has a result: 0.2.5 took that summary from the prompt, and its index entries still hold it.
+ */
+function redactJobFields(key, value) {
+  if (key === "request") return undefined;
+  if (key === "summary" && this && typeof this === "object" && this.kind === "task" && "status" in this && !this.result) return this.title ?? "Antigravity task";
+  return value;
+}
+
 function outputResult(value, asJson) {
-  if (asJson) console.log(JSON.stringify(value, null, 2));
+  if (asJson) console.log(JSON.stringify(value, redactJobFields, 2));
   else process.stdout.write(value);
 }
 
 function outputCommandResult(payload, rendered, asJson) {
   outputResult(asJson ? payload : rendered, asJson);
-}
-
-function shorten(text, limit = 96) {
-  const normalized = String(text ?? "").trim().replace(/\s+/g, " ");
-  return normalized.length <= limit ? normalized : `${normalized.slice(0, limit - 3)}...`;
 }
 
 function firstMeaningfulLine(text, fallback) {
@@ -125,7 +131,30 @@ function sleep(ms) {
 
 /** cancelling: a cancel whose teardown has not finished yet; a second cancel retries it. */
 function isActive(job) {
-  return job.status === "queued" || job.status === "running" || job.status === "cancelling";
+  return job.status === "queued" || job.status === "running" || job.status === "cancelling" || job.status === "unresolved";
+}
+
+/** Destructive and result paths read the job file strictly: an unreadable record stops them with the error. */
+function readJobStrict(workspaceRoot, jobId) {
+  const jobFile = resolveJobFile(workspaceRoot, jobId);
+  if (!fs.existsSync(jobFile)) return null;
+  try {
+    return readJobFile(jobFile);
+  } catch (error) {
+    throw new Error(`Job ${jobId}'s record could not be read (${error.message}); it was left as it is.`);
+  }
+}
+
+/**
+ * status and result only report: a queued or running job whose recorded worker is gone becomes unresolved, with its
+ * pids and what to check. Nothing is signalled, removed, or called safe to start again.
+ */
+function reportDeadWorker(workspaceRoot, indexed) {
+  if (!isActive(indexed)) return indexed;
+  const stored = readJobStrict(workspaceRoot, indexed.id) ?? indexed;
+  if ((stored.status !== "queued" && stored.status !== "running") || !workerGone(stored.pid)) return stored;
+  return markUnresolvedIfUnchanged(stored, () => readJobStrict(workspaceRoot, indexed.id), (job) => persistJob(workspaceRoot, job))
+    ?? readJobStrict(workspaceRoot, indexed.id) ?? stored;
 }
 
 /** Created by cancel before it reads or signals anything; no job update can overwrite a file. */
@@ -528,6 +557,9 @@ function spawnDetachedWorker(cwd, jobId) {
     jobId,
     workerCommand: "run-worker"
   });
+  // The worker runs in the workspace: a relative PLUGIN_DATA must reach it as the folder this process meant.
+  const pluginData = typeof process.env.PLUGIN_DATA === "string" ? process.env.PLUGIN_DATA.trim() : "";
+  if (pluginData) built.options.env = { ...built.options.env, PLUGIN_DATA: path.resolve(pluginData) };
   const child = spawn(built.file, built.args, built.options);
   if (child.pid == null) {
     child.once("error", () => {});
@@ -764,7 +796,8 @@ async function handleTask(argv) {
     title: resumeLatest ? "Antigravity Resume" : "Antigravity Task",
     workspaceRoot,
     jobClass: "task",
-    summary: shorten(effectivePrompt),
+    // Never taken from the prompt: status shows it while the job runs. A result replaces it.
+    summary: resumeLatest ? "Antigravity resume" : "Antigravity task",
     write: Boolean(options.write)
   });
   // Kept on the job record, like a review's, so `--json`, `status` and `result` show what was not shown.
@@ -794,6 +827,7 @@ function renderStatusReport(report) {
   if (report.latestFinished) lines.push(`Latest finished: ${report.latestFinished.id} | ${report.latestFinished.status} | ${report.latestFinished.title}`, "");
   if (report.recent.length) lines.push("Recent jobs:", ...report.recent.map((job) => `- ${job.id} | ${job.status} | ${job.title}`));
   if (!report.running.length && !report.latestFinished) lines.push("No jobs recorded yet.");
+  if (report.notes?.length) lines.push("", "Not checked:", ...report.notes.map((note) => `- ${note}`));
   return `${lines.join("\n")}\n`;
 }
 
@@ -806,28 +840,56 @@ async function handleStatus(argv) {
   const reference = positionals[0] ?? "";
   if (!reference) {
     if (options.wait) throw new Error("`status --wait` requires a job id.");
-    const report = buildStatusSnapshot(cwd, options.all);
+    const workspaceRoot = resolveWorkspaceRoot(cwd);
+    const notes = [];
+    for (const job of listJobs(workspaceRoot).filter(isActive)) {
+      try {
+        reportDeadWorker(workspaceRoot, job);
+      } catch (error) {
+        // One job that cannot be read must not hide the others.
+        notes.push(`${job.id}: ${error.message}`);
+      }
+    }
+    const report = { ...buildStatusSnapshot(cwd, options.all), notes };
     outputResult(options.json ? report : renderStatusReport(report), options.json);
     return;
   }
   const deadline = Date.now() + Math.max(0, Number(options["timeout-ms"]) || DEFAULT_STATUS_WAIT_TIMEOUT_MS);
   const pollInterval = Math.max(100, Number(options["poll-interval-ms"]) || DEFAULT_STATUS_POLL_INTERVAL_MS);
-  let selected = findJob(cwd, reference);
-  if (!selected.job) throw new Error(`No job found for "${reference}".`);
-  while (options.wait && isActive(selected.job) && Date.now() < deadline) {
+  const find = () => {
+    const found = findJob(cwd, reference);
+    if (!found.job) throw new Error(`No job found for "${reference}".`);
+    let job = found.job;
+    let note = null;
+    try {
+      job = reportDeadWorker(found.workspaceRoot, found.job);
+    } catch (error) {
+      note = error.message;
+    }
+    return { workspaceRoot: found.workspaceRoot, job, note };
+  };
+  let selected = find();
+  // unresolved is reported, not polled: nothing will change it but the user's check (or the worker after all).
+  while (options.wait && isActive(selected.job) && selected.job.status !== "unresolved" && Date.now() < deadline) {
     await sleep(pollInterval);
-    selected = findJob(cwd, reference);
-    if (!selected.job) throw new Error(`No job found for "${reference}".`);
+    selected = find();
   }
-  outputCommandResult({ workspaceRoot: selected.workspaceRoot, job: selected.job }, `${selected.job.id}: ${selected.job.status}\n`, options.json);
+  const detail = selected.job.status === "unresolved" ? `\n${selected.job.errorMessage}` : "";
+  outputCommandResult(
+    { workspaceRoot: selected.workspaceRoot, job: selected.job, ...(selected.note ? { note: selected.note } : {}) },
+    `${selected.job.id}: ${selected.job.status}${detail}${selected.note ? `\n${selected.note}` : ""}\n`,
+    options.json
+  );
 }
 
 function handleResult(argv) {
   const { options, positionals } = parseCommandInput(argv, { valueOptions: ["cwd"], booleanOptions: ["json"] });
   const selected = findJob(resolveCommandCwd(options), positionals[0] ?? "");
   if (!selected.job) throw new Error("No Antigravity job found for this repository.");
+  selected.job = reportDeadWorker(selected.workspaceRoot, selected.job);
+  if (selected.job.status === "unresolved") throw new Error(`Job ${selected.job.id} is unresolved. ${selected.job.errorMessage}`);
   if (isActive(selected.job)) throw new Error(`Job ${selected.job.id} is still ${selected.job.status}.`);
-  const storedJob = readStoredJob(selected.workspaceRoot, selected.job.id);
+  const storedJob = readJobStrict(selected.workspaceRoot, selected.job.id);
   const stored = storedJob?.rendered ?? storedJob?.result?.rawOutput ?? null;
   const error = selected.job.status === "failed" ? (storedJob?.errorMessage ?? selected.job.errorMessage ?? null) : null;
   const rendered = error && !String(stored ?? "").includes(error)
@@ -867,9 +929,11 @@ async function handleCancel(argv) {
   if (!selected.job) throw new Error("No active Antigravity job found.");
   const { workspaceRoot } = selected;
   const id = selected.job.id;
+  // Read first: an unreadable record stops the cancel with the read error and is left as it is.
+  const record = readJobStrict(workspaceRoot, id);
   // The marker comes first: from here on no worker, finishing run or signal handler can undo the cancellation.
   fs.writeFileSync(cancelMarkerFile(workspaceRoot, id), `${nowIso()}\n`, { mode: 0o600 });
-  const stored = { ...selected.job, ...(readStoredJob(workspaceRoot, id) ?? {}) };
+  const stored = { ...selected.job, ...(record ?? {}) };
   // cancelling keeps the handles, so an interrupted teardown can be retried by another cancel.
   persistJob(workspaceRoot, { ...stored, status: "cancelling", phase: "cancelling", errorMessage: "Cancelled by user." });
   // End the agy tree first: it no longer shares the companion's process group.

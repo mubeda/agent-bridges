@@ -128,7 +128,7 @@ export function saveState(cwd, state) {
     removeFileIfExists(job.logFile);
   }
 
-  fs.writeFileSync(resolveStateFile(cwd), `${JSON.stringify(nextState, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  writeFileAtomic(resolveStateFile(cwd), `${JSON.stringify(nextState, null, 2)}\n`);
   return nextState;
 }
 
@@ -148,10 +148,11 @@ export function upsertJob(cwd, jobPatch) {
     const timestamp = nowIso();
     const existingIndex = state.jobs.findIndex((job) => job.id === jobPatch.id);
     if (existingIndex === -1) {
+      const { request: _request, ...entry } = jobPatch;
       state.jobs.unshift({
         createdAt: timestamp,
         updatedAt: timestamp,
-        ...jobPatch
+        ...entry
       });
       return;
     }
@@ -160,6 +161,8 @@ export function upsertJob(cwd, jobPatch) {
       ...jobPatch,
       updatedAt: timestamp
     };
+    // The index never keeps a job's request, also one a 0.2.5 entry still holds: it stays in the job file only.
+    delete state.jobs[existingIndex].request;
   });
 }
 
@@ -180,10 +183,22 @@ export function getConfig(cwd) {
   return loadState(cwd).config;
 }
 
+/** A temporary file in the same folder, renamed into place: a reader sees the old record or the new one, never half. */
+function writeFileAtomic(file, text) {
+  const temp = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`);
+  try {
+    fs.writeFileSync(temp, text, { encoding: "utf8", mode: 0o600 });
+    fs.renameSync(temp, file);
+  } catch (error) {
+    fs.rmSync(temp, { force: true });
+    throw error;
+  }
+}
+
 export function writeJobFile(cwd, jobId, payload) {
   ensureStateDir(cwd);
   const jobFile = resolveJobFile(cwd, jobId);
-  fs.writeFileSync(jobFile, `${JSON.stringify(payload, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  writeFileAtomic(jobFile, `${JSON.stringify(payload, null, 2)}\n`);
   return jobFile;
 }
 

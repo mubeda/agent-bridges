@@ -20,7 +20,7 @@ const READER_PLUGIN = "agent-bridges-reader";
 export const READER_MARKER = ".agent-bridges-reader";
 export const NO_RESUME_WARNING =
   "This Antigravity version cannot continue sessions (its ACP server offers no session/resume); this started a new session.";
-export const CLIENT_INFO = { name: "agent-bridges-antigravity", version: "0.2.5" };
+export const CLIENT_INFO = { name: "agent-bridges-antigravity", version: "0.2.6" };
 /** A task's session goes on after its turn ends: it is done once nothing changed for this long. */
 // A thinking model was seen silent for 17 s before its turn ended.
 export const QUIET_SETTLE_MS = 30_000;
