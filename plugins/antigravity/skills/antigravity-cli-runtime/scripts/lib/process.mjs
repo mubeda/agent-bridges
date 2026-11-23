@@ -201,3 +201,49 @@ export function npmShimTarget(cmdFile) {
   // The running Node, never a bare node, which Windows would look up in the working folder first.
   return viaNode ? { file: process.execPath, args: [target] } : { file: target, args: [] };
 }
+
+/** Linux /proc/<pid>/stat: the state letter (field 3) and the start time in clock ticks (field 22), or null. */
+function readProcStat(pid) {
+  if (process.platform !== "linux" || !Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+    // The command name (field 2) may hold spaces and parentheses: the fields after it start past the last ")".
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    return { state: fields[0], startTime: fields[19] };
+  } catch {
+    return { state: null, startTime: null };
+  }
+}
+
+/** A process's identity beside its pid: its Linux start time. null where none can be read (other systems). */
+export function processIdentity(pid) {
+  return readProcStat(pid)?.startTime ?? null;
+}
+
+/**
+ * "dead": gone, a zombie, or the pid now names a process with another start time; "alive" otherwise.
+ * Without a recorded identity (other systems, old records) a pid that answers signal 0 counts as alive.
+ */
+export function processState(pid, identity) {
+  if (!Number.isInteger(pid) || pid <= 0) return "dead";
+  const stat = readProcStat(pid);
+  if (stat) {
+    if (!stat.state || stat.state === "Z") return "dead";
+    return identity && stat.startTime !== identity ? "dead" : "alive";
+  }
+  try {
+    process.kill(pid, 0);
+    return "alive";
+  } catch (error) {
+    return error.code === "EPERM" ? "alive" : "dead";
+  }
+}
+
+/**
+ * True only when the pid provably still names the recorded process: the only case in which it may be signalled.
+ * A zombie with the recorded start time still counts: its pid cannot be reused before it is reaped.
+ */
+export function isSameProcess(pid, identity) {
+  const stat = readProcStat(pid);
+  return Boolean(identity && stat?.startTime && stat.startTime === identity);
+}

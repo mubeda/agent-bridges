@@ -29,7 +29,7 @@ import { buildDetachedWorkerOptions, mergeSpawnedPid } from "./lib/detach.mjs";
 import { isWithin, readStdinIfPiped } from "./lib/fs.mjs";
 import { collectIncludedFiles, collectReviewContext, ensureGitRepository, formatIncomplete, resolveReviewTarget } from "./lib/git.mjs";
 import { capTranscriptMessages, packTranscript, parseTranscriptJsonl, resolveTransferSource } from "./lib/host-session.mjs";
-import { binaryAvailable, runCommand, terminateProcessTree } from "./lib/process.mjs";
+import { binaryAvailable, isSameProcess, processIdentity, processState, runCommand, terminateProcessTree } from "./lib/process.mjs";
 import { interpolateTemplate, loadPromptTemplate } from "./lib/prompts.mjs";
 import {
   generateJobId,
@@ -141,9 +141,18 @@ function sortJobs(jobs) {
   return [...jobs].sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")));
 }
 
+/** null when the record is missing or cannot be read; unreadableJob tells the two apart. */
 function readStoredJob(workspaceRoot, jobId) {
   const jobFile = resolveJobFile(workspaceRoot, jobId);
-  return fs.existsSync(jobFile) ? readJobFile(jobFile) : null;
+  try {
+    return fs.existsSync(jobFile) ? readJobFile(jobFile) : null;
+  } catch {
+    return null;
+  }
+}
+
+function unreadableJob(workspaceRoot, jobId) {
+  return fs.existsSync(resolveJobFile(workspaceRoot, jobId)) && readStoredJob(workspaceRoot, jobId) === null;
 }
 
 function findJob(cwd, reference = "", predicate = () => true) {
@@ -457,6 +466,7 @@ async function runAcpJob(job, request) {
     status: "running",
     phase: "running",
     pid: process.pid,
+    pidStart: processIdentity(process.pid),
     startedAt: nowIso(),
     worktree: request.cwd,
     // A session keeps its agent: a write resume must never pick a read-only (reader) session.
@@ -466,7 +476,7 @@ async function runAcpJob(job, request) {
     const { command, parsed } = await executeAcpRun(request, {
       onReader: (readerDir) => save({ readerDir }),
       onSpawn: (agyPid) => {
-        save({ agyPid });
+        save({ agyPid, agyPidStart: processIdentity(agyPid) });
         // Test hook: simulates a failed bookkeeping write after spawn.
         if (process.env.AGENT_BRIDGES_TEST_THROW_ON_SPAWN) throw new Error("test hook: recording the agy pid failed");
       },
@@ -528,6 +538,9 @@ function spawnDetachedWorker(cwd, jobId) {
     jobId,
     workerCommand: "run-worker"
   });
+  // The worker runs in the workspace: a relative PLUGIN_DATA must reach it as the folder this process meant.
+  const pluginData = typeof process.env.PLUGIN_DATA === "string" ? process.env.PLUGIN_DATA.trim() : "";
+  if (pluginData) built.options.env = { ...built.options.env, PLUGIN_DATA: path.resolve(pluginData) };
   const child = spawn(built.file, built.args, built.options);
   if (child.pid == null) {
     child.once("error", () => {});
@@ -547,7 +560,8 @@ function enqueueBackground(job, request) {
   });
   try {
     const child = spawnDetachedWorker(request.cwd, job.id);
-    const record = mergeSpawnedPid(readStoredJob(job.workspaceRoot, job.id) ?? queued, child.pid);
+    const merged = mergeSpawnedPid(readStoredJob(job.workspaceRoot, job.id) ?? queued, child.pid);
+    const record = merged.pid === child.pid && !merged.pidStart ? { ...merged, pidStart: processIdentity(child.pid) } : merged;
     return persistJob(job.workspaceRoot, record);
   } catch (error) {
     persistJob(job.workspaceRoot, {
@@ -866,44 +880,62 @@ async function endAgyTree(pid, cwd) {
   }
 }
 
-function processAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error.code === "EPERM";
-  }
-}
+const isLive = (job) => job.status === "queued" || job.status === "running";
 
 /**
- * A queued or running job whose recorded worker is gone can never record an end state: mark it failed and end
- * the agy it left behind. shortcut: a reused pid reads as alive, so such a job stays running until cancel.
+ * A queued or running job whose recorded worker is gone (exited, a zombie, or its pid now names a process with
+ * another start time) can never record an end state: mark it failed. The agy it left is signalled only when its
+ * pid provably still names that agy; otherwise nothing is signalled and the reason says so.
  */
 async function failDeadWorker(workspaceRoot, job) {
-  if (job.status !== "queued" && job.status !== "running") return job;
+  if (!isLive(job)) return job;
+  // An unreadable record is unknown: leave it for the next look.
+  if (unreadableJob(workspaceRoot, job.id)) return job;
   const stored = readStoredJob(workspaceRoot, job.id) ?? job;
-  if ((stored.status !== "queued" && stored.status !== "running") || !Number.isInteger(stored.pid) || stored.pid <= 0) return stored;
-  if (processAlive(stored.pid) || isCancelMarked(workspaceRoot, job.id)) return stored;
+  if (!isLive(stored)) return repairIndex(workspaceRoot, job, stored);
+  if (!Number.isInteger(stored.pid) || stored.pid <= 0) return stored;
+  if (processState(stored.pid, stored.pidStart) === "alive" || isCancelMarked(workspaceRoot, job.id)) return stored;
   // Read again after the check: a worker that wrote its end state and then exited is not a dead worker.
   const late = readStoredJob(workspaceRoot, job.id) ?? stored;
-  if (late.status !== stored.status || late.pid !== stored.pid) return late;
-  await endAgyTree(late.agyPid ?? Number.NaN, workspaceRoot);
+  if (!isLive(late) || late.pid !== stored.pid) return repairIndex(workspaceRoot, job, late);
+  let note = "";
+  if (Number.isInteger(late.agyPid) && late.agyPid > 0) {
+    if (isSameProcess(late.agyPid, late.agyPidStart)) await endAgyTree(late.agyPid, workspaceRoot);
+    else if (processState(late.agyPid, late.agyPidStart) === "alive") {
+      note = ` Its agy (pid ${late.agyPid}) could not be confirmed as this job's process, so it was not signalled.`;
+    }
+  }
   removeReaderDir(late.readerDir, workspaceRoot);
+  // A cancel or an end state written during the teardown wins.
+  const final = readStoredJob(workspaceRoot, job.id) ?? late;
+  if (isCancelMarked(workspaceRoot, job.id) || !isLive(final) || final.pid !== late.pid) return final;
   return persistJob(workspaceRoot, {
-    ...late,
+    ...final,
     status: "failed",
     phase: "failed",
     pid: null,
     agyPid: null,
     readerDir: null,
     completedAt: nowIso(),
-    errorMessage: `The companion process that ran this job (pid ${late.pid}) ended without recording a result, so the job cannot finish. Start it again.`
+    errorMessage: `The companion process that ran this job (pid ${late.pid}) ended without recording a result, so the job cannot finish. Start it again.${note}`
   });
+}
+
+/** The job file is the record; a state.json entry that disagrees with it (an interrupted write) is brought in line. */
+function repairIndex(workspaceRoot, indexed, stored) {
+  if (indexed.status !== stored.status) upsertJob(workspaceRoot, stored);
+  return stored;
 }
 
 async function failDeadWorkers(cwd) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  for (const job of listJobs(workspaceRoot).filter(isActive)) await failDeadWorker(workspaceRoot, job);
+  for (const job of listJobs(workspaceRoot).filter(isActive)) {
+    try {
+      await failDeadWorker(workspaceRoot, job);
+    } catch {
+      // One job that cannot be checked must not hide the others.
+    }
+  }
 }
 
 async function handleCancel(argv) {

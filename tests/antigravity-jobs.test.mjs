@@ -1056,7 +1056,8 @@ test("cancel ends a background agy and its child, and removes the reader", { ski
 
 test("a job whose worker died without an end state is failed by status, and its agy is ended", { skip: POSIX_ONLY }, async (t) => {
   const sandbox = makeSandbox(t);
-  const companion = startCompanion(sandbox, ["task", "--wait", "hi"], { FAKE_AGY_SLEEP_MS: "30000" });
+  // ignoreEof: agy outlives the dead worker, so ending it is status's work.
+  const companion = startCompanion(sandbox, ["task", "--wait", "hi"], { FAKE_AGY_SLEEP_MS: "30000", ...scenario({ ignoreEof: true }) });
   t.after(() => companion.kill("SIGKILL"));
   assert.ok(await waitFor(() => readPids(sandbox)));
   const { pid: agyPid } = readPids(sandbox);
@@ -1066,13 +1067,190 @@ test("a job whose worker died without an end state is failed by status, and its 
   companion.kill("SIGKILL");
   assert.ok(await waitFor(() => !pidAlive(companion.pid)));
   t.after(() => { try { process.kill(agyPid, "SIGKILL"); } catch {} });
+  assert.equal(pidAlive(agyPid), true);
   const waited = run(sandbox, ["status", job.id, "--wait", "--json"]);
   assert.equal(waited.status, 0, waited.stderr);
   const failed = JSON.parse(waited.stdout).job;
   assert.equal(failed.status, "failed");
   assert.match(failed.errorMessage, /ended without recording a result/);
-  assert.ok(await waitFor(() => !pidAlive(agyPid)), "the orphaned agy outlived its dead worker");
+  // Only Linux records a start time that proves the pid is still this agy; elsewhere it is never signalled.
+  if (process.platform === "linux") assert.ok(await waitFor(() => !pidAlive(agyPid)), "the orphaned agy outlived its dead worker");
+  else assert.match(failed.errorMessage, /not signalled/);
   assert.match(run(sandbox, ["result", job.id]).stdout, /ended without recording a result/);
+});
+
+/** The one workspace state folder of a sandbox, and a way to rewrite a job in both its file and the index. */
+function stateDirOf(sandbox) {
+  const stateRoot = path.join(sandbox.data, "state");
+  return path.join(stateRoot, fs.readdirSync(stateRoot)[0]);
+}
+
+function rewriteJob(sandbox, id, patch, { index = true, file = true } = {}) {
+  const dir = stateDirOf(sandbox);
+  const jobFile = path.join(dir, "jobs", `${id}.json`);
+  if (file) fs.writeFileSync(jobFile, JSON.stringify({ ...JSON.parse(fs.readFileSync(jobFile, "utf8")), ...patch }));
+  if (index) {
+    const stateFile = path.join(dir, "state.json");
+    const state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    state.jobs = state.jobs.map((job) => (job.id === id ? { ...job, ...patch } : job));
+    fs.writeFileSync(stateFile, JSON.stringify(state));
+  }
+}
+
+/** The job file as written, without running status (which would reconcile it). */
+function jobRecord(sandbox, id) {
+  return JSON.parse(fs.readFileSync(path.join(stateDirOf(sandbox), "jobs", `${id}.json`), "utf8"));
+}
+
+function indexEntry(sandbox, id) {
+  return JSON.parse(fs.readFileSync(path.join(stateDirOf(sandbox), "state.json"), "utf8")).jobs.find((job) => job.id === id);
+}
+
+/** A foreground task whose companion was SIGKILLed while agy kept running: a job with a dead worker. */
+async function deadWorkerJob(t, sandbox, fake = {}) {
+  // ignoreEof: like a real server, agy outlives its client's end of input, so the dead worker leaves it behind.
+  const companion = startCompanion(sandbox, ["task", "--wait", "hi"], { FAKE_AGY_SLEEP_MS: "30000", ...scenario({ ignoreEof: true, ...fake }) });
+  t.after(() => companion.kill("SIGKILL"));
+  assert.ok(await waitFor(() => readPids(sandbox)));
+  const { pid: agyPid } = readPids(sandbox);
+  t.after(() => { try { process.kill(agyPid, "SIGKILL"); } catch {} });
+  const job = lastJob(sandbox);
+  assert.equal(job.status, "running");
+  companion.kill("SIGKILL");
+  assert.ok(await waitFor(() => !pidAlive(companion.pid)));
+  return { job, agyPid, workerPid: companion.pid };
+}
+
+function startStranger(t) {
+  const stranger = spawn("sleep", ["30"], { stdio: "ignore" });
+  t.after(() => stranger.kill("SIGKILL"));
+  return stranger;
+}
+
+test("a dead worker's job records process start times, and a pid that now names another process is never signalled", { skip: POSIX_ONLY }, async (t) => {
+  const sandbox = makeSandbox(t);
+  const { job, agyPid } = await deadWorkerJob(t, sandbox);
+  const stored = jobRecord(sandbox, job.id);
+  if (process.platform === "linux") {
+    assert.equal(typeof stored.pidStart, "string", JSON.stringify(stored));
+    assert.equal(typeof stored.agyPidStart, "string", JSON.stringify(stored));
+  }
+  assert.equal(pidAlive(agyPid), true);
+  process.kill(agyPid, "SIGKILL");
+  // After a reboot or pid reuse: the recorded agy pid (and the worker pid) now belong to an unrelated process.
+  const stranger = startStranger(t);
+  const reused = { agyPid: stranger.pid, ...(process.platform === "linux" ? {} : { agyPidStart: undefined }) };
+  rewriteJob(sandbox, job.id, reused);
+  const failed = JSON.parse(run(sandbox, ["status", job.id, "--wait", "--timeout-ms", "3000", "--json"]).stdout).job;
+  assert.equal(failed.status, "failed");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(pidAlive(stranger.pid), true, "status signalled a process it could not prove was the job's");
+});
+
+test("a recorded worker pid reused by another process reads as dead, and an old record without start times sends no signal", { skip: process.platform === "linux" ? false : "needs /proc" }, async (t) => {
+  const sandbox = makeSandbox(t);
+  const { job, agyPid } = await deadWorkerJob(t, sandbox);
+  const stranger = startStranger(t);
+  // The worker pid now names a live stranger with another start time.
+  rewriteJob(sandbox, job.id, { pid: stranger.pid });
+  assert.equal(JSON.parse(run(sandbox, ["status", job.id, "--wait", "--timeout-ms", "3000", "--json"]).stdout).job.status, "failed");
+  assert.equal(pidAlive(stranger.pid), true);
+  // An old record: no start times at all. The job still fails, and the live agy is left alone.
+  const sandbox2 = makeSandbox(t);
+  const second = await deadWorkerJob(t, sandbox2);
+  rewriteJob(sandbox2, second.job.id, { pidStart: undefined, agyPidStart: undefined });
+  const failed = JSON.parse(run(sandbox2, ["status", second.job.id, "--json"]).stdout).job;
+  assert.equal(failed.status, "failed");
+  assert.match(failed.errorMessage, /not signalled/);
+  assert.equal(pidAlive(second.agyPid), true, "an agy that could not be confirmed was signalled");
+  void agyPid;
+});
+
+test("a zombie worker counts as dead", { skip: process.platform === "linux" ? false : "needs /proc" }, async (t) => {
+  const sandbox = makeSandbox(t);
+  // The companion's parent becomes `sleep`, which never reaps it: killed, it stays a zombie.
+  const holder = spawn("sh", ["-c", `"${process.execPath}" "${COMPANION}" task --wait hi & exec sleep 60`], {
+    cwd: sandbox.repo, env: companionEnv(sandbox, { FAKE_AGY_SLEEP_MS: "30000" }), stdio: "ignore"
+  });
+  t.after(() => holder.kill("SIGKILL"));
+  assert.ok(await waitFor(() => readPids(sandbox)));
+  t.after(() => { try { process.kill(readPids(sandbox).pid, "SIGKILL"); } catch {} });
+  const job = lastJob(sandbox);
+  const workerPid = jobRecord(sandbox, job.id).pid;
+  process.kill(workerPid, "SIGKILL");
+  assert.ok(await waitFor(() => fs.readFileSync(`/proc/${workerPid}/stat`, "utf8").split(") ")[1][0] === "Z"));
+  const result = JSON.parse(run(sandbox, ["status", job.id, "--wait", "--timeout-ms", "3000", "--json"]).stdout).job;
+  assert.equal(result.status, "failed");
+});
+
+test("an unreadable job record is skipped, not a crash, and status --all lists the other jobs", { skip: POSIX_ONLY }, async (t) => {
+  const sandbox = makeSandbox(t);
+  assert.equal(run(sandbox, ["task", "--wait", "first"]).status, 0);
+  const { job } = await deadWorkerJob(t, sandbox);
+  fs.writeFileSync(path.join(stateDirOf(sandbox), "jobs", `${job.id}.json`), "{\"id\": ");
+  const all = run(sandbox, ["status", "--all", "--json"]);
+  assert.equal(all.status, 0, all.stderr);
+  const report = JSON.parse(all.stdout);
+  assert.equal(report.running.length, 1);
+  assert.equal(report.latestFinished.status, "completed");
+  const single = run(sandbox, ["status", job.id, "--json"]);
+  assert.equal(single.status, 0, single.stderr);
+  assert.equal(JSON.parse(single.stdout).job.status, "running");
+});
+
+test("writeJobFile writes a temporary file in the same folder and renames it into place", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-atomic-"));
+  const previous = process.env.PLUGIN_DATA;
+  process.env.PLUGIN_DATA = dir;
+  t.after(() => {
+    if (previous === undefined) delete process.env.PLUGIN_DATA;
+    else process.env.PLUGIN_DATA = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  const state = await import("../plugins/antigravity/scripts/lib/state.mjs");
+  const renames = t.mock.method(fs, "renameSync");
+  const jobFile = state.writeJobFile(dir, "job-1", { id: "job-1" });
+  const call = renames.mock.calls.find((c) => c.arguments[1] === jobFile);
+  assert.ok(call, "no rename into the job file");
+  assert.equal(path.dirname(call.arguments[0]), path.dirname(jobFile));
+  assert.deepEqual(fs.readdirSync(path.dirname(jobFile)), ["job-1.json"]);
+  assert.deepEqual(state.readJobFile(jobFile), { id: "job-1" });
+});
+
+test("a cancel during a dead worker's teardown wins over the failed state", { skip: process.platform === "linux" ? false : "needs /proc to signal agy" }, async (t) => {
+  const sandbox = makeSandbox(t);
+  // agy ignores SIGTERM, so ending it takes the 2 s grace: cancel lands in that window.
+  const { job } = await deadWorkerJob(t, sandbox, { ignoreTerm: true });
+  const status = spawn(process.execPath, [COMPANION, "status", job.id, "--json"], { cwd: sandbox.repo, env: companionEnv(sandbox), stdio: "ignore" });
+  const done = new Promise((resolve) => status.on("exit", resolve));
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  run(sandbox, ["cancel", job.id]);
+  await done;
+  assert.equal(jobStatus(sandbox, job.id).status, "cancelled");
+  assert.equal(indexEntry(sandbox, job.id).status, "cancelled");
+});
+
+test("status --all shows the reconciled record and repairs a stale index entry", { skip: POSIX_ONLY }, async (t) => {
+  const sandbox = makeSandbox(t);
+  assert.equal(run(sandbox, ["task", "--wait", "hi"]).status, 0);
+  const job = lastJob(sandbox);
+  // The index still says running (a write that stopped between the job file and state.json).
+  rewriteJob(sandbox, job.id, { status: "running", phase: "running", pid: 999999 }, { file: false });
+  const report = JSON.parse(run(sandbox, ["status", "--all", "--json"]).stdout);
+  assert.equal(report.running.length, 0, JSON.stringify(report));
+  assert.equal(report.latestFinished.status, "completed");
+  assert.equal(indexEntry(sandbox, job.id).status, "completed");
+});
+
+test("a relative PLUGIN_DATA reaches a background worker as an absolute path", { skip: POSIX_ONLY }, async (t) => {
+  const sandbox = makeSandbox(t);
+  const env = { PLUGIN_DATA: "rel-data" };
+  const started = run(sandbox, ["task", "--background", "--json", "--cwd", sandbox.repo, "look"], env, { cwd: sandbox.dir });
+  assert.equal(started.status, 0, started.stdout + started.stderr);
+  const { jobId } = JSON.parse(started.stdout);
+  const waited = run(sandbox, ["status", jobId, "--wait", "--timeout-ms", "20000", "--json", "--cwd", sandbox.repo], env, { cwd: sandbox.dir });
+  assert.equal(JSON.parse(waited.stdout).job.status, "completed", waited.stdout);
+  assert.equal(fs.existsSync(path.join(sandbox.repo, "rel-data")), false, "the worker wrote its state inside the workspace");
 });
 
 test("cancel ends a foreground agy and its child", { skip: POSIX_ONLY }, async (t) => {
