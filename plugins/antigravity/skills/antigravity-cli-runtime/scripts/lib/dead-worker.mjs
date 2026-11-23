@@ -33,3 +33,31 @@ function describe(job) {
 export function unresolvedView(job) {
   return { ...job, status: "unresolved", phase: "unresolved", errorMessage: describe(job) };
 }
+
+const ACTIVE = new Set(["queued", "running"]);
+
+function isJobRecord(record, id) {
+  return Boolean(record) && typeof record === "object" && !Array.isArray(record) && record.id === id && typeof record.status === "string";
+}
+
+/**
+ * The job as status and result show it, from read() calls only ({ job } or { note }): nothing is written. A missing,
+ * unreadable or malformed record gives the index entry with a note that names no content. Only a queued or running
+ * record is probed; when its worker is gone, the record is read again and shown as unresolved only if it is still
+ * active with the same worker pid. The index's updatedAt is carried over; the stored status is kept.
+ */
+export function projectJob(indexed, read, gone = workerGone) {
+  const take = () => {
+    const answer = read();
+    if (answer.note) return { note: answer.note };
+    if (!isJobRecord(answer.job, indexed.id)) return { note: `Job ${indexed.id}'s record is not a valid job record; the index entry is shown.` };
+    return { job: indexed.updatedAt ? { ...answer.job, updatedAt: indexed.updatedAt } : answer.job };
+  };
+  const first = take();
+  if (first.note) return { job: indexed, note: first.note };
+  if (!ACTIVE.has(first.job.status) || !gone(first.job.pid)) return { job: first.job, note: null };
+  const again = take();
+  if (again.note) return { job: indexed, note: again.note };
+  const same = ACTIVE.has(again.job.status) && again.job.pid === first.job.pid;
+  return { job: same ? unresolvedView(again.job) : again.job, note: null };
+}

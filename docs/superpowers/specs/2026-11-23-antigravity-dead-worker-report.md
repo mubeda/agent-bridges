@@ -15,7 +15,8 @@ A background or foreground job records the pid of the companion process that run
 - When a `queued` or `running` job's recorded worker is not alive, `status`, `status --wait`, `status --all` and `result` show the job as `unresolved`. The reason names the worker's pid and agy's pid (or says that none was recorded) and asks the user to check whether they, and any command agy started, still run. The state is computed for the output and never stored, so a worker that was alive after all shows its real state on the next read.
 - "Not alive" means signal 0 gives `ESRCH`, or on Linux `/proc/<pid>/stat` shows the state `Z`. Any other answer, `EPERM` or an unreadable `/proc` included, means "alive or unknown" and shows the recorded state.
 - `status --wait` returns at once on `unresolved`; `result` exits with the reason. The skills report `unresolved` instead of polling it, and the delegate skill never relaunches such a chunk.
-- A job whose record is missing or cannot be read is shown from its index entry with a note that names the job and the problem, never the file's content. `status --wait` returns with the note; `result` stops with it.
+- Before a job is shown as `unresolved`, its record is read again; only a job still active with the same worker pid is shown that way. The index's `updatedAt` is carried into the view; the stored status is kept.
+- A job whose record is missing, cannot be read, or is not a job record (an object with the expected id and a status) is shown from its index entry with a note that names the job and the problem, never the file's content, whatever its state. `status --wait` returns with the note; `result` stops with it; the delegate skill escalates on it. A read resolves paths without creating the state folders or changing their modes.
 - `cancel` is unchanged.
 
 ## Limits

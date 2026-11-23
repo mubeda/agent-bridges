@@ -1321,7 +1321,8 @@ test("a zombie worker counts as not alive", { skip: process.platform === "linux"
   });
   t.after(() => holder.kill("SIGKILL"));
   assert.ok(await waitFor(() => readPids(sandbox)));
-  t.after(() => { try { process.kill(-readPids(sandbox).pid, "SIGKILL"); } catch {} });
+  const agyPid = readPids(sandbox).pid;
+  t.after(() => { try { process.kill(-agyPid, "SIGKILL"); } catch {} });
   const job = lastJob(sandbox);
   const workerPid = jobRecord(sandbox, job.id).pid;
   process.kill(workerPid, "SIGKILL");
@@ -1344,6 +1345,11 @@ test("every status and result form only reads: the job file and state.json are b
   const { job } = await deadWorkerJob(t, sandbox);
   const files = [path.join(stateDirOf(sandbox), "jobs", `${job.id}.json`), path.join(stateDirOf(sandbox), "state.json")];
   const before = files.map((file) => fs.readFileSync(file));
+  // Also the folders: a read makes no folder and changes no mode.
+  const dirs = [stateDirOf(sandbox), path.join(stateDirOf(sandbox), "jobs")];
+  const dirMeta = () => dirs.map((dir) => { const st = fs.statSync(dir); return `${st.mode} ${st.mtimeMs}`; });
+  for (const dir of dirs) fs.chmodSync(dir, 0o750);
+  const dirsBefore = dirMeta();
   const forms = [
     ["status"], ["status", "--json"], ["status", "--all"], ["status", "--all", "--json"],
     ["status", job.id], ["status", job.id, "--json"], ["status", job.id, "--wait", "--timeout-ms", "5000"], ["status", job.id, "--wait", "--timeout-ms", "5000", "--json"],
@@ -1355,7 +1361,77 @@ test("every status and result form only reads: the job file and state.json are b
     if (args[0] === "status" && args.includes("--json")) assert.match(out.stdout, /"unresolved"/, args.join(" "));
   }
   files.forEach((file, index) => assert.ok(fs.readFileSync(file).equals(before[index]), `${file} changed`));
+  assert.deepEqual(dirMeta(), dirsBefore);
   assert.deepEqual(fs.readdirSync(path.join(stateDirOf(sandbox), "jobs")).filter((name) => name.startsWith(job.id)), [`${job.id}.json`, `${job.id}.log`].filter((name) => fs.existsSync(path.join(stateDirOf(sandbox), "jobs", name))));
+  // With the jobs folder gone, no read recreates it.
+  fs.rmSync(dirs[1], { recursive: true, force: true });
+  for (const args of forms) run(sandbox, args);
+  assert.equal(fs.existsSync(dirs[1]), false, "a read recreated the jobs folder");
+});
+
+test("projectJob: reread before unresolved, validate the record, keep the index time", async () => {
+  const { projectJob } = await import("../plugins/antigravity/scripts/lib/dead-worker.mjs");
+  const indexed = { id: "j", status: "running", pid: 5, updatedAt: "2026-11-23T10:00:00.000Z" };
+  const running = { id: "j", status: "running", pid: 5, agyPid: 6 };
+  const reads = (...answers) => () => answers.shift();
+  const gone = () => true;
+  // The worker finished between the probe and the reread: its record is shown, not unresolved.
+  assert.equal(projectJob(indexed, reads({ job: running }, { job: { ...running, status: "completed" } }), gone).job.status, "completed");
+  // Another worker pid by the reread: not unresolved either.
+  assert.equal(projectJob(indexed, reads({ job: running }, { job: { ...running, pid: 9 } }), gone).job.status, "running");
+  const unresolved = projectJob(indexed, reads({ job: running }, { job: running }), gone).job;
+  assert.equal(unresolved.status, "unresolved");
+  assert.equal(unresolved.updatedAt, indexed.updatedAt);
+  // The index time is carried, the stored status kept.
+  const shown = projectJob(indexed, reads({ job: { id: "j", status: "completed" } }), gone).job;
+  assert.deepEqual([shown.status, shown.updatedAt], ["completed", indexed.updatedAt]);
+  // End states are not probed.
+  let probed = false;
+  projectJob({ id: "j", status: "completed" }, reads({ job: { id: "j", status: "completed", pid: 5 } }), () => { probed = true; return true; });
+  assert.equal(probed, false);
+  // Not a job record: the index entry with a content-free note.
+  for (const bad of [null, {}, [], "x", { id: "other", status: "running" }, { id: "j" }]) {
+    const view = projectJob(indexed, reads({ job: bad }), gone);
+    assert.equal(view.job, indexed, JSON.stringify(bad));
+    assert.match(view.note, /not a valid job record/);
+    assert.doesNotMatch(view.note, /other/);
+  }
+  const noted = projectJob(indexed, reads({ note: "missing" }), gone);
+  assert.deepEqual([noted.job, noted.note], [indexed, "missing"]);
+});
+
+test("status and status --all note a missing or invalid record also for a finished job, and do not abort on null", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  assert.equal(run(sandbox, ["task", "--wait", "one"]).status, 0);
+  const first = lastJob(sandbox);
+  assert.equal(run(sandbox, ["task", "--wait", "two"]).status, 0);
+  const second = lastJob(sandbox);
+  fs.writeFileSync(path.join(stateDirOf(sandbox), "jobs", `${first.id}.json`), "null");
+  fs.rmSync(path.join(stateDirOf(sandbox), "jobs", `${second.id}.json`));
+  const all = run(sandbox, ["status", "--all", "--json"]);
+  assert.equal(all.status, 0, all.stderr);
+  const notes = JSON.parse(all.stdout).notes;
+  assert.ok(notes.some((note) => note.includes(first.id) && /not a valid job record/.test(note)), all.stdout);
+  assert.ok(notes.some((note) => note.includes(second.id) && /missing/.test(note)), all.stdout);
+  assert.match(JSON.parse(run(sandbox, ["status", first.id, "--json"]).stdout).note, /not a valid job record/);
+  assert.match(run(sandbox, ["status", second.id]).stdout, /missing/);
+});
+
+test("the plain-text status listings print each unresolved job's pids and what to check", { skip: POSIX_ONLY }, async (t) => {
+  const sandbox = makeSandbox(t);
+  const { job, agyPid, workerPid } = await deadWorkerJob(t, sandbox);
+  for (const args of [["status"], ["status", "--all"]]) {
+    const out = run(sandbox, args).stdout;
+    assert.match(out, new RegExp(`${job.id} \\| unresolved`), args.join(" "));
+    assert.match(out, new RegExp(`pid ${workerPid}`), args.join(" "));
+    assert.match(out, new RegExp(`pid ${agyPid}`), args.join(" "));
+  }
+});
+
+test("the delegate skill escalates on a status note before it counts or classifies a chunk", () => {
+  const text = fs.readFileSync(path.join(root, "plugins/antigravity/skills/antigravity-delegate/SKILL.md"), "utf8");
+  assert.match(text, /top-level `note`/);
+  assert.match(text, /`note`[^.]*never cancel or relaunch/);
 });
 
 test("an indexed job whose file is missing is shown with a note, and status --wait returns with it", { skip: POSIX_ONLY }, async (t) => {

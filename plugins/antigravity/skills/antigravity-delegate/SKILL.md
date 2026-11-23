@@ -160,6 +160,10 @@ running; the loop ends when every chunk is committed or escalated.
 1. For every in-flight chunk, run
    `node "<plugin-root>/scripts/antigravity-companion.mjs" status <job-id> --json`
    and pull any new output.
+   Check the JSON's top-level `note` first, before you count the tick or
+   classify the chunk: a `note` means the job's record is missing or cannot
+   be read, so escalate to the user with the job id and the note, and
+   never cancel or relaunch that chunk.
 2. Snapshot `git status --short` and diff it against the previous tick's
    snapshot (keep snapshots next to the docket).
 3. Classify each chunk:

@@ -25,7 +25,7 @@ import {
   resolveAgySpawnCommand,
   validateEffort
 } from "./lib/agy.mjs";
-import { unresolvedView, workerGone } from "./lib/dead-worker.mjs";
+import { projectJob } from "./lib/dead-worker.mjs";
 import { buildDetachedWorkerOptions, mergeSpawnedPid } from "./lib/detach.mjs";
 import { isWithin, readStdinIfPiped } from "./lib/fs.mjs";
 import { collectIncludedFiles, collectReviewContext, ensureGitRepository, formatIncomplete, resolveReviewTarget } from "./lib/git.mjs";
@@ -37,6 +37,7 @@ import {
   listJobs,
   readJobFile,
   resolveJobFile,
+  resolveJobsDir,
   resolveStateDir,
   upsertJob,
   writeJobFile
@@ -141,21 +142,17 @@ function isActive(job) {
  * output, never stored, so a worker that was alive after all shows its real state on the next read.
  */
 function viewJob(workspaceRoot, indexed) {
-  const jobFile = resolveJobFile(workspaceRoot, indexed.id);
-  if (!fs.existsSync(jobFile)) {
-    return { job: indexed, note: `Job ${indexed.id}'s record is missing; the index entry is shown.` };
-  }
-  let stored;
-  try {
-    stored = readJobFile(jobFile);
-  } catch (error) {
-    const why = error instanceof SyntaxError ? "invalid JSON" : `not readable (${error?.code ?? "error"})`;
-    return { job: indexed, note: `Job ${indexed.id}'s record is ${why}; the index entry is shown.` };
-  }
-  if ((stored.status === "queued" || stored.status === "running") && workerGone(stored.pid)) {
-    return { job: unresolvedView(stored), note: null };
-  }
-  return { job: stored, note: null };
+  // resolveJobsDir, not resolveJobFile: a read makes no folder and changes no mode.
+  const jobFile = path.join(resolveJobsDir(workspaceRoot), `${indexed.id}.json`);
+  return projectJob(indexed, () => {
+    if (!fs.existsSync(jobFile)) return { note: `Job ${indexed.id}'s record is missing; the index entry is shown.` };
+    try {
+      return { job: JSON.parse(fs.readFileSync(jobFile, "utf8")) };
+    } catch (error) {
+      const why = error instanceof SyntaxError ? "invalid JSON" : `not readable (${error?.code ?? "error"})`;
+      return { note: `Job ${indexed.id}'s record is ${why}; the index entry is shown.` };
+    }
+  });
 }
 
 /** Created by cancel before it reads or signals anything; no job update can overwrite a file. */
@@ -824,7 +821,8 @@ function buildStatusSnapshot(cwd, all = false, listed = null) {
 
 function renderStatusReport(report) {
   const lines = ["# Antigravity Status", ""];
-  if (report.running.length) lines.push("Active jobs:", ...report.running.map((job) => `- ${job.id} | ${job.status} | ${job.title}`), "");
+  const line = (job) => [`- ${job.id} | ${job.status} | ${job.title}`, ...(job.status === "unresolved" ? [`  ${job.errorMessage}`] : [])];
+  if (report.running.length) lines.push("Active jobs:", ...report.running.flatMap(line), "");
   if (report.latestFinished) lines.push(`Latest finished: ${report.latestFinished.id} | ${report.latestFinished.status} | ${report.latestFinished.title}`, "");
   if (report.recent.length) lines.push("Recent jobs:", ...report.recent.map((job) => `- ${job.id} | ${job.status} | ${job.title}`));
   if (!report.running.length && !report.latestFinished) lines.push("No jobs recorded yet.");
@@ -845,7 +843,6 @@ async function handleStatus(argv) {
     const workspaceRoot = resolveWorkspaceRoot(cwd);
     const notes = [];
     const jobs = listJobs(workspaceRoot).map((indexed) => {
-      if (!isActive(indexed)) return indexed;
       const view = viewJob(workspaceRoot, indexed);
       if (view.note) notes.push(view.note);
       return view.job;
@@ -859,7 +856,7 @@ async function handleStatus(argv) {
   const find = () => {
     const found = findJob(cwd, reference);
     if (!found.job) throw new Error(`No job found for "${reference}".`);
-    const view = isActive(found.job) ? viewJob(found.workspaceRoot, found.job) : { job: found.job, note: null };
+    const view = viewJob(found.workspaceRoot, found.job);
     return { workspaceRoot: found.workspaceRoot, ...view };
   };
   let selected = find();
