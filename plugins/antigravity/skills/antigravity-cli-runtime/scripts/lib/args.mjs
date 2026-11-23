@@ -1,5 +1,7 @@
 export function parseArgs(argv, config = {}) {
-  const valueOptions = new Set(config.valueOptions ?? []);
+  // A repeatable option collects every value in order: `--include a --include b` gives ["a", "b"].
+  const arrayOptions = new Set(config.arrayOptions ?? []);
+  const valueOptions = new Set([...(config.valueOptions ?? []), ...arrayOptions]);
   const booleanOptions = new Set(config.booleanOptions ?? []);
   const aliasMap = config.aliasMap ?? {};
   const options = {};
@@ -25,7 +27,11 @@ export function parseArgs(argv, config = {}) {
     }
 
     if (token.startsWith("--")) {
-      const [rawKey, inlineValue] = token.slice(2).split("=", 2);
+      // Split at the first "=" only: `--include=a=b.json` keeps the value "a=b.json".
+      const body = token.slice(2);
+      const equals = body.indexOf("=");
+      const rawKey = equals === -1 ? body : body.slice(0, equals);
+      const inlineValue = equals === -1 ? undefined : body.slice(equals + 1);
       const key = aliasMap[rawKey] ?? rawKey;
 
       if (booleanOptions.has(key)) {
@@ -38,7 +44,7 @@ export function parseArgs(argv, config = {}) {
         if (nextValue === undefined) {
           throw new Error(`Missing value for --${rawKey}`);
         }
-        options[key] = nextValue;
+        options[key] = arrayOptions.has(key) ? [...(options[key] ?? []), nextValue] : nextValue;
         if (inlineValue === undefined) {
           index += 1;
         }
@@ -62,7 +68,7 @@ export function parseArgs(argv, config = {}) {
       if (nextValue === undefined) {
         throw new Error(`Missing value for -${shortKey}`);
       }
-      options[key] = nextValue;
+      options[key] = arrayOptions.has(key) ? [...(options[key] ?? []), nextValue] : nextValue;
       index += 1;
       continue;
     }

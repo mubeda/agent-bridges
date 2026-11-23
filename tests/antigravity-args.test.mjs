@@ -1,14 +1,19 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { EFFORT_LEVELS, validateEffort } from "../plugins/antigravity/scripts/lib/agy.mjs";
-import { CLIENT_INFO, buildAcpArgs, createLineReader } from "../plugins/antigravity/scripts/lib/acp.mjs";
+import { CLIENT_INFO, buildAcpArgs, createLineReader, startAcpRun } from "../plugins/antigravity/scripts/lib/acp.mjs";
+import { parseArgs } from "../plugins/antigravity/scripts/lib/args.mjs";
+import { isWithin } from "../plugins/antigravity/scripts/lib/fs.mjs";
+import { collectIncludedFiles } from "../plugins/antigravity/scripts/lib/git.mjs";
 import {
   POSIX_ONLY,
   jobFiles,
+  lastJob,
   makeSandbox,
   promptTexts,
   requests,
@@ -70,7 +75,7 @@ test("a review starts the restricted reader, checks its token first, then sends 
   assert.deepEqual(requests(session, "session/new")[0].params, { cwd: sandbox.repo, mcpServers: [] });
 });
 
-test("the reader agent file allows read_file only and carries the token", { skip: POSIX_ONLY }, (t) => {
+test("a read-only task's reader agent file has no tools and carries the token", { skip: POSIX_ONLY }, (t) => {
   const sandbox = makeSandbox(t);
   assert.equal(run(sandbox, ["task", "--wait", "look"]).status, 0);
   const [session] = sessions(sandbox);
@@ -84,8 +89,8 @@ test("the reader agent file allows read_file only and carries the token", { skip
   for (const key of ["name", "version", "description", "license"]) assert.equal(typeof manifest[key], "string", key);
   const agent = files[agentPath];
   assert.match(agent, new RegExp(`^---\\nname: ${agentName}\\n`));
-  assert.match(agent, /^tools:\n  - read_file\n---/m);
-  assert.doesNotMatch(agent, /write_file|run_command/);
+  assert.match(agent, /^tools: \[\]\n---/m);
+  assert.doesNotMatch(agent, /read_file|write_file|run_command/);
   const token = agent.match(/Your agent token is (\S+?)\./)[1];
   assert.ok(token.length >= 16);
   assert.ok(Object.keys(files).some((file) => file.endsWith(".agent-bridges-reader")), "the folder carries the ownership marker");
@@ -105,14 +110,14 @@ test("a review's reader agent has no tools at all", { skip: POSIX_ONLY }, (t) =>
   assert.doesNotMatch(agent, /read_file/);
 });
 
-test("a read_file call in a review fails the run; in a read-only task it is allowed", { skip: POSIX_ONLY }, (t) => {
+test("a read_file call fails a review and a read-only task alike", { skip: POSIX_ONLY }, (t) => {
   const sandbox = makeSandbox(t);
-  const review = run(sandbox, ["review", "--wait"], scenario({ turns: [{ toolCall: "read_file", chunks: ["looked"] }] }));
-  assert.notEqual(review.status, 0);
-  assert.match(review.stdout, /read_file/);
-  const task = run(sandbox, ["task", "--wait", "look"], scenario({ turns: [{ toolCall: "read_file", toolPath: path.join(sandbox.repo, "f0.txt"), chunks: ["looked"] }] }));
-  assert.equal(task.status, 0, task.stdout);
-  assert.match(task.stdout, /looked/);
+  for (const args of [["review", "--wait"], ["task", "--wait", "look"]]) {
+    const result = run(sandbox, args, scenario({ turns: [{ toolCall: "read_file", toolPath: path.join(sandbox.repo, "f0.txt"), chunks: ["looked"] }] }));
+    assert.equal(result.status, 1, `${args[0]}: ${result.stdout}`);
+    assert.match(result.stdout, /read_file/);
+    assert.doesNotMatch(result.stdout, /looked/);
+  }
 });
 
 for (const [label, args] of [["review", ["review", "--wait"]], ["read-only task", ["task", "--wait", "look"]]]) {
@@ -250,52 +255,115 @@ test("a permission request with only always choices is cancelled and fails the r
   }
 });
 
-test("a read-only task may read inside its workspace, by absolute or relative path and through each field", { skip: POSIX_ONLY }, (t) => {
+test("any tool call in a read-only task stops it at once, wherever it reads", { skip: POSIX_ONLY }, (t) => {
   const sandbox = makeSandbox(t);
-  for (const turn of [
-    { toolPath: path.join(sandbox.repo, "f0.txt") },
-    { toolPath: "f0.txt" },
-    { toolPath: path.join(sandbox.repo, "missing", "new.txt") },
-    { toolPath: path.join(sandbox.repo, "f0.txt"), toolPathVia: "args" },
-    { toolPath: path.join(sandbox.repo, "f0.txt"), toolPathVia: "locations" }
-  ]) {
-    const result = run(sandbox, ["task", "--wait", "look"], scenario({ turns: [{ toolCall: "read_file", ...turn, chunks: ["read it"] }] }));
-    assert.equal(result.status, 0, `${JSON.stringify(turn)}: ${result.stdout}`);
-    assert.match(result.stdout, /read it/);
+  const secret = path.join(sandbox.dir, "secret.txt");
+  fs.writeFileSync(secret, "TOP-SECRET\n");
+  const cases = [
+    // A start record of a read, inside or outside the workspace, by each field.
+    [{ toolCall: "read_file", toolPath: path.join(sandbox.repo, "f0.txt") }, "read_file"],
+    [{ toolCall: "read_file", toolPath: "f0.txt", toolPathVia: "args" }, "read_file"],
+    [{ toolCall: "read_file", toolPath: secret, toolPathVia: "locations" }, "read_file"],
+    [{ toolCall: "read_file" }, "read_file"],
+    [{ toolCall: "write_file" }, "write_file"],
+    // Only a later record, with no start record: by its name, or by the path it reports.
+    [{ toolUpdatePath: secret, toolUpdateName: "read_file" }, "read_file"],
+    [{ toolUpdatePath: secret, toolUpdateName: "read_file", toolUpdateNoId: true }, "read_file"],
+    [{ toolUpdatePath: secret }, secret],
+    [{ toolUpdatePath: secret, toolUpdateNoId: true }, secret]
+  ];
+  for (const [turn, named] of cases) {
+    const result = run(sandbox, ["task", "--wait", "look"], scenario({ turns: [{ permission: true, ...turn, chunks: [] }, { chunks: ["second answer"] }] }));
+    const label = JSON.stringify(turn);
+    assert.equal(result.status, 1, `${label}: ${result.stdout}`);
+    assert.match(result.stdout, /in a read-only run, so the run was stopped/, label);
+    assert.ok(result.stdout.includes(named), `${label}: ${result.stdout}`);
+    // No later prompt: not even the follow-up after the refused permission.
+    assert.deepEqual(promptTexts(sessions(sandbox).at(-1)), [TOKEN_PROMPT, "look"], label);
   }
 });
 
-test("a read-only task that reads outside its workspace is stopped at once", { skip: POSIX_ONLY }, (t) => {
+test("--include puts the named files inside the workspace into a read-only task's prompt", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  fs.mkdirSync(path.join(sandbox.repo, "docs"));
+  fs.writeFileSync(path.join(sandbox.repo, "docs", "plan.md"), "PLAN-TEXT\n");
+  fs.writeFileSync(path.join(sandbox.repo, "notes.txt"), "NOTES-TEXT\n");
+  fs.symlinkSync(path.join(sandbox.repo, "notes.txt"), path.join(sandbox.repo, "inner-link.txt"));
+  const result = run(sandbox, ["task", "--wait", "--include", "docs/plan.md", `--include=${path.join(sandbox.repo, "notes.txt")}`, "--include", "inner-link.txt", "check the plan"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.doesNotMatch(result.stdout, /Incomplete task/);
+  const texts = promptTexts(sessions(sandbox)[0]);
+  assert.equal(texts[0], TOKEN_PROMPT);
+  assert.match(texts[1], /^check the plan\n/);
+  assert.match(texts[1], /### docs\/plan\.md\n```\nPLAN-TEXT\n```/);
+  // A link inside the workspace to a file inside it is read once, under the file's own name.
+  assert.equal(texts[1].split("NOTES-TEXT").length, 2, texts[1]);
+  assert.match(texts[1], /### notes\.txt\n/);
+  assert.match(texts[1], /no tools/);
+  assert.equal(lastJob(sandbox).evidence, undefined);
+});
+
+test("--include refuses a file outside the workspace, a .. path, a link out and a missing file before any session starts", { skip: POSIX_ONLY }, (t) => {
   const sandbox = makeSandbox(t);
   const secret = path.join(sandbox.dir, "secret.txt");
   fs.writeFileSync(secret, "TOP-SECRET\n");
   fs.symlinkSync(secret, path.join(sandbox.repo, "inside-link.txt"));
   fs.mkdirSync(path.join(sandbox.dir, "outside"));
   fs.symlinkSync(path.join(sandbox.dir, "outside"), path.join(sandbox.repo, "linkdir"));
-  const cases = [
-    // The OS follows linkdir before "..", so this lands next to the repository, not inside it.
-    [{ toolPath: "linkdir/../secret.txt" }, "linkdir/../secret.txt"],
-    [{ toolPath: secret }, secret],
-    [{ toolPath: "../secret.txt" }, "../secret.txt"],
-    [{ toolPath: path.join(sandbox.repo, "inside-link.txt") }, path.join(sandbox.repo, "inside-link.txt")],
-    [{ toolPath: secret, toolPathVia: "locations" }, secret],
-    [{ toolPath: "$READER/.agents/plugins/x.md" }, ".agents/plugins/x.md"],
-    [{ toolPath: path.join(sandbox.repo, "f0.txt"), toolUpdatePath: secret }, secret],
-    // A later record of the read with an empty name, with its name but no toolCallId, or with neither.
-    [{ toolPath: path.join(sandbox.repo, "f0.txt"), toolUpdatePath: secret, toolUpdateName: "" }, secret],
-    [{ toolPath: path.join(sandbox.repo, "f0.txt"), toolUpdatePath: secret, toolUpdateName: "read_file", toolUpdateNoId: true }, secret],
-    [{ toolPath: path.join(sandbox.repo, "f0.txt"), toolUpdatePath: secret, toolUpdateNoId: true }, secret],
-    [{}, "no path"]
-  ];
-  for (const [turn, named] of cases) {
-    const result = run(sandbox, ["task", "--wait", "look"], scenario({ turns: [{ toolCall: "read_file", permission: true, ...turn, chunks: [] }, { chunks: ["second answer"] }] }));
-    const label = JSON.stringify(turn);
-    assert.equal(result.status, 1, `${label}: ${result.stdout}`);
-    assert.match(result.stdout, /reads only inside its workspace/, label);
-    assert.ok(result.stdout.includes(named), `${label}: ${result.stdout}`);
-    // No later prompt: not even the follow-up after the refused permission.
-    assert.deepEqual(promptTexts(sessions(sandbox).at(-1)), [TOKEN_PROMPT, "look"], label);
+  fs.writeFileSync(path.join(sandbox.dir, "outside", "x.txt"), "X\n");
+  fs.mkdirSync(path.join(sandbox.repo, "sub"));
+  for (const [include, message] of [
+    [secret, /outside the workspace/],
+    ["../secret.txt", /outside the workspace/],
+    ["inside-link.txt", /outside the workspace/],
+    ["linkdir/x.txt", /outside the workspace/],
+    // The OS follows linkdir before "..", so this is the secret next to the repository, not repo/secret.txt.
+    ["linkdir/../secret.txt", /outside the workspace/],
+    [`${sandbox.repo}-other/f.txt`, /cannot be read/],
+    ["missing.txt", /cannot be read/],
+    ["sub", /not a regular file/]
+  ]) {
+    for (const extra of [["--wait"], ["--background"]]) {
+      const result = run(sandbox, ["task", ...extra, "--include", "f0.txt", "--include", include, "look"]);
+      assert.equal(result.status, 1, `${include}: ${result.stdout}`);
+      assert.match(result.stderr, message, include);
+      assert.ok(result.stderr.includes(include), `${include}: ${result.stderr}`);
+      assert.doesNotMatch(result.stdout + result.stderr, /TOP-SECRET/);
+    }
   }
+  assert.equal(sessions(sandbox).length, 0);
+  assert.deepEqual(jobFiles(sandbox), []);
+});
+
+test("--include is refused with --write", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const result = run(sandbox, ["task", "--wait", "--write", "--bypass-permissions", "--include", "f0.txt", "go"]);
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stderr, /--include.*read-only/);
+  assert.equal(sessions(sandbox).length, 0);
+  assert.deepEqual(jobFiles(sandbox), []);
+});
+
+test("an include over the budget, or a binary one, is named in an Incomplete task line and on the job", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  fs.writeFileSync(path.join(sandbox.repo, "big.txt"), "x".repeat(300 * 1024));
+  fs.writeFileSync(path.join(sandbox.repo, "after.txt"), "AFTER\n");
+  fs.writeFileSync(path.join(sandbox.repo, "bin.dat"), Buffer.from([0, 1, 2, 3]));
+  const result = run(sandbox, ["task", "--wait", "--include", "bin.dat", "--include", "big.txt", "--include", "after.txt", "look"]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^Incomplete task: the included files were cut at 262144 bytes/m);
+  assert.match(result.stdout, /Files shown only in part: big\.txt\./);
+  assert.match(result.stdout, /Files not shown: after\.txt\./);
+  assert.match(result.stdout, /bin\.dat/);
+  const prompt = promptTexts(sessions(sandbox)[0])[1];
+  assert.ok(Buffer.byteLength(prompt) < 270 * 1024, String(Buffer.byteLength(prompt)));
+  assert.doesNotMatch(prompt, /AFTER/);
+  const { evidence } = lastJob(sandbox);
+  assert.equal(evidence.incomplete, true);
+  assert.equal(evidence.truncated, true);
+  assert.deepEqual(evidence.filesPartlyShown, ["big.txt"]);
+  assert.deepEqual(evidence.filesNotShown.sort(), ["after.txt", "bin.dat"]);
+  assert.deepEqual(evidence.filesSkipped, ["bin.dat"]);
 });
 
 test("mode, model and thinking level are set before the prompt", { skip: POSIX_ONLY }, (t) => {
@@ -667,3 +735,167 @@ test("review evidence: an untracked file is judged by its contents, not by its h
   fs.writeFileSync(path.join(sandbox.repo, "b.txt"), "the same text\n\n");
   assert.doesNotMatch(collectReviewContext(sandbox.repo, target).content, /identical to/);
 });
+
+test("a long option's inline value is split at the first = only", () => {
+  const { options } = parseArgs(["--include=a=b.json", "--include", "c", "--model=x=y"], { valueOptions: ["model"], arrayOptions: ["include"] });
+  assert.deepEqual(options.include, ["a=b.json", "c"]);
+  assert.equal(options.model, "x=y");
+});
+
+test("isWithin compares whole path components exactly, never ignoring case", () => {
+  const root = path.join(path.sep, "work", "Repo");
+  assert.equal(isWithin(root, root), true);
+  assert.equal(isWithin(path.join(root, "a", "b.txt"), root), true);
+  assert.equal(isWithin(path.join(path.sep, "work", "repo", "a.txt"), root), false);
+  assert.equal(isWithin(path.join(path.sep, "work", "Repo-other", "a.txt"), root), false);
+  assert.equal(isWithin(path.join(path.sep, "work"), root), false);
+  assert.equal(isWithin(path.join(path.sep, "a.txt"), path.sep), true);
+});
+
+test("an include whose folder became a link out after the check is refused before a byte is read", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const root = fs.realpathSync.native(sandbox.repo);
+  fs.mkdirSync(path.join(sandbox.dir, "outside"));
+  fs.writeFileSync(path.join(sandbox.dir, "outside", "x.txt"), "TOP-SECRET\n");
+  // The checked path went through a real folder; it was swapped for a link out before the open.
+  fs.symlinkSync(path.join(sandbox.dir, "outside"), path.join(root, "swapped"));
+  const files = [{ name: "swapped/x.txt", real: path.join(root, "swapped", "x.txt") }];
+  for (const platform of ["linux", "darwin"]) {
+    if (platform === "linux" && process.platform !== "linux") continue;
+    assert.throws(() => collectIncludedFiles(files, { root, platform }), /outside the workspace/, platform);
+  }
+  // A file that stays inside is still read.
+  const inside = collectIncludedFiles([{ name: "f0.txt", real: path.join(root, "f0.txt") }], { root });
+  assert.match(inside.content, /### f0\.txt\n```\nb\n```/);
+});
+
+test("an include is read whole even when the system returns short reads", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const root = fs.realpathSync.native(sandbox.repo);
+  const text = "0123456789".repeat(10) + "\n";
+  fs.writeFileSync(path.join(root, "long.txt"), text);
+  const original = fs.readSync;
+  fs.readSync = (fd, buffer, offset, length, position) => original(fd, buffer, offset, Math.min(length, 7), position);
+  t.after(() => { fs.readSync = original; });
+  const result = collectIncludedFiles([{ name: "long.txt", real: path.join(root, "long.txt") }], { root });
+  fs.readSync = original;
+  assert.ok(result.content.includes(text), result.content);
+  assert.equal(result.truncated, false);
+});
+
+test("a failed task that shows a partial answer also shows its Incomplete task line", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  fs.writeFileSync(path.join(sandbox.repo, "bin.dat"), Buffer.from([0, 1, 2]));
+  const result = run(sandbox, ["task", "--wait", "--include", "bin.dat", "look"], { ...scenario({ turns: [{ chunks: ["PARTIAL"], after: [{ toolCall: "manage_task", id: "m" }] }] }), AGENT_BRIDGES_ACP_QUIET_TIMEOUT_MS: "1000" });
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stdout, /^Antigravity run failed: /m);
+  assert.match(result.stdout, /PARTIAL/);
+  assert.match(result.stdout, /^Incomplete task: some files were not shown .*bin\.dat/m);
+});
+
+test("a FIFO swapped in for an include does not block the open and is not read", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const root = fs.realpathSync.native(sandbox.repo);
+  const fifo = path.join(root, "pipe.txt");
+  assert.equal(spawnSync("mkfifo", [fifo]).status, 0);
+  // In a child process: a blocked synchronous open would hang this test runner past any timeout.
+  const gitLib = new URL("../plugins/antigravity/scripts/lib/git.mjs", import.meta.url).href;
+  const code = `import(${JSON.stringify(gitLib)}).then((m) => console.log(JSON.stringify(m.collectIncludedFiles([{ name: "pipe.txt", real: ${JSON.stringify(fifo)} }], { root: ${JSON.stringify(root)} }))))`;
+  const result = spawnSync(process.execPath, ["-e", code], { encoding: "utf8", timeout: 5000 });
+  assert.equal(result.error, undefined, "the open blocked");
+  assert.equal(result.status, 0, result.stderr);
+  const collected = JSON.parse(result.stdout);
+  assert.deepEqual(collected.skipped, ["pipe.txt"]);
+  assert.match(collected.content, /### pipe\.txt\n\(skipped: /);
+});
+
+test("a single inline --include=value argument with a space is kept whole, with the prompt on stdin", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  fs.mkdirSync(path.join(sandbox.repo, "docs"));
+  fs.writeFileSync(path.join(sandbox.repo, "docs", "task plan.txt"), "SPACED-PLAN\n");
+  const result = run(sandbox, ["task", "--include=docs/task plan.txt"], {}, { input: "check the plan" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const prompt = promptTexts(sessions(sandbox)[0])[1];
+  assert.match(prompt, /^check the plan/);
+  assert.match(prompt, /### docs\/task plan\.txt\n```\nSPACED-PLAN\n```/);
+});
+
+test("an unnamed later record is judged by its first non-empty path, so an empty one cannot hide another", async () => {
+  const token = "tok";
+  for (const update of [
+    { rawInput: { Path: "" }, locations: [{ path: "/outside/secret.txt" }] },
+    { rawInput: { Path: "" }, args: { Path: "/outside/secret.txt" } },
+    { args: { Path: "" }, locations: [{ path: "/outside/secret.txt" }] }
+  ]) {
+    let acp;
+    const reply = (message) => setImmediate(() => acp.handle(message));
+    acp = startAcpRun({
+      cwd: process.cwd(),
+      prompt: "look",
+      readOnly: true,
+      token,
+      quietSettleMs: 50,
+      geminiDir: path.join(os.tmpdir(), "agy-no-gemini"),
+      write(line) {
+        const message = JSON.parse(line);
+        if (message.method === "initialize") reply({ id: message.id, result: { agentCapabilities: {} } });
+        else if (message.method === "session/new") reply({ id: message.id, result: { sessionId: "S1" } });
+        else if (message.method === "session/prompt" && message.params.prompt[0].text === TOKEN_PROMPT) {
+          reply({ method: "session/update", params: { sessionId: "S1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: token } } } });
+          reply({ id: message.id, result: { stopReason: "end_turn" } });
+        } else if (message.method === "session/prompt") {
+          reply({ method: "session/update", params: { sessionId: "S1", update: { sessionUpdate: "tool_call_update", status: "completed", ...update } } });
+          reply({ id: message.id, result: { stopReason: "end_turn" } });
+        }
+      }
+    });
+    const parsed = await acp.result;
+    assert.equal(parsed.ok, false, JSON.stringify(update));
+    assert.match(parsed.error, /\/outside\/secret\.txt/, JSON.stringify(update));
+  }
+});
+
+test("a state folder inside the workspace is refused before any job or prompt is written, in the foreground and in the background", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  fs.writeFileSync(path.join(sandbox.repo, "notes.txt"), "NOTES-TEXT\n");
+  const data = path.join(sandbox.repo, "data");
+  for (const args of [
+    ["task", "--background", "--include", "notes.txt", "look"],
+    ["task", "--wait", "--include", "notes.txt", "look"],
+    ["task", "--background", "look"],
+    ["review", "--background"],
+    ["review", "--wait"],
+    ["transfer", "--background", "--source", path.join(sandbox.dir, "missing.jsonl")]
+  ]) {
+    const result = run(sandbox, args, { PLUGIN_DATA: data });
+    assert.equal(result.status, 1, `${args.join(" ")}: ${result.stdout}`);
+    assert.match(result.stderr + result.stdout, /inside the workspace/, args.join(" "));
+    assert.equal(fs.existsSync(data), false, `${args.join(" ")} wrote ${data}`);
+  }
+  assert.deepEqual(sessions(sandbox), []);
+});
+
+test("a lone raw argument string is split, except a lone --include=value", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  // `/antigravity:review --scope=working-tree --json` arrives as one raw string: it is two options.
+  const review = run(sandbox, ["review", "--scope=working-tree --json"]);
+  assert.equal(review.status, 0, review.stdout + review.stderr);
+  assert.equal(JSON.parse(review.stdout).job.status, "completed");
+  const task = run(sandbox, ["task", "--model=gemini-3.8-flash-medium --json"], {}, { input: "look" });
+  assert.equal(task.status, 0, task.stdout + task.stderr);
+  assert.equal(JSON.parse(task.stdout).job.status, "completed");
+});
+
+test("outside Linux the opened include is matched by device and inode as BigInt, so inodes past 2^53 are told apart", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const root = fs.realpathSync.native(sandbox.repo);
+  // Two inodes that are equal once rounded to a Number.
+  const big = 2n ** 60n;
+  const fake = (ino) => (fd, options) => (options?.bigint ? { dev: 1n, ino, isFile: () => true } : { dev: 1, ino: Number(ino), isFile: () => true });
+  const { fstatSync, statSync } = fs;
+  fs.fstatSync = fake(big + 1n);
+  fs.statSync = fake(big);
+  t.after(() => Object.assign(fs, { fstatSync, statSync }));
+  assert.throws(() => collectIncludedFiles([{ name: "f0.txt", real: path.join(root, "f0.txt") }], { root, platform: "darwin" }), /could not be confirmed inside the workspace/);
+});
+

@@ -53,3 +53,12 @@ export function readStdinIfPiped() {
   }
   return Buffer.concat(chunks).toString("utf8");
 }
+
+/**
+ * Whole path components, compared exactly (never case-insensitively, as path.relative does on Windows): for real
+ * paths, where `<root>-other` and a differently cased folder are not inside `<root>`.
+ */
+export function isWithin(child, parent) {
+  const prefix = parent.endsWith(path.sep) ? parent : `${parent}${path.sep}`;
+  return child === parent || child.startsWith(prefix);
+}
