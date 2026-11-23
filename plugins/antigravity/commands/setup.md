@@ -1,7 +1,7 @@
 ---
 name: setup
 description: Check whether the local Antigravity CLI is ready
-allowed-tools: Bash(cd:*), Bash(node:*), AskUserQuestion
+allowed-tools: Bash(node:*), AskUserQuestion
 ---
 
 Resolve `<plugin-root>` as the first directory that contains `scripts/antigravity-companion.mjs`:
@@ -13,12 +13,10 @@ Resolve `<plugin-root>` as the first directory that contains `scripts/antigravit
 
 If none exist, stop and print those paths. Do not invent a companion elsewhere.
 
-Run the companion from its own folder and name the workspace with `--cwd`, as below: `<workspace>` is the absolute path of the folder this session works in. Never start `node` with the workspace as the shell's current folder: on Windows the shell looks there for `node.exe` before PATH, so one checked into the workspace would run as the user.
-
 Run:
 
 ```bash
-cd "<plugin-root>" && node scripts/antigravity-companion.mjs setup --cwd "<workspace>" --json $ARGUMENTS
+node "<plugin-root>/scripts/antigravity-companion.mjs" setup --json $ARGUMENTS
 ```
 
 If the result says Antigravity is unavailable:

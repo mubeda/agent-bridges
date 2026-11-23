@@ -3,7 +3,7 @@ name: transfer
 description: Transfer the current host session into a resumable Antigravity thread
 argument-hint: '[--source <jsonl-path>] [--json]'
 disable-model-invocation: true
-allowed-tools: Bash(cd:*), Bash(node:*)
+allowed-tools: Bash(node:*)
 ---
 
 Resolve `<plugin-root>` as the first directory that contains `scripts/antigravity-companion.mjs`:
@@ -15,12 +15,10 @@ Resolve `<plugin-root>` as the first directory that contains `scripts/antigravit
 
 If none exist, stop and print those paths. Do not invent a companion elsewhere.
 
-Run the companion from its own folder and name the workspace with `--cwd`, as below: `<workspace>` is the absolute path of the folder this session works in. Never start `node` with the workspace as the shell's current folder: on Windows the shell looks there for `node.exe` before PATH, so one checked into the workspace would run as the user.
-
 Run:
 
 ```bash
-cd "<plugin-root>" && node scripts/antigravity-companion.mjs transfer --cwd "<workspace>" $ARGUMENTS
+node "<plugin-root>/scripts/antigravity-companion.mjs" transfer $ARGUMENTS
 ```
 
 Present the command stdout to the user exactly as returned. Preserve any session ID and resume command.

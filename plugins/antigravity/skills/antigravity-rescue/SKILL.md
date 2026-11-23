@@ -16,8 +16,6 @@ Resolve `<plugin-root>` as the first directory that contains `scripts/antigravit
 
 If none exist, stop and print those paths, and say that an `npx skills` install also needs `antigravity-cli-runtime`. Do not invent a companion elsewhere.
 
-Run the companion from its own folder and name the workspace with `--cwd`, as below: `<workspace>` is the absolute path of the folder this session works in. Never start `node` with the workspace as the shell's current folder: on Windows the shell looks there for `node.exe` before PATH, so one checked into the workspace would run as the user.
-
 Forwarding rules:
 - Invoke `task` exactly once.
 - Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, cancel jobs, summarize output, or do follow-up work.
@@ -38,12 +36,12 @@ Forwarding rules:
 Run exactly once and return stdout verbatim, with no commentary:
 
 ```bash
-cd "<plugin-root>" && node scripts/antigravity-companion.mjs task --cwd "<workspace>" <flags> <<'TASK_TEXT'
+node "<plugin-root>/scripts/antigravity-companion.mjs" task <flags> <<'TASK_TEXT'
 <task text>
 TASK_TEXT
 ```
 
-In Antigravity, this bridge starts a separate session of the same client: a second Antigravity session over ACP, on the model the caller names with `--model` (Antigravity's default otherwise), for example a Gemini review asked for by a session on another provider's model. Start every call with `--background`, never `--wait`, even when the user asked for it: the session's shell moves a long command to the background, and a call left in the foreground can be cut off when the outer session ends. Run every command of this flow, the launch included, in the form above, and give `--include` and `--source` paths as absolute paths. Then run `cd "<plugin-root>" && node scripts/antigravity-companion.mjs status <job-id> --wait --cwd "<workspace>"` until the job is `completed`, `failed` or `cancelled` (run it again while it reports any other state; when it has returned a state other than those three 10 times in a row, stop polling and do not fetch the result: report the job id to the user as stuck, or, when that state is `cancelling`, as a cancellation that was interrupted), then `cd "<plugin-root>" && node scripts/antigravity-companion.mjs result <job-id> --cwd "<workspace>"`. `status` and `result` carry the same `--cwd` as the launch, or a job started for another workspace is not found. Add `--json` to `result` when the user asked for JSON, and return that output verbatim. `task` still runs once; this is the one exception to the rules above against polling `status` and fetching `result`, and to returning the stdout of `task`. Do not finish before you have read the result.
+In Antigravity, this bridge starts a separate session of the same client: a second Antigravity session over ACP, on the model the caller names with `--model` (Antigravity's default otherwise), for example a Gemini review asked for by a session on another provider's model. Start every call with `--background`, never `--wait`, even when the user asked for it: the session's shell moves a long command to the background, and a call left in the foreground can be cut off when the outer session ends. Then run `node "<plugin-root>/scripts/antigravity-companion.mjs" status <job-id> --wait` until the job is `completed`, `failed` or `cancelled` (run it again while it reports any other state; when it has returned a state other than those three 10 times in a row, stop polling and do not fetch the result: report the job id to the user as stuck, or, when that state is `cancelling`, as a cancellation that was interrupted), then `node "<plugin-root>/scripts/antigravity-companion.mjs" result <job-id>`. Give `status` and `result` the same `--cwd <dir>` (or `-C <dir>`) the launch had, or a job started for another workspace is not found, and add `--json` to `result` when the user asked for JSON, and return that output verbatim. `task` still runs once; this is the one exception to the rules above against polling `status` and fetching `result`, and to returning the stdout of `task`. Do not finish before you have read the result.
 
 If the command fails or Antigravity cannot be invoked, return the companion's error output verbatim and tell the user to run the `antigravity-setup` skill.
 

@@ -198,7 +198,7 @@ test("delegate skills require a clean worktree and cancel blocked jobs before re
   for (const name of COMPANIONS) {
     const body = readSkill(name, "delegate");
     assert.match(body, /Preflight: run `git status --short`/, name);
-    assert.match(body, new RegExp(`${name}-companion\\.mjs"? cancel (--cwd "<repo>" )?<job-id>`), name);
+    assert.match(body, new RegExp(`${name}-companion\\.mjs" cancel <job-id>`), name);
   }
 });
 
@@ -206,7 +206,7 @@ test("delegate polling uses the companion wait instead of non-portable shell uti
   for (const name of ["opencode", "gemini", "cursor", "antigravity"]) {
     const body = readSkill(name, "delegate");
     assert.doesNotMatch(body, /timeout 600/, name);
-    assert.match(body, /status (--cwd "<repo>" )?<job-id> --wait --timeout-ms 600000 --json/, name);
+    assert.match(body, /status <job-id> --wait --timeout-ms 600000 --json/, name);
   }
 });
 
@@ -225,7 +225,7 @@ test("rescue surfaces pipe task text on stdin and report failures", () => {
       // argv is readable by other local users, so task text never goes in it.
       assert.doesNotMatch(body, /-- "<task text>"/, `${name}-${skill}`);
       assert.doesNotMatch(body, /"\$\(cat <</, `${name}-${skill}`);
-      assert.match(body, new RegExp(`${name}-companion\\.mjs"? task [^\\n]*<<\x27(TASK_TEXT|CHUNK_PROMPT)\x27`), `${name}-${skill}`);
+      assert.match(body, new RegExp(`${name}-companion\\.mjs" task [^\\n]*<<\x27(TASK_TEXT|CHUNK_PROMPT)\x27`), `${name}-${skill}`);
     }
     assert.doesNotMatch(readSkill(name, "rescue"), /return nothing/, name);
     assert.match(readSkill(name, "rescue"), new RegExp(`${name}-setup`), name);
@@ -236,10 +236,10 @@ test("thin skills do not paste raw user arguments into the shell command", () =>
   for (const name of COMPANIONS) {
     for (const skill of THIN_SKILLS) {
       const body = readSkill(name, skill);
-      assert.doesNotMatch(body, /\.mjs"? [a-z-]+ (--cwd "<workspace>" )?\$ARGUMENTS/, `${name}-${skill}`);
+      assert.doesNotMatch(body, /\.mjs" [a-z-]+ \$ARGUMENTS/, `${name}-${skill}`);
       assert.match(body, /`\$ARGUMENTS`/, `${name}-${skill}`);
       // adversarial-review splits flags from focus text, which goes on stdin
-      assert.match(body, skill === "adversarial-review" ? /\.mjs"? adversarial-review (--cwd "<workspace>" )?<flags>/ : /\.mjs"? [a-z-]+ (--cwd "<workspace>" )?<arguments>/, `${name}-${skill}`);
+      assert.match(body, skill === "adversarial-review" ? /\.mjs" adversarial-review <flags>/ : /\.mjs" [a-z-]+ <arguments>/, `${name}-${skill}`);
     }
   }
 });
@@ -346,7 +346,7 @@ test("adversarial-review focus text and rescue agents never go in argv", () => {
     for (const body of docs) {
       assert.doesNotMatch(body, /adversarial-review "\$ARGUMENTS"/, name);
       assert.doesNotMatch(body, /focus text last, as one quoted argument/, name);
-      assert.match(body, /adversarial-review (--cwd "<workspace>" )?<flags> --focus-stdin <<'FOCUS_TEXT'/, name);
+      assert.match(body, /adversarial-review <flags> --focus-stdin <<'FOCUS_TEXT'/, name);
     }
     const agent = fs.readFileSync(path.join(root, `plugins/${name}/agents/${name}-rescue.md`), "utf8");
     assert.doesNotMatch(agent, /then `--`, then the task text/, name);

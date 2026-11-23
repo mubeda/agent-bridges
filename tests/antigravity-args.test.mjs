@@ -886,19 +886,6 @@ test("a lone raw argument string is split, except a lone --include=value", { ski
   assert.equal(JSON.parse(task.stdout).job.status, "completed");
 });
 
-test("a raw argument string after a leading --cwd <dir> is split too, so a command can run from the plugin folder", { skip: POSIX_ONLY }, (t) => {
-  const sandbox = makeSandbox(t);
-  // `cd "<plugin-root>" && node scripts/antigravity-companion.mjs review --cwd "<workspace>" "$ARGUMENTS"`
-  const review = run(sandbox, ["review", "--cwd", sandbox.repo, "--scope=working-tree --json"], {}, { cwd: sandbox.dir });
-  assert.equal(review.status, 0, review.stdout + review.stderr);
-  assert.equal(JSON.parse(review.stdout).job.status, "completed");
-  const status = run(sandbox, ["status", "-C", sandbox.repo, "--all --json"], {}, { cwd: sandbox.dir });
-  assert.equal(status.status, 0, status.stdout + status.stderr);
-  assert.equal(JSON.parse(status.stdout).latestFinished.status, "completed");
-  // An empty $ARGUMENTS stays empty.
-  assert.equal(run(sandbox, ["status", "--cwd", sandbox.repo, ""], {}, { cwd: sandbox.dir }).status, 0);
-});
-
 test("outside Linux the opened include is matched by device and inode as BigInt, so inodes past 2^53 are told apart", { skip: POSIX_ONLY }, (t) => {
   const sandbox = makeSandbox(t);
   const root = fs.realpathSync.native(sandbox.repo);

@@ -2,7 +2,7 @@
 name: rescue
 description: Delegate investigation, an explicit fix request, or follow-up rescue work to the Antigravity rescue subagent
 argument-hint: "[--background|--wait] [--write --bypass-permissions] [--trust] [--resume|--resume-job <job-id>|--fresh] [--model <id>] [--effort <level>] [--include <path>]... [what Antigravity should investigate, solve, or continue]"
-allowed-tools: Bash(cd:*), Bash(node:*), AskUserQuestion, Agent
+allowed-tools: Bash(node:*), AskUserQuestion, Agent
 ---
 
 Invoke the `antigravity:antigravity-rescue` subagent via the `Agent` tool (`subagent_type: "antigravity:antigravity-rescue"`), forwarding the raw user request as the prompt.
@@ -21,8 +21,6 @@ Resolve `<plugin-root>` as the first directory that contains `scripts/antigravit
 
 If none exist, stop and print those paths. Do not invent a companion elsewhere.
 
-Run the companion from its own folder and name the workspace with `--cwd`, as below: `<workspace>` is the absolute path of the folder this session works in. Never start `node` with the workspace as the shell's current folder: on Windows the shell looks there for `node.exe` before PATH, so one checked into the workspace would run as the user.
-
 Execution mode:
 
 - If the request includes `--background`, forward it to the companion `task` call; the companion detaches itself.
@@ -35,7 +33,7 @@ Execution mode:
 - Otherwise, only when the request will run with `--write --bypass-permissions` (the user asked for changes), check for an Antigravity thread that run could continue:
 
 ```bash
-cd "<plugin-root>" && node scripts/antigravity-companion.mjs task-resume-candidate --cwd "<workspace>" --for-write --json
+node "<plugin-root>/scripts/antigravity-companion.mjs" task-resume-candidate --for-write --json
 ```
 
 - A read-only request never continues a thread (only a write run continues an Antigravity session, and only an earlier write session), so do not run the helper or ask; route it as a new thread.
@@ -52,7 +50,7 @@ cd "<plugin-root>" && node scripts/antigravity-companion.mjs task-resume-candida
 
 Operating rules:
 
-- The subagent is a thin forwarder only. It should use one `Bash` call to invoke `cd "<plugin-root>" && node scripts/antigravity-companion.mjs task --cwd "<workspace>" <flags> <<'TASK_TEXT'`, with the task text on the following lines and a closing `TASK_TEXT` line, so the text goes on stdin and never as an argument (arguments are visible to other local users) and return that command's stdout as-is.
+- The subagent is a thin forwarder only. It should use one `Bash` call to invoke `node "<plugin-root>/scripts/antigravity-companion.mjs" task <flags> <<'TASK_TEXT'`, with the task text on the following lines and a closing `TASK_TEXT` line, so the text goes on stdin and never as an argument (arguments are visible to other local users) and return that command's stdout as-is.
 - Return the Antigravity companion stdout verbatim to the user.
 - Do not paraphrase, summarize, rewrite, or add commentary before or after it.
 - Do not ask the subagent to inspect files, monitor progress, poll `/antigravity:status`, fetch `/antigravity:result`, call `/antigravity:cancel`, summarize output, or do follow-up work of its own.
