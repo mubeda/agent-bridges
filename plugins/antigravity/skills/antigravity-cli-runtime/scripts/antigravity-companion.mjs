@@ -949,15 +949,30 @@ async function handleCancel(argv) {
   const stored = { ...selected.job, ...(readStoredJob(workspaceRoot, id) ?? {}) };
   // cancelling keeps the handles, so an interrupted teardown can be retried by another cancel.
   persistJob(workspaceRoot, { ...stored, status: "cancelling", phase: "cancelling", errorMessage: "Cancelled by user." });
+  // A recorded pid is signalled only while its recorded start time proves it is still this job's process.
+  const unverified = [];
+  let noIdentity = false;
+  const confirmed = (label, pid, identity) => {
+    if (!Number.isInteger(pid) || pid <= 0) return false;
+    if (isSameProcess(pid, identity)) return true;
+    if (!identity) noIdentity = true;
+    if (processState(pid, identity) === "alive" && !unverified.some((entry) => entry.pid === pid)) unverified.push({ label, pid });
+    return false;
+  };
   // End the agy tree first: it no longer shares the companion's process group.
-  await endAgyTree(stored.agyPid ?? Number.NaN, workspaceRoot);
-  terminateProcessTree(stored.pid ?? Number.NaN, { cwd: workspaceRoot });
+  if (confirmed("agy", stored.agyPid, stored.agyPidStart)) await endAgyTree(stored.agyPid, workspaceRoot);
+  if (confirmed("companion", stored.pid, stored.pidStart)) terminateProcessTree(stored.pid, { cwd: workspaceRoot });
   // The session ran in another process, so it cannot get a session/cancel from here; remove its reader.
   removeReaderDir(stored.readerDir, workspaceRoot);
   // A worker may have recorded agy, its own pid or its reader after the first read.
   const late = readStoredJob(workspaceRoot, id) ?? stored;
-  if (late.agyPid && late.agyPid !== stored.agyPid) await endAgyTree(late.agyPid, workspaceRoot);
-  if (late.pid && late.pid !== stored.pid) terminateProcessTree(late.pid, { cwd: workspaceRoot });
+  if (late.agyPid && late.agyPid !== stored.agyPid && confirmed("agy", late.agyPid, late.agyPidStart)) await endAgyTree(late.agyPid, workspaceRoot);
+  if (late.pid && late.pid !== stored.pid && confirmed("companion", late.pid, late.pidStart)) terminateProcessTree(late.pid, { cwd: workspaceRoot });
+  const named = unverified.map(({ label, pid }) => `${label} (pid ${pid})`).join(", ");
+  const note = [
+    noIdentity ? " No process start time was recorded for this job, so nothing without one was signalled." : "",
+    named ? ` Still running and not signalled, because it could not be confirmed as this job's: ${named}. End it yourself if it is.` : ""
+  ].join("");
   if (late.readerDir && late.readerDir !== stored.readerDir) removeReaderDir(late.readerDir, workspaceRoot);
   const cancelled = persistJob(workspaceRoot, {
     ...late,
@@ -967,9 +982,13 @@ async function handleCancel(argv) {
     agyPid: null,
     readerDir: null,
     completedAt: nowIso(),
-    errorMessage: "Cancelled by user."
+    errorMessage: `Cancelled by user.${note}`
   });
-  outputCommandResult({ jobId: cancelled.id, status: cancelled.status }, `Cancelled ${cancelled.id}.\n`, options.json);
+  outputCommandResult(
+    { jobId: cancelled.id, status: cancelled.status, ...(unverified.length ? { notSignalled: unverified } : {}) },
+    `Cancelled ${cancelled.id}.${note ? `\n${note.trim()}` : ""}\n`,
+    options.json
+  );
 }
 
 async function handleTransfer(argv) {
