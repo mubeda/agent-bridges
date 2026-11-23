@@ -151,9 +151,68 @@ test("a 50 MB transcript is checked with bounded heap growth", (t) => {
   for (let written = 0; written < 50 * 1024 * 1024; written += Buffer.byteLength(block)) fs.writeSync(fd, block);
   fs.writeSync(fd, line(ASKS_COMMAND));
   fs.closeSync(fd);
+  const reads = countReads(t, transcript);
   const before = process.memoryUsage().heapUsed;
   const state = check(gemini, transcript, new Map());
   const growth = process.memoryUsage().heapUsed - before;
   assert.deepEqual({ running: state.running, stuck: state.stuck }, { running: false, stuck: true });
+  assert.equal(reads.whole, 0, "no whole-file read");
+  assert.ok(reads.positions.length >= 800);
+  for (const { length } of reads.positions) assert.ok(length <= 64 * 1024, `a read of ${length} bytes`);
   assert.ok(growth < 10 * 1024 * 1024, `heap grew by ${Math.round(growth / 1024 / 1024)} MB`);
+});
+
+test("a rewrite in place with the same length, or a new file with the same size and mtime, is read from 0", (t) => {
+  const { gemini, transcript } = makeBrain(t);
+  const first = line({ ...RUNNING, pad: "z".repeat(20) });
+  const same = line({ type: "TOOL_CALL", status: "DONE", pad: "z".repeat(23) });
+  assert.equal(same.length, first.length);
+  fs.writeFileSync(transcript, first);
+  const cache = new Map();
+  assert.equal(check(gemini, transcript, cache).running, true);
+  fs.writeFileSync(transcript, same);
+  const later = new Date(fs.statSync(transcript).mtimeMs + 5000);
+  fs.utimesSync(transcript, later, later);
+  assert.equal(check(gemini, transcript, cache).running, false, "rewritten in place: same size, new mtime");
+  const replacement = `${transcript}.new`;
+  fs.writeFileSync(replacement, first);
+  fs.utimesSync(replacement, later, later);
+  fs.renameSync(replacement, transcript);
+  assert.equal(check(gemini, transcript, cache).running, true, "another inode with the same size and mtime");
+});
+
+test("the read limit comes from the opened file, not from an earlier stat of the path", (t) => {
+  const { gemini, transcript } = makeBrain(t);
+  fs.writeFileSync(transcript, line(RUNNING));
+  const replacement = `${transcript}.new`;
+  fs.writeFileSync(replacement, line(RUNNING) + line({ type: "NOTE", text: "w".repeat(500) }) + line(DONE));
+  const { openSync } = fs;
+  // The file is replaced between the path's stat and the open.
+  fs.openSync = (file, ...rest) => {
+    if (String(file) === transcript && fs.existsSync(replacement)) fs.renameSync(replacement, transcript);
+    return openSync(file, ...rest);
+  };
+  t.after(() => { fs.openSync = openSync; });
+  const now = fs.statSync(transcript).mtimeMs + 60_000;
+  const [state] = subagentStates(gemini, "S1", 1000, { now, cache: new Map() });
+  assert.deepEqual({ running: state.running, stuck: state.stuck }, { running: false, stuck: false });
+});
+
+test("an unchanged unterminated last line is not parsed again on every check", (t) => {
+  const { gemini, transcript } = makeBrain(t);
+  fs.writeFileSync(transcript, line(DONE) + line(RUNNING).slice(0, -1));
+  const cache = new Map();
+  assert.equal(check(gemini, transcript, cache).running, true);
+  const { parse } = JSON;
+  let parses = 0;
+  JSON.parse = (...args) => {
+    parses += 1;
+    return parse(...args);
+  };
+  t.after(() => { JSON.parse = parse; });
+  const listing = 1;
+  assert.equal(check(gemini, transcript, cache).running, true);
+  assert.equal(parses, listing, "only the subagent listing was parsed");
+  fs.appendFileSync(transcript, "\n" + line(DONE));
+  assert.equal(check(gemini, transcript, cache).running, false);
 });

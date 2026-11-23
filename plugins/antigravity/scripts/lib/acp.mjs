@@ -282,18 +282,16 @@ export function subagentStates(geminiDir, sessionId, settleMs, { now = Date.now(
     const recent = now - mtime < settleMs;
     // Still changing: busy by its mtime alone, so it is parsed only for the diagnostics at the wait's bound.
     if (recent && !diagnose) return [{ id, role, busy: true, running: false, stuck: false, recent, tooLarge: false }];
-    // An unchanged transcript (same mtime and size) is not read again; a changed one is read from where the last read ended.
-    let parsed = cache?.get(file);
-    if (!parsed || parsed.mtime !== mtime || parsed.size !== stat.size) {
-      try {
-        parsed = readTranscript(file, stat, parsed);
-      } catch {
-        return [];
-      }
-      cache?.set(file, parsed);
+    // The same file (device and inode) with the same mtime and size is not read again; a grown one is read from
+    // where the last read ended.
+    let parsed;
+    try {
+      parsed = readTranscript(file, cache?.get(file));
+    } catch {
+      return [];
     }
-    // A whole record at the end without its newline counts, as it would in a whole-file parse, but is not kept.
-    const { open, lastRunCommand } = parsed.partial.length && !parsed.skipping ? foldRecord({ ...parsed }, parsed.partial.toString("utf8")) : parsed;
+    cache?.set(file, parsed);
+    const { open, lastRunCommand } = parsed.view;
     const running = open > 0;
     const stuck = !running && lastRunCommand;
     return [{ id, role, busy: running || recent, running, stuck, recent, tooLarge: parsed.tooLarge }];
@@ -322,21 +320,26 @@ function foldRecord(state, text) {
 
 /**
  * Reads the bytes appended since `previous` ended, chunk by chunk, keeping only the counters, the latest
- * record's run_command flag and the unfinished last line (at most MAX_RECORD_BYTES). A file that shrank or was
- * replaced (another inode) is read from 0.
+ * record's run_command flag and the unfinished last line (at most MAX_RECORD_BYTES). Identity, size and mtime
+ * come from the opened descriptor, never from an earlier stat of the path. An unchanged file returns `previous`
+ * as it is; a file that shrank, was rewritten without growing, or was replaced (another device or inode) is read
+ * from 0. `view` is the diagnosis: the counters, plus a whole record at the end without its newline, which counts
+ * as it would in a whole-file parse but is not committed, so it is counted once when its newline arrives.
  */
-function readTranscript(file, stat, previous) {
+function readTranscript(file, previous) {
   const fd = fs.openSync(file, "r");
   try {
-    // The identity of the file actually opened, as BigInts so no platform's inode loses precision.
-    const { ino, dev } = fs.fstatSync(fd, { bigint: true });
-    const again = previous && stat.size >= previous.offset && ino === previous.ino && dev === previous.dev;
-    const state = again
+    // BigInt stats, so no platform's inode loses precision.
+    const { ino, dev, size: bigSize, mtimeNs: mtime } = fs.fstatSync(fd, { bigint: true });
+    const size = Number(bigSize);
+    const same = previous && ino === previous.ino && dev === previous.dev;
+    if (same && mtime === previous.mtime && size === previous.size) return previous;
+    const state = same && size > previous.offset
       ? { ...previous }
       : { ino, dev, offset: 0, partial: Buffer.alloc(0), skipping: false, open: 0, lastRunCommand: false, tooLarge: false };
     const chunk = Buffer.allocUnsafe(TRANSCRIPT_CHUNK_BYTES);
-    while (state.offset < stat.size) {
-      const read = fs.readSync(fd, chunk, 0, Math.min(chunk.length, stat.size - state.offset), state.offset);
+    while (state.offset < size) {
+      const read = fs.readSync(fd, chunk, 0, Math.min(chunk.length, size - state.offset), state.offset);
       if (!read) break;
       state.offset += read;
       let start = 0;
@@ -353,7 +356,9 @@ function readTranscript(file, stat, previous) {
         if (state.partial.length > MAX_RECORD_BYTES) Object.assign(skipRecord(state), { partial: Buffer.alloc(0), skipping: true });
       }
     }
-    return Object.assign(state, { mtime: stat.mtimeMs, size: stat.size });
+    const committed = { open: state.open, lastRunCommand: state.lastRunCommand };
+    state.view = state.partial.length && !state.skipping ? foldRecord(committed, state.partial.toString("utf8")) : committed;
+    return Object.assign(state, { mtime, size });
   } finally {
     fs.closeSync(fd);
   }
