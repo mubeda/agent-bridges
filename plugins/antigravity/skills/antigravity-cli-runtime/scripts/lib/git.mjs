@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-import { isProbablyText } from "./fs.mjs";
+import { isProbablyText, isWithin } from "./fs.mjs";
 import { formatCommandFailure, runCommand, runCommandChecked } from "./process.mjs";
 
 const MAX_UNTRACKED_BYTES = 24 * 1024;
@@ -514,10 +514,26 @@ export function collectReviewContext(cwd, target, options = {}) {
 }
 
 /**
+ * The real path of the file an open descriptor holds. On Linux, the kernel's own record of it; elsewhere, the
+ * real path of `real` now, accepted only when it is the same file (device and inode) as the descriptor.
+ */
+function openedRealPath(fd, real, platform) {
+  if (platform === "linux") return fs.readlinkSync(`/proc/self/fd/${fd}`);
+  const now = fs.realpathSync.native(real);
+  const opened = fs.fstatSync(fd);
+  const named = fs.statSync(now);
+  if (opened.dev !== named.dev || opened.ino !== named.ino) throw Object.assign(new Error("changed while it was opened"), { code: "ECHANGED" });
+  return now;
+}
+
+/**
  * A read-only task's --include files, under the review's budget. Each entry is { name, real }: the caller has
- * already checked that `real` (links resolved) is a regular file inside the workspace. Only `real` is read.
+ * already checked that `real` (links resolved) is a regular file inside `options.root`, the workspace's real
+ * path. A folder on the way can still be swapped for a link before the open, so the opened file is checked
+ * again before a byte is read, and anything outside the workspace fails the whole run.
  */
 export function collectIncludedFiles(files, options = {}) {
+  const platform = options.platform ?? process.platform;
   const maxBytes = normalizeMaxInlineDiffBytes(options.maxBytes);
   const evidence = createEvidence(maxBytes, "the rest of the included files is not shown");
   evidence.format("## Included Files\n\n");
@@ -532,15 +548,27 @@ export function collectIncludedFiles(files, options = {}) {
       // O_NOFOLLOW: a swap of the checked file for a link before this open cannot redirect the read.
       const fd = fs.openSync(real, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
       try {
+        let opened;
+        try {
+          opened = openedRealPath(fd, real, platform);
+        } catch (error) {
+          throw Object.assign(new Error(`--include ${name} could not be confirmed inside the workspace after it was opened (${error.code ?? error.message}), so nothing was run.`), { refused: true });
+        }
+        if (!isWithin(opened, options.root)) {
+          throw Object.assign(new Error(`--include ${name} is outside the workspace (${options.root}) once opened: a folder on its path changed after the check, so nothing was run.`), { refused: true });
+        }
         if (!fs.fstatSync(fd).isFile()) throw new Error("not a regular file");
         // At most one byte past the budget: enough to know the file did not fit, never a huge file whole.
+        // A read can return fewer bytes than asked, so read until the buffer is full or the file ends.
         const buffer = Buffer.alloc(evidence.left + 1);
-        const length = fs.readSync(fd, buffer, 0, buffer.length, 0);
+        let length = 0;
+        for (let count; length < buffer.length && (count = fs.readSync(fd, buffer, length, buffer.length - length, length)) > 0; ) length += count;
         read = { buffer: buffer.subarray(0, length), more: length > evidence.left };
       } finally {
         fs.closeSync(fd);
       }
-    } catch {
+    } catch (error) {
+      if (error?.refused) throw error;
       read = { skipped: "(skipped: unreadable file)" };
     }
     if (!read.skipped && !isProbablyText(read.buffer)) read = { skipped: "(skipped: binary file)" };

@@ -26,7 +26,7 @@ import {
   validateEffort
 } from "./lib/agy.mjs";
 import { buildDetachedWorkerOptions, mergeSpawnedPid } from "./lib/detach.mjs";
-import { readStdinIfPiped } from "./lib/fs.mjs";
+import { isWithin, readStdinIfPiped } from "./lib/fs.mjs";
 import { collectIncludedFiles, collectReviewContext, ensureGitRepository, formatIncomplete, resolveReviewTarget } from "./lib/git.mjs";
 import { capTranscriptMessages, packTranscript, parseTranscriptJsonl, resolveTransferSource } from "./lib/host-session.mjs";
 import { binaryAvailable, runCommand, terminateProcessTree } from "./lib/process.mjs";
@@ -411,13 +411,15 @@ const INCLUDE_NOTICE = { cutLabel: "the included files were cut", rest: "the res
 function renderExecution(request, command, parsed, evidence) {
   const lines = [];
   if (parsed.warning) lines.push(`Warning: ${parsed.warning}`, "");
+  // A task's included files that were not shown in full; a partial answer of a failed run needs it too.
+  const taskNotice = !request.review && evidence?.incomplete ? `Incomplete task: ${formatIncomplete(evidence, INCLUDE_NOTICE)}` : null;
   if (!parsed.ok) {
     lines.push(`Antigravity run failed: ${parsed.error}`);
-    if (parsed.resultText) lines.push("", parsed.resultText);
+    if (parsed.resultText) lines.push("", ...(taskNotice ? [taskNotice, ""] : []), parsed.resultText);
     return `${lines.join("\n")}\n`;
   }
   if (!request.review) {
-    if (evidence?.incomplete) lines.push(`Incomplete task: ${formatIncomplete(evidence, INCLUDE_NOTICE)}`, "");
+    if (taskNotice) lines.push(taskNotice, "");
     lines.push(parsed.resultText || command.stderr.trim() || "Antigravity did not return a final message.");
     return `${lines.join("\n")}\n`;
   }
@@ -674,14 +676,15 @@ function resolveResumeJob(cwd, reference) {
 function resolveIncludes(cwd, workspaceRoot, includes) {
   const root = fs.realpathSync.native(workspaceRoot);
   const seen = new Set();
-  return includes.flatMap((include) => {
+  const files = includes.flatMap((include) => {
     let real;
     try {
-      real = fs.realpathSync.native(path.resolve(cwd, include));
+      // Not path.resolve: it would collapse "link/.." before the OS follows the link.
+      real = fs.realpathSync.native(path.isAbsolute(include) ? include : `${cwd}${path.sep}${include}`);
     } catch (error) {
       throw new Error(`--include ${include} cannot be read (${error.code ?? error.message}), so nothing was run.`);
     }
-    if (!isInside(real, root)) {
+    if (!isWithin(real, root)) {
       throw new Error(`--include ${include} is outside the workspace (${workspaceRoot}): a read-only task sees only files inside it, so nothing was run.`);
     }
     if (!fs.statSync(real).isFile()) throw new Error(`--include ${include} is not a regular file, so nothing was run.`);
@@ -689,11 +692,12 @@ function resolveIncludes(cwd, workspaceRoot, includes) {
     seen.add(real);
     return [{ name: path.relative(root, real).split(path.sep).join("/"), real }];
   });
+  return { root, files };
 }
 
 /** The task prompt with the included files after it, and the evidence record when some were not shown in full. */
-function buildIncludedPrompt(prompt, files) {
-  const included = collectIncludedFiles(files);
+function buildIncludedPrompt(prompt, { root, files }) {
+  const included = collectIncludedFiles(files, { root });
   const cut = included.truncated ? ` The files are larger than ${included.maxBytes} bytes, so they were cut; say in your answer that the rest was not shown.` : "";
   const text = [
     prompt,

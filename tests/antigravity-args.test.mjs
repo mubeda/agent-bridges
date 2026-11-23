@@ -6,6 +6,9 @@ import test from "node:test";
 
 import { EFFORT_LEVELS, validateEffort } from "../plugins/antigravity/scripts/lib/agy.mjs";
 import { CLIENT_INFO, buildAcpArgs, createLineReader } from "../plugins/antigravity/scripts/lib/acp.mjs";
+import { parseArgs } from "../plugins/antigravity/scripts/lib/args.mjs";
+import { isWithin } from "../plugins/antigravity/scripts/lib/fs.mjs";
+import { collectIncludedFiles } from "../plugins/antigravity/scripts/lib/git.mjs";
 import {
   POSIX_ONLY,
   jobFiles,
@@ -313,6 +316,8 @@ test("--include refuses a file outside the workspace, a .. path, a link out and 
     ["../secret.txt", /outside the workspace/],
     ["inside-link.txt", /outside the workspace/],
     ["linkdir/x.txt", /outside the workspace/],
+    // The OS follows linkdir before "..", so this is the secret next to the repository, not repo/secret.txt.
+    ["linkdir/../secret.txt", /outside the workspace/],
     [`${sandbox.repo}-other/f.txt`, /cannot be read/],
     ["missing.txt", /cannot be read/],
     ["sub", /not a regular file/]
@@ -729,3 +734,61 @@ test("review evidence: an untracked file is judged by its contents, not by its h
   fs.writeFileSync(path.join(sandbox.repo, "b.txt"), "the same text\n\n");
   assert.doesNotMatch(collectReviewContext(sandbox.repo, target).content, /identical to/);
 });
+
+test("a long option's inline value is split at the first = only", () => {
+  const { options } = parseArgs(["--include=a=b.json", "--include", "c", "--model=x=y"], { valueOptions: ["model"], arrayOptions: ["include"] });
+  assert.deepEqual(options.include, ["a=b.json", "c"]);
+  assert.equal(options.model, "x=y");
+});
+
+test("isWithin compares whole path components exactly, never ignoring case", () => {
+  const root = path.join(path.sep, "work", "Repo");
+  assert.equal(isWithin(root, root), true);
+  assert.equal(isWithin(path.join(root, "a", "b.txt"), root), true);
+  assert.equal(isWithin(path.join(path.sep, "work", "repo", "a.txt"), root), false);
+  assert.equal(isWithin(path.join(path.sep, "work", "Repo-other", "a.txt"), root), false);
+  assert.equal(isWithin(path.join(path.sep, "work"), root), false);
+  assert.equal(isWithin(path.join(path.sep, "a.txt"), path.sep), true);
+});
+
+test("an include whose folder became a link out after the check is refused before a byte is read", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const root = fs.realpathSync.native(sandbox.repo);
+  fs.mkdirSync(path.join(sandbox.dir, "outside"));
+  fs.writeFileSync(path.join(sandbox.dir, "outside", "x.txt"), "TOP-SECRET\n");
+  // The checked path went through a real folder; it was swapped for a link out before the open.
+  fs.symlinkSync(path.join(sandbox.dir, "outside"), path.join(root, "swapped"));
+  const files = [{ name: "swapped/x.txt", real: path.join(root, "swapped", "x.txt") }];
+  for (const platform of ["linux", "darwin"]) {
+    if (platform === "linux" && process.platform !== "linux") continue;
+    assert.throws(() => collectIncludedFiles(files, { root, platform }), /outside the workspace/, platform);
+  }
+  // A file that stays inside is still read.
+  const inside = collectIncludedFiles([{ name: "f0.txt", real: path.join(root, "f0.txt") }], { root });
+  assert.match(inside.content, /### f0\.txt\n```\nb\n```/);
+});
+
+test("an include is read whole even when the system returns short reads", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  const root = fs.realpathSync.native(sandbox.repo);
+  const text = "0123456789".repeat(10) + "\n";
+  fs.writeFileSync(path.join(root, "long.txt"), text);
+  const original = fs.readSync;
+  fs.readSync = (fd, buffer, offset, length, position) => original(fd, buffer, offset, Math.min(length, 7), position);
+  t.after(() => { fs.readSync = original; });
+  const result = collectIncludedFiles([{ name: "long.txt", real: path.join(root, "long.txt") }], { root });
+  fs.readSync = original;
+  assert.ok(result.content.includes(text), result.content);
+  assert.equal(result.truncated, false);
+});
+
+test("a failed task that shows a partial answer also shows its Incomplete task line", { skip: POSIX_ONLY }, (t) => {
+  const sandbox = makeSandbox(t);
+  fs.writeFileSync(path.join(sandbox.repo, "bin.dat"), Buffer.from([0, 1, 2]));
+  const result = run(sandbox, ["task", "--wait", "--include", "bin.dat", "look"], { ...scenario({ turns: [{ chunks: ["PARTIAL"], after: [{ toolCall: "manage_task", id: "m" }] }] }), AGENT_BRIDGES_ACP_QUIET_TIMEOUT_MS: "1000" });
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stdout, /^Antigravity run failed: /m);
+  assert.match(result.stdout, /PARTIAL/);
+  assert.match(result.stdout, /^Incomplete task: some files were not shown .*bin\.dat/m);
+});
+
